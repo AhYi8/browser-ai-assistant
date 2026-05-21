@@ -17,6 +17,30 @@ body {
   font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 
+* {
+  scrollbar-color: var(--color-scrollbar-thumb) transparent;
+  scrollbar-width: thin;
+}
+
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 1px;
+}
+
+*::-webkit-scrollbar-button {
+  display: none;
+}
+
+*::-webkit-scrollbar-thumb {
+  border-radius: 10px;
+  background: var(--color-scrollbar-thumb);
+}
+
+*::-webkit-scrollbar-track {
+  border-radius: 10px;
+  background: inherit;
+}
+
 @layer components {
   .app-shell {
     @apply min-h-screen;
