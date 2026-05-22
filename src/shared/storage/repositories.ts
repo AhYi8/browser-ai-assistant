@@ -1,5 +1,5 @@
 import { db } from "./db";
-import type { ChatFolder, ChatSession, ExtractionRule, ModelConfig, ModelProvider, ProviderModel } from "../types";
+import type { AppSetting, ChatFolder, ChatSession, ExtractionRule, ModelConfig, ModelProvider, ProviderModel } from "../types";
 
 export async function saveModelConfig(model: ModelConfig): Promise<void> {
   await db.modelConfigs.put(model);
@@ -38,6 +38,15 @@ export async function getProviderModels(providerId?: string): Promise<ProviderMo
 
 export async function deleteProviderModel(modelId: string): Promise<void> {
   await db.providerModels.delete(modelId);
+}
+
+export async function saveAppSetting(setting: AppSetting): Promise<void> {
+  await db.appSettings.put(setting);
+}
+
+export async function getAppSetting<T = unknown>(key: string): Promise<T | undefined> {
+  const setting = await db.appSettings.get(key);
+  return setting?.value as T | undefined;
 }
 
 export async function saveExtractionRule(rule: ExtractionRule): Promise<void> {

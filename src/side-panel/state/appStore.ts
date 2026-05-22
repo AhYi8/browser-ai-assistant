@@ -8,11 +8,13 @@ import {
   deleteExtractionRule,
   deleteModelProvider,
   deleteProviderModel,
+  getAppSetting,
   getChatFolders,
   getChatSessions,
   getExtractionRules,
   getModelProviders,
   getProviderModels,
+  saveAppSetting,
   saveChatFolder,
   saveChatSession,
   moveExtractionRule,
@@ -75,6 +77,7 @@ interface AppState {
   channelOperations: Record<string, ChannelOperationState>;
   modelConnectivity: Record<string, ModelConnectivityState>;
   selectedModelId: string;
+  defaultChatModelId: string;
   activeSessionId: string;
   pendingDeleteSessionId?: string;
   streamMode: boolean;
@@ -88,6 +91,7 @@ interface AppState {
   addRemoteModel: (providerId: string, remoteModel: RemoteModelInfo) => ProviderModel;
   updateModel: (modelId: string, updates: Partial<Pick<ProviderModel, "displayName" | "modelId" | "temperature" | "maxTokens" | "systemPrompt">>) => void;
   setTitleModel: (modelId: string) => void;
+  setDefaultChatModel: (modelId: string) => Promise<void>;
   deleteProvider: (providerId: string) => void;
   deleteModel: (modelId: string) => void;
   loadChannelConfig: () => Promise<void>;
@@ -161,6 +165,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   channelOperations: {},
   modelConnectivity: {},
   selectedModelId: "",
+  defaultChatModelId: "",
   activeSessionId: "",
   streamMode: true,
   sending: false,
@@ -260,11 +265,23 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
       return { models };
     }),
+  setDefaultChatModel: async (modelId) => {
+    const normalizedModelId = modelId.trim();
+
+    await saveAppSetting({
+      key: "defaultChatModelId",
+      value: normalizedModelId,
+      updatedAt: Date.now(),
+    });
+
+    set({ defaultChatModelId: normalizedModelId });
+  },
   deleteProvider: (providerId) =>
     set((state) => {
       const removedModelIds = new Set(state.models.filter((model) => model.providerId === providerId).map((model) => model.id));
       const models = state.models.filter((model) => model.providerId !== providerId);
       const selectedModelId = removedModelIds.has(state.selectedModelId) ? models[0]?.id ?? "" : state.selectedModelId;
+      const defaultChatModelId = removedModelIds.has(state.defaultChatModelId) ? "" : state.defaultChatModelId;
       const { [providerId]: _remoteModels, ...remoteModels } = state.remoteModels;
       const { [providerId]: _operation, ...channelOperations } = state.channelOperations;
       const modelConnectivity = Object.fromEntries(
@@ -274,11 +291,15 @@ export const useAppStore = create<AppState>()((set, get) => ({
       removedModelIds.forEach(clearModelConnectivityResetTimer);
 
       void deleteModelProvider(providerId);
+      if (defaultChatModelId !== state.defaultChatModelId) {
+        void saveAppSetting({ key: "defaultChatModelId", value: "", updatedAt: Date.now() });
+      }
 
       return {
         providers: state.providers.filter((provider) => provider.id !== providerId),
         models,
         selectedModelId,
+        defaultChatModelId,
         remoteModels,
         channelOperations,
         modelConnectivity,
@@ -288,26 +309,40 @@ export const useAppStore = create<AppState>()((set, get) => ({
     set((state) => {
       const models = state.models.filter((model) => model.id !== modelId);
       const selectedModelId = state.selectedModelId === modelId ? models[0]?.id ?? "" : state.selectedModelId;
+      const defaultChatModelId = state.defaultChatModelId === modelId ? "" : state.defaultChatModelId;
       const { [modelId]: _operation, ...modelConnectivity } = state.modelConnectivity;
 
       clearModelConnectivityResetTimer(modelId);
 
       void deleteProviderModel(modelId);
+      if (defaultChatModelId !== state.defaultChatModelId) {
+        void saveAppSetting({ key: "defaultChatModelId", value: "", updatedAt: Date.now() });
+      }
 
       return {
         models,
         selectedModelId,
+        defaultChatModelId,
         modelConnectivity,
       };
     }),
   loadChannelConfig: async () => {
-    const [providers, models] = await Promise.all([getModelProviders(), getProviderModels()]);
-    const selectedModelStillExists = models.some((model) => model.id === get().selectedModelId);
+    const [providers, models, savedDefaultChatModelId] = await Promise.all([
+      getModelProviders(),
+      getProviderModels(),
+      getAppSetting<string>("defaultChatModelId"),
+    ]);
+    const defaultChatModelId = resolveConfiguredModelId(savedDefaultChatModelId ?? "", models, providers);
+    const currentSelectedModelId = get().selectedModelId;
+    const selectedModelStillExists = Boolean(
+      currentSelectedModelId && resolveAvailableModelId(currentSelectedModelId, models, providers) === currentSelectedModelId,
+    );
 
     set({
       providers,
       models,
-      selectedModelId: selectedModelStillExists ? get().selectedModelId : (models[0]?.id ?? ""),
+      defaultChatModelId,
+      selectedModelId: selectedModelStillExists ? currentSelectedModelId : (defaultChatModelId || resolveAvailableModelId("", models, providers)),
     });
   },
   loadChatData: async () => {
@@ -323,6 +358,12 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
   createChatSession: async () => {
     const now = Date.now();
+    const currentState = get();
+    const selectedModelId = resolveAvailableModelId(
+      currentState.defaultChatModelId,
+      currentState.models,
+      currentState.providers,
+    );
     const session: ChatSession = {
       id: `session-${now}`,
       title: "新对话",
@@ -337,6 +378,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
     set((state) => ({
       chatSessions: [session, ...state.chatSessions],
       activeSessionId: session.id,
+      selectedModelId,
       pendingDeleteSessionId: undefined,
     }));
     return session;
@@ -898,6 +940,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       channelOperations: {},
       modelConnectivity: {},
       selectedModelId: "",
+      defaultChatModelId: "",
       activeSessionId: "",
       pendingDeleteSessionId: undefined,
       streamMode: true,
@@ -909,6 +952,28 @@ export const useAppStore = create<AppState>()((set, get) => ({
 }));
 
 let pageContextRefreshSequence = 0;
+
+function resolveAvailableModelId(modelId: string, models: ProviderModel[], providers: ModelProvider[]): string {
+  const availableModels = models.filter((model) => {
+    const provider = providers.find((item) => item.id === model.providerId);
+    return model.enabled && provider?.enabled;
+  });
+
+  if (modelId && availableModels.some((model) => model.id === modelId)) {
+    return modelId;
+  }
+
+  return availableModels[0]?.id ?? "";
+}
+
+function resolveConfiguredModelId(modelId: string, models: ProviderModel[], providers: ModelProvider[]): string {
+  if (!modelId) {
+    return "";
+  }
+
+  const resolvedModelId = resolveAvailableModelId(modelId, models, providers);
+  return resolvedModelId === modelId ? modelId : "";
+}
 
 function createDefaultSessionTitle(content: string): string {
   return content.length > 20 ? `${content.slice(0, 20)}...` : content;

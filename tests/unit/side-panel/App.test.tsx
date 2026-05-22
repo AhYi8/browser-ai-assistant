@@ -443,6 +443,62 @@ describe("App", () => {
     });
   });
 
+  it("可以在渠道管理中选择默认对话模型且位置在 AI 标题生成模型上方", async () => {
+    const user = userEvent.setup();
+    const provider: ModelProvider = {
+      id: "provider-default",
+      name: "默认渠道",
+      endpointType: "openai_chat",
+      endpointUrl: "https://api.example.com/v1/chat/completions",
+      apiKey: "sk-default",
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const chatModel: ProviderModel = {
+      id: "model-chat",
+      providerId: "provider-default",
+      displayName: "聊天模型",
+      modelId: "gpt-chat",
+      temperature: 0.7,
+      maxTokens: 1024,
+      systemPrompt: "你是网页助手",
+      isTitleModel: false,
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const defaultModel: ProviderModel = {
+      ...chatModel,
+      id: "model-default",
+      displayName: "默认对话模型",
+      modelId: "gpt-default",
+    };
+    await saveModelProvider(provider);
+    await saveProviderModel(chatModel);
+    await saveProviderModel(defaultModel);
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    const defaultModelSelect = await screen.findByLabelText("默认对话模型");
+    const titleModelSelect = screen.getByLabelText("AI 标题生成模型");
+
+    expect(defaultModelSelect.compareDocumentPosition(titleModelSelect) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    await user.selectOptions(defaultModelSelect, "model-default");
+
+    await waitFor(() => {
+      expect(useAppStore.getState().defaultChatModelId).toBe("model-default");
+    });
+
+    await user.selectOptions(defaultModelSelect, "");
+
+    await waitFor(() => {
+      expect(useAppStore.getState().defaultChatModelId).toBe("");
+    });
+  });
+
   it("可以在渠道管理中新增多个渠道并为当前渠道添加模型", async () => {
     const user = userEvent.setup();
     render(<App />);

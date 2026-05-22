@@ -204,6 +204,59 @@ describe("appStore", () => {
     expect(useAppStore.getState().models.every((model) => !model.isTitleModel)).toBe(true);
   });
 
+  it("可以保存默认对话模型并在新建对话时选中该模型", async () => {
+    const provider = createProvider();
+    const firstModel = createModel();
+    const defaultModel: ProviderModel = {
+      ...createModel(),
+      id: "model-default",
+      displayName: "默认对话模型",
+      modelId: "gpt-default",
+      updatedAt: 2,
+    };
+
+    await saveModelProvider(provider);
+    await saveProviderModel(firstModel);
+    await saveProviderModel(defaultModel);
+    await useAppStore.getState().loadChannelConfig();
+
+    await useAppStore.getState().setDefaultChatModel("model-default");
+    useAppStore.getState().selectModel("model-1");
+
+    await useAppStore.getState().createChatSession();
+
+    expect(useAppStore.getState().defaultChatModelId).toBe("model-default");
+    expect(useAppStore.getState().selectedModelId).toBe("model-default");
+  });
+
+  it("默认对话模型不存在时新建对话回退到第一个可用模型", async () => {
+    const provider = createProvider();
+    const model = createModel();
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+
+    await useAppStore.getState().setDefaultChatModel("missing-model");
+    useAppStore.getState().selectModel("");
+
+    await useAppStore.getState().createChatSession();
+
+    expect(useAppStore.getState().selectedModelId).toBe("model-1");
+  });
+
+  it("未配置默认对话模型时加载渠道不把第一个模型写成显式默认值", async () => {
+    const provider = createProvider();
+    const model = createModel();
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+
+    expect(useAppStore.getState().defaultChatModelId).toBe("");
+    expect(useAppStore.getState().selectedModelId).toBe("model-1");
+  });
+
   it("兼容 callback 形态的当前标签页 URL 响应", async () => {
     const provider = createProvider();
     const model = createModel();

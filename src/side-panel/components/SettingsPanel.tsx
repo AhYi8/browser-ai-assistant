@@ -90,6 +90,8 @@ function ChannelManagement() {
   const fetchRemoteModels = useAppStore((state) => state.fetchRemoteModels);
   const testModel = useAppStore((state) => state.testModel);
   const setTitleModel = useAppStore((state) => state.setTitleModel);
+  const defaultChatModelId = useAppStore((state) => state.defaultChatModelId);
+  const setDefaultChatModel = useAppStore((state) => state.setDefaultChatModel);
   const remoteModelsByProvider = useAppStore((state) => state.remoteModels);
   const channelOperations = useAppStore((state) => state.channelOperations);
   const modelConnectivity = useAppStore((state) => state.modelConnectivity);
@@ -252,6 +254,22 @@ function ChannelManagement() {
       </section>
 
       <section className="grid gap-3 border-t border-[var(--color-hairline)] pt-4" aria-label="AI 标题生成">
+        <label className="grid gap-1 text-sm">
+          默认对话模型
+          <select
+            className="ui-input"
+            aria-label="默认对话模型"
+            value={defaultChatModelId}
+            onChange={(event) => void setDefaultChatModel(event.target.value)}
+          >
+            <option value="">使用第一个可用模型</option>
+            {titleModelOptions.map((model) => (
+              <option key={model.id} value={model.id}>
+                {model.label}
+              </option>
+            ))}
+          </select>
+        </label>
         <label className="grid gap-1 text-sm">
           AI 标题生成模型
           <select
