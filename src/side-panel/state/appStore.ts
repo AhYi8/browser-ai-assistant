@@ -2,6 +2,7 @@ import { create, type StoreApi } from "zustand";
 import { buildChatRequestMessages } from "../../shared/chat/buildChatRequestMessages";
 import { createModelConfig } from "../../shared/chat/modelConfig";
 import type { RemoteModelInfo } from "../../shared/models/modelCatalog";
+import { createTitleGenerationMessages, generateSessionTitle } from "../../shared/models/titleGeneration";
 import {
   deleteChatSession,
   deleteExtractionRule,
@@ -86,6 +87,7 @@ interface AppState {
   addModel: (providerId: string) => ProviderModel;
   addRemoteModel: (providerId: string, remoteModel: RemoteModelInfo) => ProviderModel;
   updateModel: (modelId: string, updates: Partial<Pick<ProviderModel, "displayName" | "modelId" | "temperature" | "maxTokens" | "systemPrompt">>) => void;
+  setTitleModel: (modelId: string) => void;
   deleteProvider: (providerId: string) => void;
   deleteModel: (modelId: string) => void;
   loadChannelConfig: () => Promise<void>;
@@ -237,6 +239,27 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
       return { models };
     }),
+  setTitleModel: (modelId) =>
+    set((state) => {
+      const now = Date.now();
+      const models = state.models.map((model) => {
+        const isTitleModel = Boolean(modelId) && model.id === modelId;
+        if (model.isTitleModel === isTitleModel) {
+          return model;
+        }
+
+        return {
+          ...model,
+          isTitleModel,
+          updatedAt: now,
+        };
+      });
+
+      // 标题生成模型是全局唯一配置；保存所有变化项，避免刷新后出现多个标题模型。
+      void Promise.all(models.filter((model, index) => model !== state.models[index]).map(saveProviderModel));
+
+      return { models };
+    }),
   deleteProvider: (providerId) =>
     set((state) => {
       const removedModelIds = new Set(state.models.filter((model) => model.providerId === providerId).map((model) => model.id));
@@ -330,7 +353,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       return;
     }
 
-    const updatedSession = { ...session, title: trimmedTitle };
+    const updatedSession = { ...session, title: trimmedTitle, titleGenerating: false };
     await saveChatSession(updatedSession);
     set((state) => ({
       chatSessions: state.chatSessions.map((item) => (item.id === sessionId ? updatedSession : item)),
@@ -731,9 +754,12 @@ export const useAppStore = create<AppState>()((set, get) => ({
     const nextSession: ChatSession = {
       ...session,
       title: session.messages.length === 0 ? createDefaultSessionTitle(trimmedContent) : session.title,
+      titleGenerating: session.messages.length === 0 && hasAvailableTitleModel(state),
       updatedAt: now,
       messages: [...session.messages, userMessage],
     };
+    const shouldGenerateTitle = Boolean(nextSession.titleGenerating);
+    const fallbackTitle = nextSession.title;
 
     try {
       await saveChatSession(nextSession);
@@ -741,6 +767,17 @@ export const useAppStore = create<AppState>()((set, get) => ({
         activeSessionId: nextSession.id,
         chatSessions: upsertSession(current.chatSessions, nextSession),
       }));
+      const titleGenerationPromise = shouldGenerateTitle
+        ? generateTitleForSession({
+          sessionId: nextSession.id,
+          fallbackTitle,
+          userContent: trimmedContent,
+          pageContext: state.pageContext.text,
+          get,
+          set,
+        })
+        : Promise.resolve();
+      void titleGenerationPromise;
 
       const request: ChatSendMessage = {
         type: "chat.send",
@@ -827,6 +864,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
           chatSessions: upsertSession(current.chatSessions, currentCompletedSession),
         };
       });
+
     } catch {
       set({
         failure: {
@@ -914,6 +952,112 @@ type ChatSendMessage = {
   stream: boolean;
 };
 
+interface GenerateTitleForSessionInput {
+  sessionId: string;
+  fallbackTitle: string;
+  userContent: string;
+  pageContext: string;
+  assistantContent?: string;
+  get: StoreGetter;
+  set: StoreSetter;
+}
+
+function hasAvailableTitleModel(state: AppState): boolean {
+  const titleModel = state.models.find((model) => model.isTitleModel && model.enabled);
+  const titleProvider = titleModel ? state.providers.find((provider) => provider.id === titleModel.providerId) : undefined;
+  return Boolean(titleModel && titleProvider?.enabled);
+}
+
+async function generateTitleForSession(input: GenerateTitleForSessionInput): Promise<void> {
+  try {
+    const state = input.get();
+    const titleModel = state.models.find((model) => model.isTitleModel && model.enabled);
+    const titleProvider = titleModel ? state.providers.find((provider) => provider.id === titleModel.providerId) : undefined;
+    if (!titleModel || !titleProvider?.enabled) {
+      await clearTitleGenerating(input);
+      return;
+    }
+
+    const titleModelConfig = createModelConfig(titleProvider, titleModel);
+    const titleMessages = createTitleGenerationMessages({
+      userContent: input.userContent,
+      pageContext: input.pageContext,
+      assistantContent: input.assistantContent,
+    }).map((message) => ({
+      ...message,
+      modelId: titleModel.id,
+      endpointType: titleProvider.endpointType,
+      systemPrompt: titleModel.systemPrompt,
+    }));
+
+    const title = await generateSessionTitle({
+      fallbackTitle: input.fallbackTitle,
+      messages: titleMessages,
+      titleModel: titleModelConfig,
+      requestTitle: async (model, messages) => {
+        const response = await sendRuntimeMessage<{ ok: true; content: string } | { ok: false; message: string } | undefined>({
+          type: "chat.send",
+          model,
+          messages,
+          stream: false,
+        });
+        if (!response?.ok) {
+          throw new Error(response?.message ?? "标题生成失败");
+        }
+
+        return response.content;
+      },
+    });
+
+    await updateGeneratedTitle(input, title);
+  } catch {
+    await clearTitleGenerating(input);
+  }
+}
+
+async function updateGeneratedTitle(input: GenerateTitleForSessionInput, title: string): Promise<void> {
+  const updatedSession = await updateChatSession(input.sessionId, (latestSession) => {
+    if (latestSession.title !== input.fallbackTitle) {
+      return { ...latestSession, titleGenerating: false };
+    }
+
+    return {
+      ...latestSession,
+      title,
+      titleGenerating: false,
+    };
+  });
+  if (!updatedSession) {
+    return;
+  }
+
+  input.set((current) => updateGeneratedTitleInState(current, input.sessionId, input.fallbackTitle, title));
+}
+
+async function clearTitleGenerating(input: GenerateTitleForSessionInput): Promise<void> {
+  await updateGeneratedTitle(input, input.fallbackTitle);
+}
+
+function updateGeneratedTitleInState(
+  state: AppState,
+  sessionId: string,
+  fallbackTitle: string,
+  title: string,
+): Partial<AppState> {
+  const currentSession = state.chatSessions.find((session) => session.id === sessionId);
+  if (!currentSession) {
+    return {};
+  }
+
+  return {
+    chatSessions: upsertSession(state.chatSessions, {
+      ...currentSession,
+      title: currentSession.title === fallbackTitle ? title : currentSession.title,
+      titleGenerating: false,
+    }),
+  };
+}
+
 type ChatStreamPortMessage =
   | { type: "chunk"; content: string }
   | { type: "thinking"; content: string }
@@ -922,6 +1066,7 @@ type ChatStreamPortMessage =
 
 interface StreamingChatResult {
   completed: boolean;
+  assistantContent?: string;
 }
 
 interface StreamingChatInput {
@@ -1019,7 +1164,7 @@ async function sendStreamingChatMessage(input: StreamingChatInput): Promise<Stre
 
       if (message.type === "complete") {
         void enqueueWrite(() => finalizeAssistantMessage(input.sessionId, assistantMessage.id, message.content, message.thinking, input.set)).then(
-          () => finish({ completed: true }),
+          () => finish({ completed: true, assistantContent: message.content }),
         );
         return;
       }

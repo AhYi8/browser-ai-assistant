@@ -539,6 +539,8 @@ function SessionItem({
   onRenameSave,
   onRenameCommit,
 }: SessionItemProps) {
+  const visibleTitle = session.titleGenerating ? "生成标题中..." : session.title;
+
   return (
     <article
       className={active ? "session-item session-item-active" : "session-item"}
@@ -565,8 +567,8 @@ function SessionItem({
             }}
           />
         ) : (
-          <button className="session-title-button" type="button" onClick={() => onSelect(session.id)}>
-            <span className="session-item-title">{session.title === "新对话" ? session.title : `会话：${session.title}`}</span>
+          <button className="session-title-button" type="button" title={session.title} onClick={() => onSelect(session.id)}>
+            <span className="session-item-title">{visibleTitle}</span>
           </button>
         )}
         <div className="session-item-menu-wrap">

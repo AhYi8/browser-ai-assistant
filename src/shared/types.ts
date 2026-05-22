@@ -64,6 +64,7 @@ export interface ChatMessage {
 export interface ChatSession {
   id: string;
   title: string;
+  titleGenerating?: boolean;
   folderId?: string;
   archived: boolean;
   sortOrder: number;

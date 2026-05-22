@@ -81,6 +81,16 @@ function createModel(): ProviderModel {
   };
 }
 
+function createTitleModel(): ProviderModel {
+  return {
+    ...createModel(),
+    id: "model-title",
+    displayName: "标题模型",
+    modelId: "gpt-title",
+    isTitleModel: false,
+  };
+}
+
 describe("appStore", () => {
   afterEach(async () => {
     repositoryMockState.failSaveChatSession = false;
@@ -170,6 +180,28 @@ describe("appStore", () => {
         method: "POST",
       }),
     );
+  });
+
+  it("可以设置全局唯一的 AI 标题生成模型", async () => {
+    const provider = createProvider();
+    const chatModel = createModel();
+    const titleModel = createTitleModel();
+
+    await saveModelProvider(provider);
+    await saveProviderModel(chatModel);
+    await saveProviderModel(titleModel);
+    await useAppStore.getState().loadChannelConfig();
+
+    useAppStore.getState().setTitleModel("model-title");
+
+    expect(useAppStore.getState().models).toEqual([
+      expect.objectContaining({ id: "model-1", isTitleModel: false }),
+      expect.objectContaining({ id: "model-title", isTitleModel: true }),
+    ]);
+
+    useAppStore.getState().setTitleModel("");
+
+    expect(useAppStore.getState().models.every((model) => !model.isTitleModel)).toBe(true);
   });
 
   it("兼容 callback 形态的当前标签页 URL 响应", async () => {
@@ -276,6 +308,267 @@ describe("appStore", () => {
       }),
       expect.any(Function),
     );
+  });
+
+  it("未配置 AI 标题生成模型时不会额外发送标题请求", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const sendMessage = vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+      if (message.type === "pageContext.extract") {
+        callback({
+          ok: true,
+          url: "https://example.com/article",
+          text: "页面内容",
+          truncated: false,
+          usedFallback: false,
+        });
+        return undefined;
+      }
+
+      callback({
+        ok: true,
+        content: "AI 回复",
+      });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    await useAppStore.getState().refreshPageContext();
+    useAppStore.getState().setStreamMode(false);
+
+    await useAppStore.getState().sendChatMessage("第一问");
+
+    expect(sendMessage.mock.calls.filter(([message]) => (message as { type: string }).type === "chat.send")).toHaveLength(1);
+    expect(useAppStore.getState().chatSessions[0]?.title).toBe("第一问");
+  });
+
+  it("配置 AI 标题生成模型后首轮发送时并行生成标题", async () => {
+    const provider = createProvider();
+    const chatModel = createModel();
+    const titleModel = createTitleModel();
+    let resolveMainResponse: (() => void) | undefined;
+    let resolveTitleResponse: (() => void) | undefined;
+    const sendMessage = vi.fn((message: { type: string; model?: ProviderModel; stream?: boolean }, callback: (response: unknown) => void) => {
+      if (message.type === "pageContext.extract") {
+        callback({
+          ok: true,
+          url: "https://example.com/article",
+          text: "页面内容",
+          truncated: false,
+          usedFallback: false,
+        });
+        return undefined;
+      }
+
+      if (message.model?.id === "model-title") {
+        return new Promise((resolve) => {
+          resolveTitleResponse = () => {
+            const response = {
+              ok: true,
+              content: "{\"title\":\"页面摘要讨论\"}",
+            };
+            callback(response);
+            resolve(response);
+          };
+        });
+      }
+
+      return new Promise((resolve) => {
+        resolveMainResponse = () => {
+          const response = {
+            ok: true,
+            content: "AI 回复",
+          };
+          callback(response);
+          resolve(response);
+        };
+      });
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(chatModel);
+    await saveProviderModel(titleModel);
+    await useAppStore.getState().loadChannelConfig();
+    useAppStore.getState().selectModel("model-1");
+    useAppStore.getState().setTitleModel("model-title");
+    await useAppStore.getState().loadChatData();
+    await useAppStore.getState().refreshPageContext();
+    useAppStore.getState().setStreamMode(false);
+
+    const sendPromise = useAppStore.getState().sendChatMessage("第一问");
+
+    await vi.waitFor(() => {
+      const chatRequests = sendMessage.mock.calls
+        .map(([message]) => message as { type: string; model?: ProviderModel })
+        .filter((message) => message.type === "chat.send");
+      expect(chatRequests).toHaveLength(2);
+    });
+
+    const chatRequests = sendMessage.mock.calls
+      .map(([message]) => message as { type: string; model?: ProviderModel; stream?: boolean; messages?: ChatMessage[] })
+      .filter((message) => message.type === "chat.send");
+    const titleRequest = chatRequests.find((message) => message.model?.id === "model-title");
+    expect(chatRequests).toHaveLength(2);
+    expect(titleRequest).toMatchObject({
+      model: expect.objectContaining({ id: "model-title" }),
+      stream: false,
+    });
+    expect(titleRequest?.messages?.[0].content).toContain("{\"title\":\"标题\"}");
+    expect(titleRequest?.messages?.[1].content).toContain("网页上下文：页面内容");
+    expect(titleRequest?.messages?.[1].content).toContain("用户消息：第一问");
+    expect(titleRequest?.messages?.[1].content).not.toContain("AI 回复");
+    expect(useAppStore.getState().chatSessions[0]).toMatchObject({
+      title: "第一问",
+      titleGenerating: true,
+    });
+
+    resolveTitleResponse?.();
+    await vi.waitFor(() => {
+      expect(useAppStore.getState().chatSessions[0]).toMatchObject({
+        title: "页面摘要讨论",
+        titleGenerating: false,
+      });
+    });
+    resolveMainResponse?.();
+    await sendPromise;
+
+    expect(useAppStore.getState().chatSessions[0]?.title).toBe("页面摘要讨论");
+  });
+
+  it("标题模型返回非 JSON 时保留默认标题并清除等待态", async () => {
+    const provider = createProvider();
+    const chatModel = createModel();
+    const titleModel = createTitleModel();
+    const sendMessage = vi.fn((message: { type: string; model?: ProviderModel }, callback: (response: unknown) => void) => {
+      if (message.type === "pageContext.extract") {
+        callback({
+          ok: true,
+          url: "https://example.com/article",
+          text: "页面内容",
+          truncated: false,
+          usedFallback: false,
+        });
+        return undefined;
+      }
+
+      callback({
+        ok: true,
+        content: message.model?.id === "model-title" ? "页面摘要讨论" : "AI 回复",
+      });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(chatModel);
+    await saveProviderModel(titleModel);
+    await useAppStore.getState().loadChannelConfig();
+    useAppStore.getState().selectModel("model-1");
+    useAppStore.getState().setTitleModel("model-title");
+    await useAppStore.getState().loadChatData();
+    await useAppStore.getState().refreshPageContext();
+    useAppStore.getState().setStreamMode(false);
+
+    await useAppStore.getState().sendChatMessage("第一问");
+
+    await vi.waitFor(() => {
+      expect(useAppStore.getState().chatSessions[0]?.titleGenerating).toBe(false);
+    });
+    const session = useAppStore.getState().chatSessions[0];
+    expect(session?.title).toBe("第一问");
+    expect(session?.titleGenerating).toBe(false);
+    expect(session?.messages.map((message) => message.content)).toEqual(["第一问", "AI 回复"]);
+  });
+
+  it("流式主回复进行中标题生成请求仍使用非流式", async () => {
+    const provider = createProvider();
+    const chatModel = createModel();
+    const titleModel = createTitleModel();
+    let portMessageListener: ((message: unknown) => void) | undefined;
+    const port = {
+      postMessage: vi.fn(),
+      disconnect: vi.fn(),
+      onMessage: {
+        addListener: vi.fn((listener: (message: unknown) => void) => {
+          portMessageListener = listener;
+        }),
+      },
+      onDisconnect: {
+        addListener: vi.fn(),
+      },
+    };
+    const sendMessage = vi.fn((message: { type: string; model?: ProviderModel }, callback: (response: unknown) => void) => {
+      if (message.type === "pageContext.extract") {
+        callback({
+          ok: true,
+          url: "https://example.com/article",
+          text: "页面内容",
+          truncated: false,
+          usedFallback: false,
+        });
+        return undefined;
+      }
+
+      callback({
+        ok: true,
+        content: "{\"title\":\"流式标题\"}",
+      });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        connect: vi.fn(() => port),
+        sendMessage,
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(chatModel);
+    await saveProviderModel(titleModel);
+    await useAppStore.getState().loadChannelConfig();
+    useAppStore.getState().selectModel("model-1");
+    useAppStore.getState().setTitleModel("model-title");
+    await useAppStore.getState().loadChatData();
+    await useAppStore.getState().refreshPageContext();
+
+    const sendPromise = useAppStore.getState().sendChatMessage("第一问");
+    await vi.waitFor(() => {
+      expect(portMessageListener).toBeTypeOf("function");
+    });
+
+    let titleRequest: { type: string; model?: ProviderModel; stream?: boolean } | undefined;
+    await vi.waitFor(() => {
+      titleRequest = sendMessage.mock.calls
+        .map(([message]) => message as { type: string; model?: ProviderModel; stream?: boolean })
+        .find((message) => message.type === "chat.send" && message.model?.id === "model-title");
+      expect(titleRequest).toBeDefined();
+    });
+    expect(titleRequest).toMatchObject({
+      stream: false,
+    });
+    await vi.waitFor(() => {
+      expect(useAppStore.getState().chatSessions[0]?.title).toBe("流式标题");
+    });
+
+    portMessageListener?.({ type: "complete", content: "AI 回复" });
+    await sendPromise;
   });
 
   it("默认开启流式响应并通过长连接逐段更新 AI 消息", async () => {

@@ -89,6 +89,7 @@ function ChannelManagement() {
   const deleteModel = useAppStore((state) => state.deleteModel);
   const fetchRemoteModels = useAppStore((state) => state.fetchRemoteModels);
   const testModel = useAppStore((state) => state.testModel);
+  const setTitleModel = useAppStore((state) => state.setTitleModel);
   const remoteModelsByProvider = useAppStore((state) => state.remoteModels);
   const channelOperations = useAppStore((state) => state.channelOperations);
   const modelConnectivity = useAppStore((state) => state.modelConnectivity);
@@ -111,6 +112,22 @@ function ChannelManagement() {
   const remoteModels = remoteModelsByProvider[selectedProvider.id] ?? [];
   const channelOperation = channelOperations[selectedProvider.id];
   const existingRemoteModelIds = new Set(models.filter((model) => model.providerId === selectedProvider.id).map((model) => model.modelId));
+  const selectedTitleModelId = models.find((model) => model.isTitleModel)?.id ?? "";
+  const titleModelOptions = useMemo(
+    () =>
+      models
+        .map((model) => {
+          const provider = providers.find((item) => item.id === model.providerId);
+          return provider
+            ? {
+                id: model.id,
+                label: `${provider.name} / ${model.displayName}`,
+              }
+            : undefined;
+        })
+        .filter((item): item is { id: string; label: string } => Boolean(item)),
+    [models, providers],
+  );
   const normalizedRemoteModelQuery = remoteModelQuery.trim().toLowerCase();
   const filteredRemoteModels = remoteModels.filter((remoteModel) => {
     if (!normalizedRemoteModelQuery) {
@@ -232,6 +249,26 @@ function ChannelManagement() {
             onChange={(event) => updateProvider(ensureSelectedProvider().id, { apiKey: event.target.value })}
           />
         </label>
+      </section>
+
+      <section className="grid gap-3 border-t border-[var(--color-hairline)] pt-4" aria-label="AI 标题生成">
+        <label className="grid gap-1 text-sm">
+          AI 标题生成模型
+          <select
+            className="ui-input"
+            aria-label="AI 标题生成模型"
+            value={selectedTitleModelId}
+            onChange={(event) => setTitleModel(event.target.value)}
+          >
+            <option value="">不开启自动标题生成</option>
+            {titleModelOptions.map((model) => (
+              <option key={model.id} value={model.id}>
+                {model.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <p className="text-xs text-[var(--color-muted)]">选择后仅在首轮对话完成后额外发起一次非流式标题请求。</p>
       </section>
 
       <section className="grid gap-3 border-t border-[var(--color-hairline)] pt-4" aria-label="渠道模型">

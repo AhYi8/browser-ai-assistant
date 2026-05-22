@@ -213,9 +213,11 @@ describe("App", () => {
     const activeTitle = await screen.findByText(/sdfsadfsadfsadfsdfsdfs/);
     await user.click(screen.getByRole("button", { name: /已归档/ }));
     const archivedTitle = await screen.findByText(/看看这个仓库是做什么的/);
+    const activeTitleButton = activeTitle.closest("button");
 
     expect(activeTitle).toHaveClass("session-item-title");
     expect(archivedTitle).toHaveClass("session-item-title");
+    expect(activeTitleButton).toHaveAttribute("title", "分析一下。 sdfsadfsadfsadfsdfsdfsdfsdfsdfsdf");
     expect(styles).toContain(".session-folder-stack-scroll");
     expect(styles).toContain("overflow-x: hidden;");
     expect(styles).toContain(".session-item");
@@ -224,6 +226,17 @@ describe("App", () => {
     expect(styles).toContain(".session-title-button");
     expect(styles).toContain(".session-item-title");
     expect(styles).toContain("text-overflow: ellipsis;");
+  });
+
+  it("标题生成等待中时历史会话标题处展示等待态", async () => {
+    await saveChatSession(createChatSession({ id: "session-title-generating", title: "第一问", titleGenerating: true } as Partial<ChatSession>));
+
+    render(<App />);
+
+    const title = await screen.findByText("生成标题中...");
+    expect(title).toHaveClass("session-item-title");
+    expect(title.closest("button")).toHaveAttribute("title", "第一问");
+    expect(screen.queryByText("会话：第一问")).not.toBeInTheDocument();
   });
 
   it("未配置模型时在输入框区域提示用户配置 API Key 并禁用发送", () => {
@@ -359,6 +372,7 @@ describe("App", () => {
     expect(screen.getByRole("tablist", { name: "设置分类" }).className).not.toContain("lg:flex-col");
     expect(screen.queryByLabelText("历史会话")).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "模型渠道" })).toBeInTheDocument();
+    expect(screen.getByLabelText("AI 标题生成模型")).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "新增渠道" })).toHaveLength(1);
     expect(screen.getByRole("button", { name: "添加模型" })).toBeInTheDocument();
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
@@ -373,6 +387,60 @@ describe("App", () => {
     expect(screen.getByText("忘记密钥将无法恢复已加密的同步数据")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "手动备份" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "手动恢复" })).toBeInTheDocument();
+  });
+
+  it("可以在渠道管理中选择和取消 AI 标题生成模型", async () => {
+    const user = userEvent.setup();
+    const provider: ModelProvider = {
+      id: "provider-title",
+      name: "标题渠道",
+      endpointType: "openai_chat",
+      endpointUrl: "https://api.example.com/v1/chat/completions",
+      apiKey: "sk-title",
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const chatModel: ProviderModel = {
+      id: "model-chat",
+      providerId: "provider-title",
+      displayName: "聊天模型",
+      modelId: "gpt-chat",
+      temperature: 0.7,
+      maxTokens: 1024,
+      systemPrompt: "你是网页助手",
+      isTitleModel: false,
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const titleModel: ProviderModel = {
+      ...chatModel,
+      id: "model-title",
+      displayName: "标题模型",
+      modelId: "gpt-title",
+    };
+    await saveModelProvider(provider);
+    await saveProviderModel(chatModel);
+    await saveProviderModel(titleModel);
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    const titleModelSelect = await screen.findByLabelText("AI 标题生成模型");
+
+    await user.selectOptions(titleModelSelect, "model-title");
+
+    await waitFor(() => {
+      expect(useAppStore.getState().models.find((model) => model.id === "model-title")?.isTitleModel).toBe(true);
+      expect(useAppStore.getState().models.find((model) => model.id === "model-chat")?.isTitleModel).toBe(false);
+    });
+
+    await user.selectOptions(titleModelSelect, "");
+
+    await waitFor(() => {
+      expect(useAppStore.getState().models.every((model) => !model.isTitleModel)).toBe(true);
+    });
   });
 
   it("可以在渠道管理中新增多个渠道并为当前渠道添加模型", async () => {
@@ -846,7 +914,7 @@ describe("App", () => {
     await user.type(screen.getByLabelText("对话输入"), "总结页面");
     await user.click(screen.getByRole("button", { name: "发送" }));
 
-    expect(await screen.findByText("总结页面")).toBeInTheDocument();
+    expect((await screen.findAllByText("总结页面")).length).toBeGreaterThan(0);
     expect(await screen.findByText("AI 总结")).toBeInTheDocument();
     const thinkingDetails = screen.getByText("思考过程").closest("details");
     expect(thinkingDetails).toBeInTheDocument();
@@ -854,7 +922,7 @@ describe("App", () => {
     expect(screen.queryByText("AI 思考过程")).not.toBeInTheDocument();
   });
 
-  it("流式生成中的思考过程默认展开", async () => {
+  it("流式生成中的思考状态显示思考中并默认展开", async () => {
     await saveChatSession(
       createChatSession({
         id: "session-streaming-thinking",
@@ -872,9 +940,10 @@ describe("App", () => {
 
     render(<App />);
 
-    const thinkingDetails = await screen.findByText("思考过程");
+    const thinkingDetails = await screen.findByText("思考中");
     expect(thinkingDetails.closest("details")).toHaveAttribute("open");
     expect(screen.getByText("正在分析页面")).toBeInTheDocument();
+    expect(screen.queryByText("思考过程")).not.toBeInTheDocument();
   });
 
   it("流式思考过程超过五行时自动折叠", async () => {
@@ -895,7 +964,7 @@ describe("App", () => {
 
     render(<App />);
 
-    const thinkingDetails = await screen.findByText("思考过程");
+    const thinkingDetails = await screen.findByText("思考中");
     expect(thinkingDetails.closest("details")).not.toHaveAttribute("open");
   });
 
@@ -1042,7 +1111,8 @@ describe("App", () => {
     await user.clear(input);
     await user.type(input, "新标题{Enter}");
 
-    expect(await screen.findByText("会话：新标题")).toBeInTheDocument();
+    expect(await screen.findByText("新标题")).toBeInTheDocument();
+    expect(screen.queryByText("会话：新标题")).not.toBeInTheDocument();
     expect(useAppStore.getState().chatSessions.find((item) => item.id === "session-rename")?.title).toBe("新标题");
   });
 
@@ -1057,7 +1127,7 @@ describe("App", () => {
     let input = screen.getByLabelText("重命名会话");
     await user.clear(input);
     await user.type(input, "首次保存{Enter}");
-    expect(await screen.findByText("会话：首次保存")).toBeInTheDocument();
+    expect(await screen.findByText("首次保存")).toBeInTheDocument();
 
     await user.click(await screen.findByRole("button", { name: "会话操作 首次保存" }));
     await user.click(screen.getByRole("menuitem", { name: "重命名" }));
@@ -1066,7 +1136,7 @@ describe("App", () => {
     await user.type(input, "失焦保存");
     fireEvent.blur(input);
 
-    expect(await screen.findByText("会话：失焦保存")).toBeInTheDocument();
+    expect(await screen.findByText("失焦保存")).toBeInTheDocument();
     expect(useAppStore.getState().chatSessions.find((item) => item.id === "session-enter-blur")?.title).toBe("失焦保存");
   });
 
@@ -1081,7 +1151,7 @@ describe("App", () => {
     let input = screen.getByLabelText("重命名会话");
     await user.clear(input);
     await user.type(input, "取消标题{Escape}");
-    expect(await screen.findByText("会话：保留标题")).toBeInTheDocument();
+    expect(await screen.findByText("保留标题")).toBeInTheDocument();
 
     await user.click(await screen.findByRole("button", { name: "会话操作 保留标题" }));
     await user.click(screen.getByRole("menuitem", { name: "重命名" }));
@@ -1090,7 +1160,7 @@ describe("App", () => {
     await user.type(input, "失焦标题");
     fireEvent.blur(input);
 
-    expect(await screen.findByText("会话：失焦标题")).toBeInTheDocument();
+    expect(await screen.findByText("失焦标题")).toBeInTheDocument();
     expect(useAppStore.getState().chatSessions.find((item) => item.id === "session-escape-blur")?.title).toBe("失焦标题");
   });
 
@@ -1152,7 +1222,7 @@ describe("App", () => {
 
     render(<App />);
 
-    const sessionButton = await screen.findByRole("button", { name: "会话：拖拽会话" });
+    const sessionButton = await screen.findByRole("button", { name: "拖拽会话" });
     const folderButton = (await screen.findByText("目标文件夹")).closest("button");
     expect(folderButton).toBeInTheDocument();
     fireEvent.dragStart(sessionButton);
@@ -1173,7 +1243,7 @@ describe("App", () => {
     const sourceFolderButton = (await screen.findByText("来源文件夹")).closest("button");
     expect(sourceFolderButton).toBeInTheDocument();
     fireEvent.click(sourceFolderButton as Element);
-    const sessionButton = await screen.findByRole("button", { name: "会话：回默认会话" });
+    const sessionButton = await screen.findByRole("button", { name: "回默认会话" });
     const defaultFolderButton = (await screen.findByText("默认文件夹")).closest("button");
     expect(defaultFolderButton).toBeInTheDocument();
     fireEvent.dragStart(sessionButton);
@@ -1192,7 +1262,7 @@ describe("App", () => {
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: /已归档/ }));
-    const sessionButton = await screen.findByRole("button", { name: "会话：归档拖拽" });
+    const sessionButton = await screen.findByRole("button", { name: "归档拖拽" });
 
     expect(sessionButton.closest("article")).toHaveAttribute("draggable", "false");
   });
@@ -1204,7 +1274,7 @@ describe("App", () => {
 
     render(<App />);
 
-    const sessionButton = await screen.findByRole("button", { name: "会话：数据拖拽" });
+    const sessionButton = await screen.findByRole("button", { name: "数据拖拽" });
     const folderButton = (await screen.findByText("数据文件夹")).closest("button");
     expect(folderButton).toBeInTheDocument();
     fireEvent.dragStart(sessionButton, { dataTransfer });
@@ -1244,14 +1314,15 @@ describe("App", () => {
 
     const folderButton = (await screen.findByText("项目资料")).closest("button");
     expect(folderButton).toBeInTheDocument();
-    expect(screen.queryByText("会话：资料会话")).not.toBeInTheDocument();
+    expect(screen.queryByText("资料会话")).not.toBeInTheDocument();
     expect(folderButton).toHaveAttribute("aria-expanded", "false");
 
     await user.click(folderButton as Element);
-    expect(screen.getByText("会话：资料会话")).toBeInTheDocument();
+    expect(screen.getByText("资料会话")).toBeInTheDocument();
+    expect(screen.queryByText("会话：资料会话")).not.toBeInTheDocument();
     expect(folderButton).toHaveAttribute("aria-expanded", "true");
 
     await user.click(folderButton as Element);
-    expect(screen.queryByText("会话：资料会话")).not.toBeInTheDocument();
+    expect(screen.queryByText("资料会话")).not.toBeInTheDocument();
   });
 });

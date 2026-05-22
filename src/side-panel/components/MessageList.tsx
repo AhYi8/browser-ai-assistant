@@ -25,7 +25,7 @@ export function MessageList({ messages }: MessageListProps) {
           <div className="message-bubble-wrap">
             {message.role === "assistant" && message.thinking ? (
               <details className="message-thinking" open={shouldOpenThinking(message) || undefined}>
-                <summary>思考过程</summary>
+                <summary>{message.streaming ? "思考中" : "思考过程"}</summary>
                 <p>{message.thinking}</p>
               </details>
             ) : null}
