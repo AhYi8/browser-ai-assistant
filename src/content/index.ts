@@ -1,11 +1,12 @@
 import { DEFAULT_CONTEXT_MAX_LENGTH } from "../shared/constants";
-import type { ExtractionRule } from "../shared/types";
+import type { ExtractionRule, PageContextExtractMode } from "../shared/types";
 import { extractPageText } from "./extractPageText";
 
 export interface PageContextExtractMessage {
   type: "pageContext.extract";
   rules: ExtractionRule[];
   maxLength?: number;
+  extractMode?: PageContextExtractMode;
 }
 
 export interface PageContextExtractResponse {
@@ -37,6 +38,7 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
     url: window.location.href,
     rules: message.rules,
     maxLength: message.maxLength ?? DEFAULT_CONTEXT_MAX_LENGTH,
+    extractMode: message.extractMode ?? "text",
   });
 
   sendResponse({

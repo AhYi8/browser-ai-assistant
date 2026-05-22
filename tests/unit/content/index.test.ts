@@ -61,4 +61,49 @@ describe("content 脚本消息", () => {
       matchedRuleId: "rule-1",
     });
   });
+
+  it("收到提取所有模式消息后返回当前页 HTML", async () => {
+    let registeredListener:
+      | ((message: unknown, sender: chrome.runtime.MessageSender, sendResponse: (response?: unknown) => void) => boolean)
+      | undefined;
+
+    vi.stubGlobal("chrome", {
+      runtime: {
+        onMessage: {
+          addListener: vi.fn((listener) => {
+            registeredListener = listener;
+          }),
+        },
+      },
+    });
+
+    await import("../../../src/content/index");
+
+    const sendResponse = vi.fn();
+    const keepChannelOpen = registeredListener?.(
+      {
+        type: "pageContext.extract",
+        rules: [],
+        maxLength: 500,
+        extractMode: "all",
+      },
+      {} as chrome.runtime.MessageSender,
+      sendResponse,
+    );
+
+    expect(keepChannelOpen).toBe(false);
+    expect(sendResponse).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ok: true,
+        url: "https://example.com/article",
+        truncated: false,
+        usedFallback: true,
+      }),
+    );
+    expect(sendResponse).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("<main>正文内容</main>"),
+      }),
+    );
+  });
 });

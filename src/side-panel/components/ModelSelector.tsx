@@ -4,9 +4,7 @@ export function ModelSelector() {
   const providers = useAppStore((state) => state.providers);
   const models = useAppStore((state) => state.models);
   const selectedModelId = useAppStore((state) => state.selectedModelId);
-  const streamMode = useAppStore((state) => state.streamMode);
   const selectModel = useAppStore((state) => state.selectModel);
-  const setStreamMode = useAppStore((state) => state.setStreamMode);
   const selectableModels = models
     .map((model) => {
       const provider = providers.find((item) => item.id === model.providerId);
@@ -20,11 +18,11 @@ export function ModelSelector() {
     .filter((model): model is { id: string; label: string } => Boolean(model));
 
   return (
-    <div className="flex flex-col gap-3">
-      <label className="flex flex-col gap-1 text-sm">
-        当前模型
+    <div className="model-selector">
+      <label className="model-select-label model-select-label-inline">
+        <span className="model-select-text">当前模型</span>
         <select
-          className="ui-input"
+          className="ui-input model-select-input"
           value={selectedModelId}
           onChange={(event) => selectModel(event.target.value)}
         >
@@ -35,14 +33,6 @@ export function ModelSelector() {
             </option>
           ))}
         </select>
-      </label>
-      <label className="flex items-center gap-2 text-sm">
-        <input
-          type="checkbox"
-          checked={streamMode}
-          onChange={(event) => setStreamMode(event.target.checked)}
-        />
-        流式响应
       </label>
     </div>
   );

@@ -1,21 +1,38 @@
 import { create, type StoreApi } from "zustand";
+import { buildChatRequestMessages } from "../../shared/chat/buildChatRequestMessages";
+import { createModelConfig } from "../../shared/chat/modelConfig";
 import type { RemoteModelInfo } from "../../shared/models/modelCatalog";
 import {
+  deleteChatSession,
   deleteExtractionRule,
   deleteModelProvider,
   deleteProviderModel,
+  getChatFolders,
+  getChatSessions,
   getExtractionRules,
   getModelProviders,
   getProviderModels,
+  saveChatFolder,
+  saveChatSession,
   moveExtractionRule,
   saveExtractionRule,
   saveModelProvider,
   saveProviderModel,
+  updateChatSession,
 } from "../../shared/storage/repositories";
 import { DEFAULT_CONTEXT_MAX_LENGTH } from "../../shared/constants";
 import { validateExtractionRuleDraft } from "../../shared/extractionRules/validation";
 import { generateUrlPatternsWithModel } from "../../shared/extractionRules/urlPatternGeneration";
-import type { EndpointType, ExtractionRule, ModelProvider, ProviderModel } from "../../shared/types";
+import type {
+  ChatFolder,
+  ChatMessage,
+  ChatSession,
+  EndpointType,
+  ExtractionRule,
+  ModelProvider,
+  PageContextExtractMode,
+  ProviderModel,
+} from "../../shared/types";
 
 const DEBUG_PREFIX = "[提取规则 AI 生成诊断]";
 
@@ -39,6 +56,7 @@ interface PageContextState {
   loading: boolean;
   url?: string;
   text: string;
+  extractMode: PageContextExtractMode;
   truncated: boolean;
   usedFallback: boolean;
   matchedRuleId?: string;
@@ -49,12 +67,18 @@ interface AppState {
   providers: ModelProvider[];
   models: ProviderModel[];
   extractionRules: ExtractionRule[];
+  chatSessions: ChatSession[];
+  chatFolders: ChatFolder[];
   pageContext: PageContextState;
   remoteModels: Record<string, RemoteModelInfo[]>;
   channelOperations: Record<string, ChannelOperationState>;
   modelConnectivity: Record<string, ModelConnectivityState>;
   selectedModelId: string;
+  activeSessionId: string;
+  pendingDeleteSessionId?: string;
   streamMode: boolean;
+  sending: boolean;
+  contextMode: PageContextExtractMode;
   failure?: RequestFailure;
   addExampleModel: () => void;
   addProvider: () => ModelProvider;
@@ -65,6 +89,17 @@ interface AppState {
   deleteProvider: (providerId: string) => void;
   deleteModel: (modelId: string) => void;
   loadChannelConfig: () => Promise<void>;
+  loadChatData: () => Promise<void>;
+  createChatSession: () => Promise<ChatSession>;
+  selectChatSession: (sessionId: string) => void;
+  renameChatSession: (sessionId: string, title: string) => Promise<void>;
+  archiveChatSession: (sessionId: string) => Promise<void>;
+  requestDeleteChatSession: (sessionId: string) => void;
+  confirmDeleteChatSession: (sessionId: string) => Promise<void>;
+  clearPendingDeleteSession: () => void;
+  createChatFolder: (name: string) => Promise<ChatFolder>;
+  renameChatFolder: (folderId: string, name: string) => Promise<void>;
+  moveChatSessionToFolder: (sessionId: string, folderId: string | undefined) => Promise<void>;
   loadExtractionRules: () => Promise<void>;
   saveRuleDraft: (ruleId: string | undefined, draft: Pick<ExtractionRule, "alias" | "urlPattern" | "selectorsText">) => Promise<{ ok: true; rule: ExtractionRule } | { ok: false; message: string }>;
   deleteRule: (ruleId: string) => Promise<void>;
@@ -75,6 +110,8 @@ interface AppState {
   testModel: (providerId: string, modelId: string) => Promise<void>;
   selectModel: (modelId: string) => void;
   setStreamMode: (streamMode: boolean) => void;
+  setContextMode: (contextMode: PageContextExtractMode) => void;
+  sendChatMessage: (content: string) => Promise<void>;
   simulateFailure: () => void;
   clearFailure: () => void;
   reset: () => void;
@@ -109,9 +146,12 @@ export const useAppStore = create<AppState>()((set, get) => ({
   providers: [],
   models: [],
   extractionRules: [],
+  chatSessions: [],
+  chatFolders: [],
   pageContext: {
     loading: false,
     text: "",
+    extractMode: "text",
     truncated: false,
     usedFallback: true,
   },
@@ -119,7 +159,10 @@ export const useAppStore = create<AppState>()((set, get) => ({
   channelOperations: {},
   modelConnectivity: {},
   selectedModelId: "",
+  activeSessionId: "",
   streamMode: false,
+  sending: false,
+  contextMode: "text",
   addExampleModel: () =>
     set(() => {
       void saveModelProvider(exampleProvider);
@@ -244,6 +287,165 @@ export const useAppStore = create<AppState>()((set, get) => ({
       selectedModelId: selectedModelStillExists ? get().selectedModelId : (models[0]?.id ?? ""),
     });
   },
+  loadChatData: async () => {
+    const [chatSessions, chatFolders] = await Promise.all([getChatSessions(), getChatFolders()]);
+    set((state) => ({
+      chatSessions,
+      chatFolders,
+      activeSessionId:
+        state.activeSessionId && chatSessions.some((session) => session.id === state.activeSessionId)
+          ? state.activeSessionId
+          : (chatSessions[0]?.id ?? ""),
+    }));
+  },
+  createChatSession: async () => {
+    const now = Date.now();
+    const session: ChatSession = {
+      id: `session-${now}`,
+      title: "新对话",
+      archived: false,
+      sortOrder: now,
+      createdAt: now,
+      updatedAt: now,
+      messages: [],
+    };
+
+    await saveChatSession(session);
+    set((state) => ({
+      chatSessions: [session, ...state.chatSessions],
+      activeSessionId: session.id,
+      pendingDeleteSessionId: undefined,
+    }));
+    return session;
+  },
+  selectChatSession: (sessionId) => set({ activeSessionId: sessionId, pendingDeleteSessionId: undefined }),
+  renameChatSession: async (sessionId, title) => {
+    const trimmedTitle = title.trim();
+    if (!trimmedTitle) {
+      return;
+    }
+
+    const session = get().chatSessions.find((item) => item.id === sessionId);
+    if (!session) {
+      return;
+    }
+
+    const updatedSession = { ...session, title: trimmedTitle };
+    await saveChatSession(updatedSession);
+    set((state) => ({
+      chatSessions: state.chatSessions.map((item) => (item.id === sessionId ? updatedSession : item)),
+    }));
+  },
+  archiveChatSession: async (sessionId) => {
+    const session = get().chatSessions.find((item) => item.id === sessionId);
+    if (!session) {
+      return;
+    }
+
+    const updatedSession = { ...session, archived: true, updatedAt: Date.now() };
+    await saveChatSession(updatedSession);
+    set((state) => ({
+      chatSessions: state.chatSessions.map((item) => (item.id === sessionId ? updatedSession : item)),
+      pendingDeleteSessionId: undefined,
+    }));
+  },
+  requestDeleteChatSession: (sessionId) => set({ pendingDeleteSessionId: sessionId }),
+  confirmDeleteChatSession: async (sessionId) => {
+    await deleteChatSession(sessionId);
+    set((state) => {
+      const chatSessions = state.chatSessions.filter((session) => session.id !== sessionId);
+      return {
+        chatSessions,
+        activeSessionId: state.activeSessionId === sessionId ? (chatSessions[0]?.id ?? "") : state.activeSessionId,
+        pendingDeleteSessionId: undefined,
+      };
+    });
+  },
+  clearPendingDeleteSession: () => set({ pendingDeleteSessionId: undefined }),
+  createChatFolder: async (name) => {
+    const now = Date.now();
+    const folder: ChatFolder = {
+      id: `folder-${now}`,
+      name: name.trim() || "新文件夹",
+      sortOrder: now,
+      createdAt: now,
+      updatedAt: now,
+    };
+    await saveChatFolder(folder);
+    set((state) => ({ chatFolders: [...state.chatFolders, folder] }));
+    return folder;
+  },
+  renameChatFolder: async (folderId, name) => {
+    const trimmedName = name.trim();
+    if (!trimmedName) {
+      return;
+    }
+
+    if (!get().chatFolders.some((item) => item.id === folderId)) {
+      return;
+    }
+
+    try {
+      const latestFolder = get().chatFolders.find((item) => item.id === folderId);
+      if (!latestFolder) {
+        return;
+      }
+
+      const updatedAt = Date.now();
+      await saveChatFolder({ ...latestFolder, name: trimmedName, updatedAt });
+      set((state) => {
+        const currentFolder = state.chatFolders.find((item) => item.id === folderId);
+        if (!currentFolder) {
+          return {};
+        }
+
+        return {
+          chatFolders: state.chatFolders.map((item) =>
+            item.id === folderId ? { ...item, name: trimmedName, updatedAt } : item,
+          ),
+        };
+      });
+    } catch {
+      set({ failure: { message: "文件夹保存失败，请重试" } });
+    }
+  },
+  moveChatSessionToFolder: async (sessionId, folderId) => {
+    const initialState = get();
+    const initialSession = initialState.chatSessions.find((item) => item.id === sessionId);
+    if (!initialSession || initialSession.archived) {
+      return;
+    }
+
+    if (folderId && !initialState.chatFolders.some((folder) => folder.id === folderId)) {
+      return;
+    }
+
+    try {
+      const latestState = get();
+      const latestSession = latestState.chatSessions.find((item) => item.id === sessionId);
+      if (!latestSession || latestSession.archived || (folderId && !latestState.chatFolders.some((folder) => folder.id === folderId))) {
+        return;
+      }
+
+      const updatedAt = Date.now();
+      await saveChatSession({ ...latestSession, folderId, updatedAt });
+      set((current) => {
+        const currentSession = current.chatSessions.find((item) => item.id === sessionId);
+        if (!currentSession || currentSession.archived || (folderId && !current.chatFolders.some((folder) => folder.id === folderId))) {
+          return {};
+        }
+
+        return {
+          chatSessions: current.chatSessions.map((item) =>
+            item.id === sessionId ? { ...item, folderId, updatedAt } : item,
+          ),
+          pendingDeleteSessionId: undefined,
+        };
+      });
+    } catch {
+      set({ failure: { message: "会话移动失败，请重试" } });
+    }
+  },
   loadExtractionRules: async () => {
     const extractionRules = await getExtractionRules();
     set({ extractionRules });
@@ -284,9 +486,12 @@ export const useAppStore = create<AppState>()((set, get) => ({
     void get().refreshPageContext();
   },
   refreshPageContext: async () => {
+    const requestedContextMode = get().contextMode;
+    const requestId = ++pageContextRefreshSequence;
     set((state) => ({
       pageContext: {
         ...state.pageContext,
+        extractMode: requestedContextMode,
         loading: true,
         error: undefined,
       },
@@ -306,7 +511,12 @@ export const useAppStore = create<AppState>()((set, get) => ({
       type: "pageContext.extract",
       rules: get().extractionRules,
       maxLength: DEFAULT_CONTEXT_MAX_LENGTH,
+      extractMode: requestedContextMode,
     });
+
+    if (requestId !== pageContextRefreshSequence) {
+      return;
+    }
 
     if (!response) {
       set((state) => ({
@@ -325,6 +535,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
           loading: false,
           url: response.url,
           text: response.text,
+          extractMode: requestedContextMode,
           truncated: response.truncated,
           usedFallback: response.usedFallback,
           matchedRuleId: response.matchedRuleId,
@@ -464,18 +675,163 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
   selectModel: (modelId) => set({ selectedModelId: modelId }),
   setStreamMode: (streamMode) => set({ streamMode }),
+  setContextMode: (contextMode) => {
+    set((state) => ({
+      contextMode,
+      pageContext: {
+        ...state.pageContext,
+        extractMode: contextMode,
+      },
+    }));
+    void get().refreshPageContext();
+  },
+  sendChatMessage: async (content) => {
+    const trimmedContent = content.trim();
+    if (!trimmedContent || get().sending) {
+      return;
+    }
+
+    const state = get();
+    const model = state.models.find((item) => item.id === state.selectedModelId);
+    const provider = model ? state.providers.find((item) => item.id === model.providerId) : undefined;
+    if (!model || !provider || !model.enabled || !provider.enabled) {
+      set({ failure: { message: "请先配置可用模型后再发送" } });
+      return;
+    }
+
+    set({ sending: true, failure: undefined });
+
+    const modelConfig = createModelConfig(provider, model);
+    const now = Date.now();
+    const baseSession = state.chatSessions.find((session) => session.id === state.activeSessionId);
+    const session =
+      baseSession ??
+      {
+        id: `session-${now}`,
+        title: createDefaultSessionTitle(trimmedContent),
+        archived: false,
+        sortOrder: now,
+        createdAt: now,
+        updatedAt: now,
+        messages: [],
+      };
+    const userMessage: ChatMessage = {
+      id: `message-${now}-user`,
+      role: "user",
+      content: trimmedContent,
+      createdAt: now,
+      modelId: model.id,
+      endpointType: provider.endpointType,
+      streamMode: state.streamMode,
+      systemPrompt: model.systemPrompt,
+      contextPrompt: state.pageContext.text,
+      contextMode: state.contextMode,
+      matchedRuleId: state.pageContext.matchedRuleId,
+    };
+    const nextSession: ChatSession = {
+      ...session,
+      title: session.messages.length === 0 ? createDefaultSessionTitle(trimmedContent) : session.title,
+      updatedAt: now,
+      messages: [...session.messages, userMessage],
+    };
+
+    try {
+      await saveChatSession(nextSession);
+      set((current) => ({
+        activeSessionId: nextSession.id,
+        chatSessions: upsertSession(current.chatSessions, nextSession),
+      }));
+
+      const response = await sendRuntimeMessage<
+        { ok: true; content: string; thinking?: string } | { ok: false; message: string } | undefined
+      >({
+        type: "chat.send",
+        model: modelConfig,
+        messages: buildChatRequestMessages({
+          model: modelConfig,
+          pageContext: state.pageContext.text,
+          existingMessages: session.messages,
+          userMessage,
+        }),
+        stream: state.streamMode,
+      });
+
+      if (!response) {
+        set({ failure: { message: "模型请求失败，请重试" } });
+        return;
+      }
+
+      if (!response.ok) {
+        set({ failure: { message: response.message } });
+        return;
+      }
+
+      const assistantCreatedAt = Date.now();
+      const assistantMessage: ChatMessage = {
+        id: `message-${assistantCreatedAt}-assistant`,
+        role: "assistant",
+        content: response.content,
+        thinking: response.thinking,
+        createdAt: assistantCreatedAt,
+        modelId: model.id,
+        endpointType: provider.endpointType,
+        streamMode: state.streamMode,
+        systemPrompt: model.systemPrompt,
+        contextPrompt: state.pageContext.text,
+        contextMode: state.contextMode,
+        matchedRuleId: state.pageContext.matchedRuleId,
+      };
+      const completedSession = await updateChatSession(nextSession.id, (latestSession) => ({
+        ...latestSession,
+        updatedAt: assistantMessage.createdAt,
+        messages: [...latestSession.messages, assistantMessage],
+      }));
+      if (!completedSession) {
+        return;
+      }
+
+      set((current) => {
+        const currentSession = current.chatSessions.find((session) => session.id === completedSession.id);
+        if (!currentSession) {
+          return {};
+        }
+
+        const currentCompletedSession: ChatSession = {
+          ...currentSession,
+          updatedAt: assistantMessage.createdAt,
+          messages: [...currentSession.messages, assistantMessage],
+        };
+
+        return {
+          chatSessions: upsertSession(current.chatSessions, currentCompletedSession),
+        };
+      });
+    } catch {
+      set({
+        failure: {
+          message: "消息保存失败，请重试",
+        },
+      });
+    } finally {
+      set({ sending: false });
+    }
+  },
   simulateFailure: () => set({ failure: { message: "请求失败，请重试" } }),
   clearFailure: () => set({ failure: undefined }),
   reset: () => {
     clearAllModelConnectivityResetTimers();
+    pageContextRefreshSequence += 1;
 
     set({
       providers: [],
       models: [],
       extractionRules: [],
+      chatSessions: [],
+      chatFolders: [],
       pageContext: {
         loading: false,
         text: "",
+        extractMode: "text",
         truncated: false,
         usedFallback: true,
       },
@@ -483,11 +839,26 @@ export const useAppStore = create<AppState>()((set, get) => ({
       channelOperations: {},
       modelConnectivity: {},
       selectedModelId: "",
+      activeSessionId: "",
+      pendingDeleteSessionId: undefined,
       streamMode: false,
+      sending: false,
+      contextMode: "text",
       failure: undefined,
     });
   },
 }));
+
+let pageContextRefreshSequence = 0;
+
+function createDefaultSessionTitle(content: string): string {
+  return content.length > 20 ? `${content.slice(0, 20)}...` : content;
+}
+
+function upsertSession(sessions: ChatSession[], session: ChatSession): ChatSession[] {
+  const nextSessions = sessions.filter((item) => item.id !== session.id);
+  return [session, ...nextSessions].sort((left, right) => right.updatedAt - left.updatedAt);
+}
 
 async function getCurrentTabUrlForGeneration(debugRequestId: string): Promise<{ ok: true; url: string } | { ok: false; message: string }> {
   console.debug(`${DEBUG_PREFIX} 前端请求后台读取当前标签页 URL`, {

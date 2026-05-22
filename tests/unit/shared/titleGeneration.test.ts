@@ -14,6 +14,7 @@ const messages: ChatMessage[] = [
     streamMode: false,
     systemPrompt: "",
     contextPrompt: "网页内容",
+    contextMode: "text",
   },
 ];
 

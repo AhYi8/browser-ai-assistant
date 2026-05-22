@@ -8,11 +8,12 @@ export function App() {
   const [showSettings, setShowSettings] = useState(false);
   const loadChannelConfig = useAppStore((state) => state.loadChannelConfig);
   const loadExtractionRules = useAppStore((state) => state.loadExtractionRules);
+  const loadChatData = useAppStore((state) => state.loadChatData);
   const refreshPageContext = useAppStore((state) => state.refreshPageContext);
 
   useEffect(() => {
-    void Promise.all([loadChannelConfig(), loadExtractionRules()]).then(() => refreshPageContext());
-  }, [loadChannelConfig, loadExtractionRules, refreshPageContext]);
+    void Promise.all([loadChannelConfig(), loadExtractionRules(), loadChatData()]).then(() => refreshPageContext());
+  }, [loadChannelConfig, loadExtractionRules, loadChatData, refreshPageContext]);
 
   return (
     <main className="app-shell">
@@ -22,7 +23,7 @@ export function App() {
           设置
         </button>
       </section>
-      <section className={showSettings ? "p-4" : "grid gap-4 p-4 md:grid-cols-[180px_1fr]"}>
+      <section className={showSettings ? "settings-main-layout" : "chat-main-layout"}>
         {showSettings ? (
           <SettingsPanel />
         ) : (

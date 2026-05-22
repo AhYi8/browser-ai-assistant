@@ -1,5 +1,6 @@
 export type EndpointType = "openai_chat" | "anthropic_messages";
 export type ChatRole = "system" | "user" | "assistant";
+export type PageContextExtractMode = "text" | "all";
 
 export interface ModelProvider {
   id: string;
@@ -54,15 +55,28 @@ export interface ChatMessage {
   streamMode: boolean;
   systemPrompt: string;
   contextPrompt: string;
+  contextMode: PageContextExtractMode;
+  matchedRuleId?: string;
+  thinking?: string;
 }
 
 export interface ChatSession {
   id: string;
   title: string;
+  folderId?: string;
+  archived: boolean;
   sortOrder: number;
   createdAt: number;
   updatedAt: number;
   messages: ChatMessage[];
+}
+
+export interface ChatFolder {
+  id: string;
+  name: string;
+  sortOrder: number;
+  createdAt: number;
+  updatedAt: number;
 }
 
 export interface AppSetting {

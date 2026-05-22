@@ -1,11 +1,12 @@
 import { normalizeText, truncateText } from "../shared/utils/text";
-import type { ExtractionRule } from "../shared/types";
+import type { ExtractionRule, PageContextExtractMode } from "../shared/types";
 import { getSelectorLines } from "../shared/extractionRules/validation";
 
 export interface ExtractPageTextInput {
   url: string;
   rules: ExtractionRule[];
   maxLength: number;
+  extractMode?: PageContextExtractMode;
 }
 
 export interface ExtractPageTextResult {
@@ -16,12 +17,13 @@ export interface ExtractPageTextResult {
 }
 
 export function extractPageText(input: ExtractPageTextInput): ExtractPageTextResult {
+  const extractMode = input.extractMode ?? "text";
   const matchedRule = [...input.rules].sort((left, right) => left.sortOrder - right.sortOrder).find((rule) => matchUrl(rule.urlPattern, input.url));
-  const extractedText = matchedRule ? extractBySelectors(matchedRule.selectorsText) : "";
-  const usedFallback = extractedText.length === 0;
-  const rawText = usedFallback ? extractGlobalText() : extractedText;
-  const normalizedText = normalizeText(rawText);
-  const truncated = truncateText(normalizedText, input.maxLength);
+  const extractedContent = matchedRule ? extractBySelectors(matchedRule.selectorsText, extractMode) : "";
+  const usedFallback = extractedContent.trim().length === 0;
+  const rawContent = usedFallback ? extractGlobalContent(extractMode) : extractedContent;
+  const normalizedContent = extractMode === "text" ? normalizeText(rawContent) : rawContent;
+  const truncated = truncateText(normalizedContent, input.maxLength);
 
   return {
     ...truncated,
@@ -38,49 +40,69 @@ function matchUrl(pattern: string, url: string): boolean {
   }
 }
 
-function extractBySelectors(selectorsText: string): string {
+function extractBySelectors(selectorsText: string, extractMode: PageContextExtractMode): string {
   const selectors = getSelectorLines(selectorsText);
   const parts: string[] = [];
 
   for (const selector of selectors) {
-    const selectorText = extractByCss(selector) || extractByXPath(selector);
+    const selectorText = extractByCss(selector, extractMode) || extractByXPath(selector, extractMode);
     if (selectorText) {
       parts.push(selectorText);
     }
   }
 
-  return normalizeText(parts.join(" "));
+  return extractMode === "text" ? normalizeText(parts.join(" ")) : parts.join("\n");
 }
 
-function extractByCss(selector: string): string {
+function extractByCss(selector: string, extractMode: PageContextExtractMode): string {
   try {
     const nodes = Array.from(document.querySelectorAll(selector));
-    return normalizeText(nodes.map((node) => extractVisibleTextFromNode(node)).join(" "));
+    return extractNodes(nodes, extractMode);
   } catch {
     return "";
   }
 }
 
-function extractByXPath(xpath: string): string {
+function extractByXPath(xpath: string, extractMode: PageContextExtractMode): string {
   try {
     const result = document.evaluate(xpath, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
-    const parts: string[] = [];
+    const nodes: Node[] = [];
 
     for (let index = 0; index < result.snapshotLength; index += 1) {
       const node = result.snapshotItem(index);
       if (node) {
-        parts.push(extractVisibleTextFromNode(node));
+        nodes.push(node);
       }
     }
 
-    return normalizeText(parts.join(" "));
+    return extractNodes(nodes, extractMode);
   } catch {
     return "";
   }
 }
 
-function extractGlobalText(): string {
+function extractNodes(nodes: Node[], extractMode: PageContextExtractMode): string {
+  if (extractMode === "text") {
+    return normalizeText(nodes.map((node) => extractVisibleTextFromNode(node)).join(" "));
+  }
+
+  return nodes.map(serializeNodeContent).filter((content) => content !== "").join("\n");
+}
+
+function extractGlobalContent(extractMode: PageContextExtractMode): string {
+  if (extractMode === "all") {
+    return document.documentElement.outerHTML;
+  }
+
   return extractVisibleTextFromNode(document.body);
+}
+
+function serializeNodeContent(node: Node): string {
+  if (node.nodeType === Node.ELEMENT_NODE) {
+    return (node as Element).outerHTML.trim();
+  }
+
+  return node.textContent ?? "";
 }
 
 function extractVisibleTextFromNode(root: Node): string {

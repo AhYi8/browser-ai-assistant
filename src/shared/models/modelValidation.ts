@@ -46,6 +46,7 @@ function createValidationMessage(model: ModelConfig): ChatMessage {
     createdAt: Date.now(),
     modelId: model.id,
     endpointType: model.endpointType,
+    contextMode: "text",
     streamMode: false,
     systemPrompt: model.systemPrompt,
     contextPrompt: "",

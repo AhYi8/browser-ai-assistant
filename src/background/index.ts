@@ -1,4 +1,5 @@
 import { handleModelCatalogMessage, type ModelCatalogMessage } from "./modelCatalogMessageHandler";
+import { handleChatSendMessage, type ChatSendMessage } from "./modelRequestHandler";
 import { handlePageContextMessage, type PageContextExtractMessage } from "./pageContextMessageHandler";
 import {
   handleCurrentTabUrlMessage,
@@ -45,7 +46,12 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   void openSidePanel(tab?.id);
 });
 
-type RuntimeMessage = ModelCatalogMessage | PageContextExtractMessage | UrlPatternGenerationMessage | CurrentTabUrlMessage;
+type RuntimeMessage =
+  | ModelCatalogMessage
+  | PageContextExtractMessage
+  | UrlPatternGenerationMessage
+  | CurrentTabUrlMessage
+  | ChatSendMessage;
 
 chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResponse) => {
   if (message.type === "extractionRule.generateUrlPatterns") {
@@ -103,6 +109,11 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResp
 
   if (message.type === "pageContext.extract") {
     void handlePageContextMessage(message).then(sendResponse);
+    return true;
+  }
+
+  if (message.type === "chat.send") {
+    void handleChatSendMessage(message).then(sendResponse);
     return true;
   }
 

@@ -127,6 +127,7 @@ describe("background 入口", () => {
         type: "pageContext.extract",
         rules: [],
         maxLength: 100,
+        extractMode: "all",
       },
       {} as chrome.runtime.MessageSender,
       sendResponse,
@@ -142,6 +143,7 @@ describe("background 入口", () => {
       type: "pageContext.extract",
       rules: [],
       maxLength: 100,
+      extractMode: "all",
     });
     expect(sendResponse).toHaveBeenCalledWith({
       ok: true,
@@ -312,6 +314,59 @@ describe("background 入口", () => {
       expect(sendResponse).toHaveBeenCalledWith({
         ok: true,
         url: "https://example.com/news/123",
+      });
+    });
+  });
+
+  it("处理聊天发送请求并返回模型回复", async () => {
+    const mock = createChromeMock();
+    vi.stubGlobal("chrome", mock.chrome);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          choices: [{ message: { content: "模型回复" } }],
+        }),
+      }),
+    );
+    await import("../../../src/background/index");
+    const sendResponse = vi.fn();
+
+    const keepChannelOpen = mock.messageListeners[0](
+      {
+        type: "chat.send",
+        model: {
+          id: "model-1",
+          providerId: "provider-1",
+          name: "默认模型",
+          displayName: "默认模型",
+          channelName: "默认渠道",
+          endpointType: "openai_chat",
+          endpointUrl: "https://api.example.com/v1/chat/completions",
+          apiKey: "sk-test",
+          modelId: "gpt-test",
+          temperature: 0.7,
+          maxTokens: 1024,
+          systemPrompt: "你是网页助手",
+          isTitleModel: false,
+          enabled: true,
+          createdAt: 1,
+          updatedAt: 1,
+        },
+        messages: [],
+        stream: false,
+      },
+      {} as chrome.runtime.MessageSender,
+      sendResponse,
+    );
+
+    expect(keepChannelOpen).toBe(true);
+    await vi.waitFor(() => {
+      expect(sendResponse).toHaveBeenCalledWith({
+        ok: true,
+        content: "模型回复",
+        thinking: undefined,
       });
     });
   });

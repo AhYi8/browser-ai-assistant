@@ -69,6 +69,7 @@ const messages: ChatMessage[] = [
     streamMode: false,
     systemPrompt: "你是网页助手",
     contextPrompt: "网页上下文",
+    contextMode: "text",
   },
   {
     id: "message-2",
@@ -80,6 +81,7 @@ const messages: ChatMessage[] = [
     streamMode: false,
     systemPrompt: "你是网页助手",
     contextPrompt: "网页上下文",
+    contextMode: "text",
   },
 ];
 

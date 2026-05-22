@@ -142,4 +142,112 @@ describe("extractPageText", () => {
       matchedRuleId: "rule-1",
     });
   });
+
+  it("提取所有模式超长 HTML 从开头截取并标记 truncated", () => {
+    setPage("<main>abcdef</main>");
+
+    const result = extractPageText({
+      url: "https://example.com/article",
+      rules: [createRule({ selectorsText: "main" })],
+      maxLength: 10,
+      extractMode: "all",
+    });
+
+    expect(result).toEqual({
+      text: "<main>abcd",
+      truncated: true,
+      usedFallback: false,
+      matchedRuleId: "rule-1",
+    });
+  });
+
+  it("提取所有模式命中 CSS 时返回匹配元素 outerHTML", () => {
+    setPage('<main class="article"><h1>标题</h1><p style="color:red">正文</p></main><aside>侧栏</aside>');
+
+    const result = extractPageText({
+      url: "https://example.com/article",
+      rules: [createRule({ selectorsText: "main" })],
+      maxLength: 500,
+      extractMode: "all",
+    });
+
+    expect(result.text).toBe('<main class="article"><h1>标题</h1><p style="color:red">正文</p></main>');
+    expect(result.usedFallback).toBe(false);
+    expect(result.matchedRuleId).toBe("rule-1");
+  });
+
+  it("提取所有模式命中 XPath 时按顺序返回匹配元素 outerHTML", () => {
+    setPage("<section><article>第一段</article><article>第二段</article></section>");
+
+    const result = extractPageText({
+      url: "https://example.com/article",
+      rules: [createRule({ selectorsText: "//article" })],
+      maxLength: 500,
+      extractMode: "all",
+    });
+
+    expect(result.text).toBe("<article>第一段</article>\n<article>第二段</article>");
+    expect(result.usedFallback).toBe(false);
+  });
+
+  it("提取所有模式命中 XPath 文本节点时保留原始空白", () => {
+    setPage("<p> A   B </p>");
+
+    const result = extractPageText({
+      url: "https://example.com/article",
+      rules: [createRule({ selectorsText: "//p/text()" })],
+      maxLength: 500,
+      extractMode: "all",
+    });
+
+    expect(result.text).toBe(" A   B ");
+    expect(result.usedFallback).toBe(false);
+  });
+
+  it("提取所有模式命中纯空白 XPath 文本节点时回退完整 HTML 并保留规则 ID", () => {
+    document.documentElement.innerHTML = "<head></head><body><p>   </p><main>正文</main></body>";
+
+    const result = extractPageText({
+      url: "https://example.com/article",
+      rules: [createRule({ selectorsText: "//p/text()" })],
+      maxLength: 500,
+      extractMode: "all",
+    });
+
+    expect(result.text).toContain("<body><p>   </p><main>正文</main></body>");
+    expect(result.usedFallback).toBe(true);
+    expect(result.matchedRuleId).toBe("rule-1");
+  });
+
+  it("提取所有模式未命中规则时返回完整 HTML", () => {
+    document.documentElement.innerHTML = "<head><title>测试</title></head><body><main>正文</main></body>";
+
+    const result = extractPageText({
+      url: "https://other.example.com/page",
+      rules: [createRule({ urlPattern: "https://example.com/.*", selectorsText: "main" })],
+      maxLength: 500,
+      extractMode: "all",
+    });
+
+    expect(result.text).toContain("<html>");
+    expect(result.text).toContain("<head><title>测试</title></head>");
+    expect(result.text).toContain("<body><main>正文</main></body>");
+    expect(result.usedFallback).toBe(true);
+    expect(result.matchedRuleId).toBeUndefined();
+  });
+
+  it("提取所有模式规则命中但内容为空时回退完整 HTML 并保留规则 ID", () => {
+    document.documentElement.innerHTML = "<head></head><body><main>正文</main></body>";
+
+    const result = extractPageText({
+      url: "https://example.com/article",
+      rules: [createRule({ selectorsText: ".missing" })],
+      maxLength: 500,
+      extractMode: "all",
+    });
+
+    expect(result.text).toContain("<body><main>正文</main></body>");
+    expect(result.usedFallback).toBe(true);
+    expect(result.matchedRuleId).toBe("rule-1");
+  });
 });

@@ -7,7 +7,8 @@
 html,
 body,
 #root {
-  min-height: 100%;
+  height: 100%;
+  overflow: hidden;
 }
 
 body {
@@ -43,7 +44,9 @@ body {
 
 @layer components {
   .app-shell {
-    @apply min-h-screen;
+    @apply flex flex-col;
+    height: 100vh;
+    overflow: hidden;
     background: var(--color-canvas);
     color: var(--color-ink);
   }
@@ -61,7 +64,7 @@ body {
 
   .ui-panel {
     @apply rounded-lg p-3 sm:p-4;
-    background: color-mix(in srgb, var(--color-canvas) 86%, white);
+    background: color-mix(in srgb, var(--color-canvas) 86%, var(--color-on-primary));
     border: 1px solid var(--color-hairline);
   }
 
@@ -123,5 +126,505 @@ body {
 
   .settings-tabs-scroll::-webkit-scrollbar {
     display: none;
+  }
+
+  .chat-main-layout {
+    @apply grid min-h-0 flex-1 gap-4 p-4;
+    overflow: hidden;
+  }
+
+  .settings-main-layout {
+    @apply min-h-0 flex-1 overflow-auto p-4;
+  }
+
+  @media (min-width: 720px) {
+    .chat-main-layout {
+      grid-template-columns: 264px minmax(0, 1fr);
+    }
+  }
+
+  .session-list {
+    @apply hidden min-h-0 flex-col overflow-hidden rounded-lg p-3;
+    background: var(--color-surface-card);
+    border: 1px solid var(--color-hairline);
+  }
+
+  @media (min-width: 720px) {
+    .session-list {
+      @apply flex;
+    }
+  }
+
+  .session-list-compact {
+    @apply flex min-h-0;
+  }
+
+  .session-list-header {
+    @apply mb-3 grid gap-2;
+  }
+
+  .session-list-title {
+    @apply text-sm font-medium;
+    color: var(--color-ink);
+  }
+
+  .session-list-header-actions {
+    @apply grid grid-cols-2 gap-2;
+  }
+
+  .session-header-button {
+    @apply min-h-9 px-2 text-xs;
+  }
+
+  .session-list-scroll {
+    @apply flex min-h-0 flex-1 flex-col overflow-hidden;
+  }
+
+  .session-folder-stack-scroll {
+    @apply min-h-0 flex-1 overflow-y-auto;
+    overflow-x: hidden;
+  }
+
+  .session-folder-stack {
+    @apply grid min-w-0 gap-2;
+  }
+
+  .session-archive-bottom {
+    @apply mt-auto pt-3;
+    border-top: 1px solid var(--color-hairline-soft);
+  }
+
+  .session-folder {
+    @apply min-w-0 gap-2;
+    display: grid;
+  }
+
+  .session-folder-row {
+    @apply flex min-w-0 items-center gap-2;
+  }
+
+  .session-folder-drop-active {
+    @apply rounded-lg;
+    background: color-mix(in srgb, var(--color-primary) 9%, transparent);
+    outline: 1px dashed var(--color-primary);
+    outline-offset: 2px;
+  }
+
+  .session-folder-toggle {
+    @apply flex min-h-9 min-w-0 flex-1 items-center gap-2 rounded-md px-2 text-left text-sm font-medium;
+    color: var(--color-body);
+  }
+
+  .session-folder-toggle:hover,
+  .session-folder-rename-button:hover {
+    background: var(--color-surface-soft);
+  }
+
+  .session-folder-rename-button {
+    @apply flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-base font-medium leading-none;
+    color: var(--color-body);
+  }
+
+  .session-count {
+    @apply ml-auto rounded-full px-2 py-0.5 text-xs;
+    background: var(--color-surface-cream-strong);
+    color: var(--color-muted);
+  }
+
+  .session-item-stack {
+    @apply grid min-w-0 gap-2;
+  }
+
+  .session-empty {
+    @apply px-2 text-sm;
+    color: var(--color-muted);
+  }
+
+  .session-item {
+    @apply min-w-0 rounded-lg p-2;
+    overflow: visible;
+    background: var(--color-canvas);
+    border: 1px solid var(--color-hairline-soft);
+  }
+
+  .session-item-active {
+    border-color: var(--color-primary);
+  }
+
+  .session-title-button {
+    @apply min-w-0 flex-1 overflow-hidden text-left text-sm font-medium;
+    color: var(--color-ink);
+  }
+
+  .session-item-title {
+    @apply block max-w-full truncate;
+    text-overflow: ellipsis;
+  }
+
+  .session-item-row {
+    @apply flex min-w-0 items-center gap-2;
+  }
+
+  .session-item-menu-wrap {
+    @apply relative shrink-0;
+  }
+
+  .session-menu-button {
+    @apply flex h-8 w-8 items-center justify-center rounded-md text-base font-medium leading-none;
+    background: var(--color-surface-soft);
+    border: 1px solid var(--color-hairline);
+    color: var(--color-body);
+  }
+
+  .session-menu-button:hover,
+  .session-menu-button[aria-expanded="true"] {
+    background: var(--color-surface-cream-strong);
+    color: var(--color-ink);
+  }
+
+  .session-menu {
+    @apply absolute right-0 top-9 z-20 grid min-w-28 gap-1 rounded-lg p-1;
+    background: var(--color-canvas);
+    border: 1px solid var(--color-hairline);
+    box-shadow: 0 1px 3px rgba(20, 20, 19, 0.08);
+  }
+
+  .session-menu-up {
+    top: auto;
+    bottom: 36px;
+  }
+
+  .session-menu-item {
+    @apply w-full rounded-md px-2 py-1.5 text-left text-xs font-medium;
+    color: var(--color-body);
+  }
+
+  .session-menu-item:hover {
+    background: var(--color-surface-soft);
+    color: var(--color-ink);
+  }
+
+  .session-menu-delete-confirm {
+    background: color-mix(in srgb, var(--color-error) 12%, var(--color-canvas));
+    color: var(--color-error);
+  }
+
+  .session-rename-input,
+  .session-folder-rename-input {
+    @apply min-h-8 min-w-0 flex-1 px-2 py-1 text-sm;
+  }
+
+  .session-folder-rename-input {
+    @apply w-full;
+  }
+
+  .chat-panel {
+    @apply flex min-h-0 min-w-0 flex-col overflow-hidden rounded-lg;
+    height: 100%;
+    background: var(--color-canvas);
+    border: 1px solid var(--color-hairline);
+  }
+
+  .chat-model-row {
+    @apply flex items-end gap-2 p-3;
+    border-bottom: 1px solid var(--color-hairline);
+  }
+
+  .model-selector {
+    @apply min-w-0 flex-1;
+  }
+
+  .model-select-label {
+    @apply flex gap-2 text-sm;
+    color: var(--color-body);
+  }
+
+  .model-select-label-inline {
+    @apply min-w-0 flex-row items-center;
+  }
+
+  .model-select-text {
+    @apply shrink-0;
+  }
+
+  .model-select-input {
+    @apply min-w-0 flex-1;
+  }
+
+  .chat-history-trigger {
+    @apply shrink-0;
+  }
+
+  @media (min-width: 720px) {
+    .chat-history-trigger {
+      @apply hidden;
+    }
+  }
+
+  .message-list {
+    @apply flex min-h-0 flex-1 flex-col gap-3 overflow-auto p-3;
+  }
+
+  .message-row {
+    @apply flex min-w-0 items-start gap-2;
+  }
+
+  .message-row-user {
+    @apply justify-end;
+  }
+
+  .message-row-user .message-avatar {
+    @apply order-2;
+    background: var(--color-primary);
+  }
+
+  .message-avatar {
+    @apply grid h-7 w-7 shrink-0 place-items-center rounded-full text-xs;
+    background: var(--color-surface-dark);
+    color: var(--color-on-dark);
+  }
+
+  .message-bubble-wrap {
+    min-width: 0;
+    max-width: min(78%, 560px);
+    overflow-wrap: anywhere;
+  }
+
+  .message-bubble {
+    @apply min-w-0 max-w-full overflow-hidden rounded-lg px-3 py-2 text-sm;
+    background: var(--color-surface-soft);
+    border: 1px solid var(--color-hairline);
+  }
+
+  .message-bubble p,
+  .message-bubble li {
+    text-align: justify;
+    text-align-last: left;
+  }
+
+  .message-bubble p {
+    @apply my-0 whitespace-pre-wrap break-words;
+  }
+
+  .message-bubble pre {
+    @apply my-2 max-w-full rounded-md p-2;
+    overflow-x: auto;
+    text-align: left;
+    background: var(--color-surface-dark-soft);
+    color: var(--color-on-dark);
+  }
+
+  .message-bubble code {
+    @apply font-mono text-xs;
+    white-space: pre;
+  }
+
+  .message-bubble :not(pre) > code {
+    @apply rounded-sm px-1 py-0.5;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    background: var(--color-surface-cream-strong);
+    color: var(--color-body-strong);
+  }
+
+  .message-bubble ul,
+  .message-bubble ol {
+    @apply my-2 grid max-w-full gap-1 pl-0;
+    list-style: none;
+    min-width: 0;
+  }
+
+  .message-bubble li {
+    @apply relative min-w-0 max-w-full pl-5;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+
+  .message-bubble ul li::before {
+    content: "·";
+    position: absolute;
+    left: 0.125rem;
+    top: -0.08rem;
+    color: var(--color-primary);
+    font-size: 1.45rem;
+    font-weight: 500;
+    line-height: 1;
+  }
+
+  .message-bubble ol {
+    counter-reset: message-list-item;
+  }
+
+  .message-bubble ol li {
+    counter-increment: message-list-item;
+  }
+
+  .message-bubble ol li::before {
+    content: counter(message-list-item) ".";
+    position: absolute;
+    left: 0;
+    min-width: 1rem;
+    color: var(--color-primary);
+    font-weight: 500;
+  }
+
+  .message-row-user .message-bubble {
+    background: var(--color-primary);
+    border-color: var(--color-primary);
+    color: var(--color-on-primary);
+  }
+
+  .message-thinking {
+    @apply mb-2 rounded-lg px-3 py-2 text-sm;
+    background: var(--color-surface-card);
+    border: 1px solid var(--color-hairline);
+    color: var(--color-body);
+  }
+
+  .message-thinking summary {
+    @apply cursor-pointer font-medium;
+    color: var(--color-primary);
+  }
+
+  .message-thinking p {
+    @apply mb-0 mt-2 whitespace-pre-wrap;
+  }
+
+  .chat-warning {
+    @apply px-3 text-sm;
+    color: var(--color-warning);
+  }
+
+  .chat-failure {
+    @apply mx-3 grid gap-2 rounded-lg p-3 text-sm;
+    background: color-mix(in srgb, var(--color-error) 10%, var(--color-canvas));
+    border: 1px solid color-mix(in srgb, var(--color-error) 35%, var(--color-hairline));
+    color: var(--color-error);
+  }
+
+  .chat-composer {
+    @apply grid gap-3 p-3;
+    background: var(--color-surface-soft);
+    border-top: 1px solid var(--color-hairline);
+  }
+
+  .context-strip {
+    @apply flex flex-wrap items-center gap-2 text-sm;
+    color: var(--color-body);
+  }
+
+  .context-view-button {
+    @apply shrink-0;
+  }
+
+  .context-preview {
+    @apply max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-md p-2 text-sm;
+    background: var(--color-canvas);
+    border: 1px solid var(--color-hairline);
+    color: var(--color-body);
+  }
+
+  .context-chip {
+    @apply max-w-full rounded-full px-3 py-1 text-xs font-medium;
+    background: var(--color-surface-cream-strong);
+    color: var(--color-body-strong);
+  }
+
+  .chat-input {
+    @apply min-h-24 w-full resize-y p-3;
+  }
+
+  .composer-actions {
+    @apply flex flex-wrap items-center justify-between gap-3;
+  }
+
+  .composer-switches {
+    @apply flex flex-wrap items-center gap-3;
+  }
+
+  .composer-switch {
+    @apply inline-flex min-h-10 items-center gap-2 rounded-md px-2 text-sm font-medium transition;
+    color: var(--color-body);
+  }
+
+  .composer-switch:hover {
+    background: var(--color-surface-cream-strong);
+  }
+
+  .composer-switch:focus-visible {
+    outline: 3px solid color-mix(in srgb, var(--color-primary) 15%, transparent);
+    outline-offset: 2px;
+  }
+
+  .composer-switch-track {
+    @apply relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition;
+    background: var(--color-primary-disabled);
+    border: 1px solid var(--color-hairline);
+  }
+
+  .composer-switch-thumb {
+    @apply absolute left-0.5 h-4 w-4 rounded-full transition;
+    background: var(--color-canvas);
+    border: 1px solid var(--color-hairline);
+  }
+
+  .composer-switch[aria-checked="true"] {
+    color: var(--color-ink);
+  }
+
+  .composer-switch[aria-checked="true"] .composer-switch-track {
+    background: var(--color-primary);
+    border-color: var(--color-primary);
+  }
+
+  .composer-switch[aria-checked="true"] .composer-switch-thumb {
+    transform: translateX(16px);
+    border-color: var(--color-on-primary);
+  }
+
+  .dialog-overlay {
+    @apply fixed inset-0;
+    background: color-mix(in srgb, var(--color-surface-dark) 42%, transparent);
+  }
+
+  .context-dialog {
+    @apply fixed left-3 right-3 top-1/2 z-30 grid max-h-[78vh] -translate-y-1/2 gap-3 rounded-lg p-4 sm:left-1/2 sm:right-auto sm:w-[min(520px,calc(100vw-32px))] sm:-translate-x-1/2;
+    background: var(--color-canvas);
+    border: 1px solid var(--color-hairline);
+  }
+
+  .context-dialog-header {
+    @apply flex items-center justify-between gap-3;
+  }
+
+  .context-dialog-title {
+    @apply text-lg font-medium;
+    color: var(--color-ink);
+    font-family: Georgia, "Times New Roman", serif;
+  }
+
+  .context-dialog-close {
+    @apply shrink-0;
+  }
+
+  .history-dialog {
+    @apply fixed bottom-0 left-0 right-0 grid min-h-0 max-h-[86vh] gap-3 overflow-hidden rounded-t-xl p-4;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    background: var(--color-canvas);
+    border: 1px solid var(--color-hairline);
+  }
+
+  .history-dialog-body {
+    @apply flex min-h-0 overflow-hidden;
+  }
+
+  .history-dialog-scroll {
+    @apply min-h-0 flex-1 overflow-auto;
+  }
+
+  .history-dialog-title {
+    @apply text-lg font-medium;
+    color: var(--color-ink);
+    font-family: Georgia, "Times New Roman", serif;
   }
 }

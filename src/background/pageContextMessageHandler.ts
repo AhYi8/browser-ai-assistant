@@ -1,10 +1,11 @@
 import { DEFAULT_CONTEXT_MAX_LENGTH } from "../shared/constants";
-import type { ExtractionRule } from "../shared/types";
+import type { ExtractionRule, PageContextExtractMode } from "../shared/types";
 
 export interface PageContextExtractMessage {
   type: "pageContext.extract";
   rules: ExtractionRule[];
   maxLength?: number;
+  extractMode?: PageContextExtractMode;
 }
 
 export type PageContextExtractResponse =
@@ -32,6 +33,7 @@ export async function handlePageContextMessage(message: PageContextExtractMessag
       type: "pageContext.extract",
       rules: message.rules,
       maxLength: message.maxLength ?? DEFAULT_CONTEXT_MAX_LENGTH,
+      extractMode: message.extractMode ?? "text",
     };
 
     try {

@@ -1,9 +1,18 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { App } from "../../../src/side-panel/App";
 import { useAppStore } from "../../../src/side-panel/state/appStore";
-import { clearDatabase, saveExtractionRule, saveModelProvider, saveProviderModel } from "../../../src/shared/storage/repositories";
-import type { ExtractionRule, ModelProvider, ProviderModel } from "../../../src/shared/types";
+import {
+  clearDatabase,
+  saveChatFolder,
+  saveChatSession,
+  saveExtractionRule,
+  saveModelProvider,
+  saveProviderModel,
+} from "../../../src/shared/storage/repositories";
+import type { ChatFolder, ChatSession, ExtractionRule, ModelProvider, ProviderModel } from "../../../src/shared/types";
 
 function createExtractionRule(partial: Partial<ExtractionRule>): ExtractionRule {
   return {
@@ -15,6 +24,41 @@ function createExtractionRule(partial: Partial<ExtractionRule>): ExtractionRule 
     createdAt: 1,
     updatedAt: 1,
     ...partial,
+  };
+}
+
+function createChatFolder(partial: Partial<ChatFolder>): ChatFolder {
+  return {
+    id: "folder-1",
+    name: "项目资料",
+    sortOrder: 1,
+    createdAt: 1,
+    updatedAt: 1,
+    ...partial,
+  };
+}
+
+function createChatSession(partial: Partial<ChatSession>): ChatSession {
+  return {
+    id: "session-1",
+    title: "资料会话",
+    archived: false,
+    sortOrder: 1,
+    createdAt: 1,
+    updatedAt: 1,
+    messages: [],
+    ...partial,
+  };
+}
+
+function createDataTransfer() {
+  const values = new Map<string, string>();
+  return {
+    effectAllowed: "none",
+    setData: vi.fn((type: string, value: string) => {
+      values.set(type, value);
+    }),
+    getData: vi.fn((type: string) => values.get(type) ?? ""),
   };
 }
 
@@ -35,6 +79,142 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "Browser AI Assistant" })).toBeInTheDocument();
   });
 
+  it("聊天主区域固定在面板内并只让消息列表内部滚动", async () => {
+    render(<App />);
+
+    const mainLayout = document.querySelector(".chat-main-layout");
+    const chatPanel = document.querySelector(".chat-panel");
+    const messageList = await screen.findByLabelText("消息列表");
+    const styles = readFileSync(resolve(process.cwd(), "src/side-panel/styles.css"), "utf8");
+
+    expect(mainLayout).toBeInTheDocument();
+    expect(chatPanel).toBeInTheDocument();
+    expect(messageList).toHaveClass("message-list");
+    expect(chatPanel).toContainElement(messageList);
+    expect(styles).toContain("height: 100%;");
+    expect(styles).toContain("height: 100vh;");
+    expect(styles).toContain("overflow: hidden;");
+    expect(styles).toContain("overflow-auto");
+    expect(styles).not.toContain("min-h-[calc(100vh-96px)]");
+    expect(styles).not.toContain("min-h-48");
+  });
+
+  it("聊天消息中的长代码不会撑出消息容器", async () => {
+    await saveChatSession(
+      createChatSession({
+        id: "session-long-code",
+        title: "长代码",
+        messages: [
+          {
+            id: "message-long-code",
+            role: "assistant",
+            content: "```python\nbox_annotator = sv.BoxAnnotator()\nannotated_frame = box_annotator.annotate(scene=image, detections=detections)\n```",
+            createdAt: 1,
+          },
+        ],
+      }),
+    );
+
+    render(<App />);
+
+    const messageList = await screen.findByLabelText("消息列表");
+    const bubbleWrap = screen.getByText(/box_annotator/).closest(".message-bubble-wrap");
+    const styles = readFileSync(resolve(process.cwd(), "src/side-panel/styles.css"), "utf8");
+
+    expect(messageList).toContainElement(bubbleWrap);
+    expect(styles).toContain(".message-bubble-wrap");
+    expect(styles).toContain("min-width: 0;");
+    expect(styles).toContain(".message-bubble pre");
+    expect(styles).toContain("overflow-x: auto;");
+  });
+
+  it("聊天消息中的有序列表和无序列表展示可见序号标记", async () => {
+    await saveChatSession(
+      createChatSession({
+        id: "session-list-markers",
+        title: "列表渲染",
+        messages: [
+          {
+            id: "message-list-markers",
+            role: "assistant",
+            content: "- 无序第一项\n- 无序第二项\n\n1. 有序第一项\n2. 有序第二项",
+            createdAt: 1,
+          },
+        ],
+      }),
+    );
+
+    render(<App />);
+
+    const styles = readFileSync(resolve(process.cwd(), "src/side-panel/styles.css"), "utf8");
+    await screen.findByText("无序第一项");
+    const lists = screen.getAllByRole("list");
+    const unorderedList = lists.find((list) => list.tagName.toLowerCase() === "ul");
+    const orderedList = lists.find((list) => list.tagName.toLowerCase() === "ol");
+
+    expect(unorderedList).toBeInTheDocument();
+    expect(unorderedList.tagName.toLowerCase()).toBe("ul");
+    expect(orderedList).toBeInTheDocument();
+    expect(screen.getByText("无序第一项")).toBeInTheDocument();
+    expect(screen.getByText("有序第一项")).toBeInTheDocument();
+    expect(styles).toContain('content: "·";');
+    expect(styles).toContain("font-size: 1.45rem;");
+    expect(styles).toContain("counter(message-list-item)");
+    expect(styles).toContain(".message-bubble li");
+    expect(styles).toContain("overflow-wrap: anywhere;");
+    expect(styles).toContain("max-width: 100%;");
+  });
+
+  it("聊天正文段落和列表正文使用两端对齐但代码保持左对齐", async () => {
+    await saveChatSession(
+      createChatSession({
+        id: "session-justify",
+        title: "两端对齐",
+        messages: [
+          {
+            id: "message-justify",
+            role: "assistant",
+            content: "这是一段需要两端对齐的聊天正文，用来验证普通段落排版。\n\n- 第一条列表内容也需要两端对齐\n\n```ts\nconst value = 1;\n```",
+            createdAt: 1,
+          },
+        ],
+      }),
+    );
+
+    render(<App />);
+
+    const styles = readFileSync(resolve(process.cwd(), "src/side-panel/styles.css"), "utf8");
+    expect(await screen.findByText(/需要两端对齐的聊天正文/)).toBeInTheDocument();
+    expect(styles).toContain("text-align: justify;");
+    expect(styles).toContain("text-align-last: left;");
+    expect(styles).toContain(".message-bubble pre");
+    expect(styles).toContain("text-align: left;");
+  });
+
+  it("历史会话长标题不撑出横向滚动，归档会话同样截断", async () => {
+    const user = userEvent.setup();
+    await saveChatSession(createChatSession({ id: "session-long-title", title: "分析一下。 sdfsadfsadfsadfsdfsdfsdfsdfsdfsdf" }));
+    await saveChatSession(createChatSession({ id: "session-archived-long-title", title: "看看这个仓库是做什么的 sdfsadfsadfsadfsdfsdf", archived: true }));
+
+    render(<App />);
+
+    const styles = readFileSync(resolve(process.cwd(), "src/side-panel/styles.css"), "utf8");
+    const activeTitle = await screen.findByText(/sdfsadfsadfsadfsdfsdfs/);
+    await user.click(screen.getByRole("button", { name: /已归档/ }));
+    const archivedTitle = await screen.findByText(/看看这个仓库是做什么的/);
+
+    expect(activeTitle).toHaveClass("session-item-title");
+    expect(archivedTitle).toHaveClass("session-item-title");
+    expect(styles).toContain(".session-folder-stack-scroll");
+    expect(styles).toContain("overflow-x: hidden;");
+    expect(styles).toContain(".session-item");
+    expect(styles).toContain("overflow: visible;");
+    expect(styles).toContain(".session-item-menu-wrap");
+    expect(styles).toContain(".session-title-button");
+    expect(styles).toContain(".session-item-title");
+    expect(styles).toContain("text-overflow: ellipsis;");
+  });
+
   it("未配置模型时在输入框区域提示用户配置 API Key 并禁用发送", () => {
     render(<App />);
 
@@ -44,35 +224,119 @@ describe("App", () => {
 
   it("配置渠道模型后可以按渠道和模型选择并切换流式模式", async () => {
     const user = userEvent.setup();
+    const provider: ModelProvider = {
+      id: "provider-1",
+      name: "默认渠道",
+      endpointType: "openai_chat",
+      endpointUrl: "https://api.example.com/v1/chat/completions",
+      apiKey: "sk-example",
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const model: ProviderModel = {
+      id: "model-1",
+      providerId: "provider-1",
+      displayName: "默认 OpenAI",
+      modelId: "gpt-test",
+      temperature: 0.7,
+      maxTokens: 1024,
+      systemPrompt: "你是网页助手",
+      isTitleModel: false,
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: "添加示例模型" }));
-    await user.selectOptions(screen.getByLabelText("当前模型"), "model-1");
-    await user.click(screen.getByLabelText("流式响应"));
+    expect(await screen.findByDisplayValue("默认渠道 / 默认 OpenAI")).toBeInTheDocument();
+    expect(screen.getByLabelText("当前模型")).toHaveClass("model-select-input");
+    expect(screen.getByText("当前模型").closest("label")).toHaveClass("model-select-label-inline");
+    const streamSwitch = screen.getByRole("switch", { name: "流式响应" });
+    expect(streamSwitch).toHaveAttribute("aria-checked", "false");
+    await user.click(streamSwitch);
+    await user.type(screen.getByLabelText("对话输入"), "你好");
 
-    expect(screen.getByDisplayValue("默认渠道 / 默认 OpenAI")).toBeInTheDocument();
-    expect(screen.getByLabelText("流式响应")).toBeChecked();
+    expect(screen.getByRole("switch", { name: "流式响应" })).toHaveAttribute("aria-checked", "true");
     expect(screen.getByRole("button", { name: "发送" })).toBeEnabled();
   });
 
   it("请求失败时展示重试入口且不保存失败消息", async () => {
     const user = userEvent.setup();
+    const provider: ModelProvider = {
+      id: "provider-failure",
+      name: "失败渠道",
+      endpointType: "openai_chat",
+      endpointUrl: "https://api.example.com/v1/chat/completions",
+      apiKey: "sk-failure",
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const model: ProviderModel = {
+      id: "model-failure",
+      providerId: "provider-failure",
+      displayName: "失败模型",
+      modelId: "gpt-failure",
+      temperature: 0.7,
+      maxTokens: 1024,
+      systemPrompt: "你是网页助手",
+      isTitleModel: false,
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const sendMessage = vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+      if (message.type === "pageContext.extract") {
+        callback({
+          ok: true,
+          text: "",
+          truncated: false,
+          usedFallback: true,
+        });
+        return undefined;
+      }
+
+      callback({
+        ok: false,
+        message: "请求失败，请重试",
+      });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+      },
+    });
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: "模拟失败" }));
+    await screen.findByDisplayValue("失败渠道 / 失败模型");
+    await user.type(screen.getByLabelText("对话输入"), "失败消息");
+    await user.click(screen.getByRole("button", { name: "发送" }));
 
-    expect(screen.getByText("请求失败，请重试")).toBeInTheDocument();
+    expect(await screen.findByText("请求失败，请重试")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "重试" })).toBeInTheDocument();
-    expect(screen.queryByText("失败消息")).not.toBeInTheDocument();
+    expect(screen.queryByText("AI 失败消息")).not.toBeInTheDocument();
   });
 
   it("设置界面使用设置级 Tab 导航并以窄面板卡片管理渠道模型", async () => {
     const user = userEvent.setup();
+    const styles = readFileSync(resolve(process.cwd(), "src/side-panel/styles.css"), "utf8");
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: "设置" }));
 
     expect(screen.getByRole("heading", { name: "设置" })).toBeInTheDocument();
+    const settingsLayout = screen.getByRole("heading", { name: "设置" }).closest(".settings-main-layout");
+    expect(settingsLayout).toBeInTheDocument();
+    expect(styles).toContain(".settings-main-layout");
+    expect(styles).toContain("overflow-auto");
     expect(screen.getByRole("tab", { name: "渠道管理" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "提取规则" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "同步设置" })).toBeInTheDocument();
@@ -443,7 +707,7 @@ describe("App", () => {
     expect(screen.getByLabelText("URL 正则")).toHaveDisplayValue("https://example\\.com/news/\\d+");
   });
 
-  it("对话页展示当前页上下文状态、截断提示和可折叠预览", async () => {
+  it("点击查看上下文打开弹窗并可关闭", async () => {
     const user = userEvent.setup();
     vi.stubGlobal("chrome", {
       runtime: {
@@ -463,10 +727,451 @@ describe("App", () => {
 
     expect(await screen.findByText("已匹配规则：正文规则")).toBeInTheDocument();
     expect(screen.getByText("内容已截断，请细化 CSS/XPath")).toBeInTheDocument();
-    const summary = screen.getByText("查看上下文");
-    expect(summary).toHaveClass("select-none");
-    await user.click(summary);
+    expect(screen.queryByRole("dialog", { name: "当前页上下文" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "查看上下文" }));
 
-    expect(screen.getByText("这是一段提取后的页面正文")).toBeInTheDocument();
+    const dialog = screen.getByRole("dialog", { name: "当前页上下文" });
+    expect(dialog).toBeInTheDocument();
+    expect(dialog).toHaveTextContent("这是一段提取后的页面正文");
+
+    await user.keyboard("{Escape}");
+
+    expect(screen.queryByRole("dialog", { name: "当前页上下文" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "查看上下文" }));
+    expect(screen.getByRole("dialog", { name: "当前页上下文" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "关闭上下文" }));
+
+    expect(screen.queryByRole("dialog", { name: "当前页上下文" })).not.toBeInTheDocument();
+  });
+
+  it("聊天输入区的流式响应和提取模式使用 switch 控件切换", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const streamSwitch = screen.getByRole("switch", { name: "流式响应" });
+    const contextSwitch = screen.getByRole("switch", { name: "提取模式" });
+
+    expect(streamSwitch).toHaveAttribute("aria-checked", "false");
+    expect(contextSwitch).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByText("提取文本")).toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "流式响应" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "提取文本" })).not.toBeInTheDocument();
+
+    await user.click(streamSwitch);
+    await user.click(contextSwitch);
+
+    expect(screen.getByRole("switch", { name: "流式响应" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("switch", { name: "提取模式" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.queryByText("提取文本")).not.toBeInTheDocument();
+    expect(screen.getByText("提取所有")).toBeInTheDocument();
+  });
+
+  it("聊天页展示气泡消息、思考过程和提取模式开关", async () => {
+    const user = userEvent.setup();
+    const provider: ModelProvider = {
+      id: "provider-chat",
+      name: "聊天渠道",
+      endpointType: "openai_chat",
+      endpointUrl: "https://api.example.com/v1/chat/completions",
+      apiKey: "sk-chat",
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const model: ProviderModel = {
+      id: "model-chat",
+      providerId: "provider-chat",
+      displayName: "聊天模型",
+      modelId: "gpt-chat",
+      temperature: 0.7,
+      maxTokens: 1024,
+      systemPrompt: "你是网页助手",
+      isTitleModel: false,
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const sendMessage = vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+      if (message.type === "pageContext.extract") {
+        callback({
+          ok: true,
+          url: "https://example.com/article",
+          text: "页面内容",
+          truncated: false,
+          usedFallback: false,
+          matchedRuleId: "rule-1",
+        });
+        return undefined;
+      }
+
+      callback({
+        ok: true,
+        content: "AI 总结",
+        thinking: "先阅读页面",
+      });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+      },
+    });
+    await saveExtractionRule(createExtractionRule({ id: "rule-1", alias: "正文规则" }));
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+
+    render(<App />);
+
+    expect(await screen.findByText("已匹配规则：正文规则")).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "提取模式" })).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByText("提取文本")).toBeInTheDocument();
+    await user.click(screen.getByRole("switch", { name: "提取模式" }));
+    expect(screen.getByRole("switch", { name: "提取模式" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByText("提取所有")).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("对话输入"), "总结页面");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    expect(await screen.findByText("总结页面")).toBeInTheDocument();
+    expect(await screen.findByText("AI 总结")).toBeInTheDocument();
+    const thinkingDetails = screen.getByText("思考过程").closest("details");
+    expect(thinkingDetails).toBeInTheDocument();
+    expect(thinkingDetails).not.toHaveAttribute("open");
+    expect(screen.queryByText("AI 思考过程")).not.toBeInTheDocument();
+  });
+
+  it("发送中继续输入不会被响应完成清空", async () => {
+    const user = userEvent.setup();
+    let completeChatResponse: (response: unknown) => void = () => undefined;
+    const provider: ModelProvider = {
+      id: "provider-draft",
+      name: "草稿渠道",
+      endpointType: "openai_chat",
+      endpointUrl: "https://api.example.com/v1/chat/completions",
+      apiKey: "sk-draft",
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const model: ProviderModel = {
+      id: "model-draft",
+      providerId: "provider-draft",
+      displayName: "草稿模型",
+      modelId: "gpt-draft",
+      temperature: 0.7,
+      maxTokens: 1024,
+      systemPrompt: "你是网页助手",
+      isTitleModel: false,
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const sendMessage = vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+      if (message.type === "pageContext.extract") {
+        callback({
+          ok: true,
+          text: "页面内容",
+          truncated: false,
+          usedFallback: true,
+        });
+        return undefined;
+      }
+
+      completeChatResponse = callback;
+      return undefined;
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+      },
+    });
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+
+    render(<App />);
+
+    const input = await screen.findByLabelText("对话输入");
+    await user.type(input, "第一条");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    expect(input).toHaveDisplayValue("");
+
+    await user.type(input, "下一条草稿");
+    await act(async () => {
+      completeChatResponse({
+        ok: true,
+        content: "第一条回复",
+      });
+      await Promise.resolve();
+    });
+
+    expect(await screen.findByText("第一条回复")).toBeInTheDocument();
+    await waitFor(() => expect(input).toHaveDisplayValue("下一条草稿"));
+  });
+
+  it("历史会话菜单展示重命名归档删除且删除需要二次确认", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    expect(screen.queryByText(/›|⌄/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /›|⌄/ })).not.toBeInTheDocument();
+    const defaultFolderButton = screen.getByRole("button", { name: /默认文件夹/ });
+    const archiveFolderButton = screen.getByRole("button", { name: /已归档/ });
+    const archiveBottom = archiveFolderButton.closest(".session-archive-bottom");
+    expect(defaultFolderButton.closest(".session-folder-stack-scroll")).toBeInTheDocument();
+    expect(archiveFolderButton).toHaveAttribute("aria-expanded", "false");
+    expect(archiveBottom).toHaveClass("shrink-0");
+    expect(archiveBottom?.parentElement).not.toHaveClass("session-list-scroll");
+
+    await user.click(screen.getByRole("button", { name: "新对话" }));
+    expect(await screen.findByText("新对话")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "删 新对话" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "会话操作 新对话" }));
+    expect(screen.getByRole("menuitem", { name: "重命名" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "归档" })).toBeInTheDocument();
+    await user.click(screen.getByRole("menuitem", { name: "删除" }));
+    expect(screen.getByRole("menuitem", { name: "确认删除" })).toBeInTheDocument();
+    expect(screen.getByText("新对话")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("menuitem", { name: "确认删除" }));
+    await waitFor(() => expect(screen.queryByText("新对话")).not.toBeInTheDocument());
+  });
+
+  it("已归档会话菜单向上展开，避免超出底部可视区域", async () => {
+    const user = userEvent.setup();
+    await saveChatSession(createChatSession({ id: "session-archived-menu", title: "底部归档", archived: true }));
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: /已归档/ }));
+    await user.click(await screen.findByRole("button", { name: "会话操作 底部归档" }));
+
+    expect(screen.getByRole("menu")).toHaveClass("session-menu-up");
+  });
+
+  it("历史会话菜单可以原地重命名并保存", async () => {
+    const user = userEvent.setup();
+    await saveChatSession(createChatSession({ id: "session-rename", title: "旧标题" }));
+
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "会话操作 旧标题" }));
+    await user.click(screen.getByRole("menuitem", { name: "重命名" }));
+    const input = screen.getByLabelText("重命名会话");
+    await user.clear(input);
+    await user.type(input, "新标题{Enter}");
+
+    expect(await screen.findByText("会话：新标题")).toBeInTheDocument();
+    expect(useAppStore.getState().chatSessions.find((item) => item.id === "session-rename")?.title).toBe("新标题");
+  });
+
+  it("会话按 Enter 保存后再次重命名可以仅靠失焦保存", async () => {
+    const user = userEvent.setup();
+    await saveChatSession(createChatSession({ id: "session-enter-blur", title: "初始标题" }));
+
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "会话操作 初始标题" }));
+    await user.click(screen.getByRole("menuitem", { name: "重命名" }));
+    let input = screen.getByLabelText("重命名会话");
+    await user.clear(input);
+    await user.type(input, "首次保存{Enter}");
+    expect(await screen.findByText("会话：首次保存")).toBeInTheDocument();
+
+    await user.click(await screen.findByRole("button", { name: "会话操作 首次保存" }));
+    await user.click(screen.getByRole("menuitem", { name: "重命名" }));
+    input = screen.getByLabelText("重命名会话");
+    await user.clear(input);
+    await user.type(input, "失焦保存");
+    fireEvent.blur(input);
+
+    expect(await screen.findByText("会话：失焦保存")).toBeInTheDocument();
+    expect(useAppStore.getState().chatSessions.find((item) => item.id === "session-enter-blur")?.title).toBe("失焦保存");
+  });
+
+  it("会话按 Escape 取消后再次重命名可以仅靠失焦保存", async () => {
+    const user = userEvent.setup();
+    await saveChatSession(createChatSession({ id: "session-escape-blur", title: "保留标题" }));
+
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "会话操作 保留标题" }));
+    await user.click(screen.getByRole("menuitem", { name: "重命名" }));
+    let input = screen.getByLabelText("重命名会话");
+    await user.clear(input);
+    await user.type(input, "取消标题{Escape}");
+    expect(await screen.findByText("会话：保留标题")).toBeInTheDocument();
+
+    await user.click(await screen.findByRole("button", { name: "会话操作 保留标题" }));
+    await user.click(screen.getByRole("menuitem", { name: "重命名" }));
+    input = screen.getByLabelText("重命名会话");
+    await user.clear(input);
+    await user.type(input, "失焦标题");
+    fireEvent.blur(input);
+
+    expect(await screen.findByText("会话：失焦标题")).toBeInTheDocument();
+    expect(useAppStore.getState().chatSessions.find((item) => item.id === "session-escape-blur")?.title).toBe("失焦标题");
+  });
+
+  it("新建文件夹后进入文件夹名编辑并可保存自定义名称", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "新建文件夹" }));
+    const input = await screen.findByLabelText("重命名文件夹");
+    expect(input).toHaveDisplayValue("新文件夹");
+
+    await user.clear(input);
+    await user.type(input, "资料整理{Enter}");
+
+    expect((await screen.findByText("资料整理")).closest("button")).toBeInTheDocument();
+    expect(useAppStore.getState().chatFolders.some((folder) => folder.name === "资料整理")).toBe(true);
+  });
+
+  it("已有文件夹可以进入重命名且 Escape 取消保存", async () => {
+    const user = userEvent.setup();
+    await saveChatFolder(createChatFolder({ id: "folder-rename", name: "旧文件夹" }));
+
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "重命名文件夹 旧文件夹" }));
+    const input = screen.getByLabelText("重命名文件夹");
+    await user.clear(input);
+    await user.type(input, "不会保存{Escape}");
+
+    expect((await screen.findByText("旧文件夹")).closest("button")).toBeInTheDocument();
+    expect(useAppStore.getState().chatFolders.find((folder) => folder.id === "folder-rename")?.name).toBe("旧文件夹");
+  });
+
+  it("文件夹按 Enter 保存后再次重命名可以仅靠失焦保存", async () => {
+    const user = userEvent.setup();
+    await saveChatFolder(createChatFolder({ id: "folder-enter-blur", name: "初始文件夹" }));
+
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "重命名文件夹 初始文件夹" }));
+    let input = screen.getByLabelText("重命名文件夹");
+    await user.clear(input);
+    await user.type(input, "首次文件夹{Enter}");
+    expect((await screen.findByText("首次文件夹")).closest("button")).toBeInTheDocument();
+
+    await user.click(await screen.findByRole("button", { name: "重命名文件夹 首次文件夹" }));
+    input = screen.getByLabelText("重命名文件夹");
+    await user.clear(input);
+    await user.type(input, "失焦文件夹");
+    fireEvent.blur(input);
+
+    expect((await screen.findByText("失焦文件夹")).closest("button")).toBeInTheDocument();
+    expect(useAppStore.getState().chatFolders.find((folder) => folder.id === "folder-enter-blur")?.name).toBe("失焦文件夹");
+  });
+
+  it("可以拖拽未归档会话到目标文件夹", async () => {
+    await saveChatFolder(createChatFolder({ id: "folder-target", name: "目标文件夹" }));
+    await saveChatSession(createChatSession({ id: "session-drag", title: "拖拽会话" }));
+
+    render(<App />);
+
+    const sessionButton = await screen.findByRole("button", { name: "会话：拖拽会话" });
+    const folderButton = (await screen.findByText("目标文件夹")).closest("button");
+    expect(folderButton).toBeInTheDocument();
+    fireEvent.dragStart(sessionButton);
+    fireEvent.dragOver(folderButton as Element);
+    fireEvent.drop(folderButton as Element);
+
+    await waitFor(() => {
+      expect(useAppStore.getState().chatSessions.find((item) => item.id === "session-drag")?.folderId).toBe("folder-target");
+    });
+  });
+
+  it("可以把文件夹内会话拖回默认文件夹", async () => {
+    await saveChatFolder(createChatFolder({ id: "folder-source", name: "来源文件夹" }));
+    await saveChatSession(createChatSession({ id: "session-drag-default", folderId: "folder-source", title: "回默认会话" }));
+
+    render(<App />);
+
+    const sourceFolderButton = (await screen.findByText("来源文件夹")).closest("button");
+    expect(sourceFolderButton).toBeInTheDocument();
+    fireEvent.click(sourceFolderButton as Element);
+    const sessionButton = await screen.findByRole("button", { name: "会话：回默认会话" });
+    const defaultFolderButton = (await screen.findByText("默认文件夹")).closest("button");
+    expect(defaultFolderButton).toBeInTheDocument();
+    fireEvent.dragStart(sessionButton);
+    fireEvent.dragOver(defaultFolderButton as Element);
+    fireEvent.drop(defaultFolderButton as Element);
+
+    await waitFor(() => {
+      expect(useAppStore.getState().chatSessions.find((item) => item.id === "session-drag-default")?.folderId).toBeUndefined();
+    });
+  });
+
+  it("归档会话不可拖拽", async () => {
+    const user = userEvent.setup();
+    await saveChatSession(createChatSession({ id: "session-archived-drag", title: "归档拖拽", archived: true }));
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: /已归档/ }));
+    const sessionButton = await screen.findByRole("button", { name: "会话：归档拖拽" });
+
+    expect(sessionButton.closest("article")).toHaveAttribute("draggable", "false");
+  });
+
+  it("带 dataTransfer 的拖拽在 state 丢失后仍可移动", async () => {
+    await saveChatFolder(createChatFolder({ id: "folder-data-transfer", name: "数据文件夹" }));
+    await saveChatSession(createChatSession({ id: "session-data-transfer", title: "数据拖拽" }));
+    const dataTransfer = createDataTransfer();
+
+    render(<App />);
+
+    const sessionButton = await screen.findByRole("button", { name: "会话：数据拖拽" });
+    const folderButton = (await screen.findByText("数据文件夹")).closest("button");
+    expect(folderButton).toBeInTheDocument();
+    fireEvent.dragStart(sessionButton, { dataTransfer });
+    fireEvent.dragEnd(sessionButton);
+    fireEvent.dragOver(folderButton as Element);
+    fireEvent.drop(folderButton as Element, { dataTransfer });
+
+    expect(dataTransfer.effectAllowed).toBe("move");
+    expect(dataTransfer.setData).toHaveBeenCalledWith("text/plain", "session-data-transfer");
+    await waitFor(() => {
+      expect(useAppStore.getState().chatSessions.find((item) => item.id === "session-data-transfer")?.folderId).toBe("folder-data-transfer");
+    });
+  });
+
+  it("窄面板历史按钮可以打开历史弹窗", async () => {
+    const user = userEvent.setup();
+    const styles = readFileSync(resolve(process.cwd(), "src/side-panel/styles.css"), "utf8");
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "历史" }));
+
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(screen.getByText("历史记录")).toBeInTheDocument();
+    expect(screen.getByRole("dialog").querySelector(".session-list-compact")).toBeInTheDocument();
+    expect(screen.getByRole("dialog").querySelector(".session-list-scroll")).toBeInTheDocument();
+    expect(styles).toContain(".history-dialog");
+    expect(styles).toContain("grid-template-rows: auto minmax(0, 1fr) auto;");
+    expect(styles).toContain("overflow: hidden;");
+  });
+
+  it("除默认文件夹外的会话文件夹默认折叠，点击后展开", async () => {
+    const user = userEvent.setup();
+    await saveChatFolder(createChatFolder({ id: "folder-collapse", name: "项目资料" }));
+    await saveChatSession(createChatSession({ id: "session-collapse", folderId: "folder-collapse", title: "资料会话" }));
+
+    render(<App />);
+
+    const folderButton = (await screen.findByText("项目资料")).closest("button");
+    expect(folderButton).toBeInTheDocument();
+    expect(screen.queryByText("会话：资料会话")).not.toBeInTheDocument();
+    expect(folderButton).toHaveAttribute("aria-expanded", "false");
+
+    await user.click(folderButton as Element);
+    expect(screen.getByText("会话：资料会话")).toBeInTheDocument();
+    expect(folderButton).toHaveAttribute("aria-expanded", "true");
+
+    await user.click(folderButton as Element);
+    expect(screen.queryByText("会话：资料会话")).not.toBeInTheDocument();
   });
 });
