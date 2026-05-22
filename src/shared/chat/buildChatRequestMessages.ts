@@ -5,10 +5,12 @@ interface BuildChatRequestMessagesInput {
   pageContext: string;
   existingMessages: ChatMessage[];
   userMessage: ChatMessage;
+  systemPrompt?: string;
 }
 
 export function buildChatRequestMessages(input: BuildChatRequestMessagesInput): ChatMessage[] {
-  const systemContent = buildSystemContent(input.model.systemPrompt, input.pageContext);
+  const effectiveSystemPrompt = input.systemPrompt ?? input.model.systemPrompt;
+  const systemContent = buildSystemContent(effectiveSystemPrompt, input.pageContext);
   const now = Date.now();
   const systemMessage: ChatMessage = {
     id: `system-${now}`,
@@ -18,7 +20,7 @@ export function buildChatRequestMessages(input: BuildChatRequestMessagesInput): 
     modelId: input.model.id,
     endpointType: input.model.endpointType,
     streamMode: input.userMessage.streamMode,
-    systemPrompt: input.model.systemPrompt,
+    systemPrompt: effectiveSystemPrompt,
     contextPrompt: input.pageContext,
     contextMode: input.userMessage.contextMode,
     matchedRuleId: input.userMessage.matchedRuleId,

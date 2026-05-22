@@ -1,12 +1,19 @@
 import { useState } from "react";
+import { ChatPreferenceDrawer } from "./ChatPreferenceDrawer";
 import { ChatComposer } from "./ChatComposer";
 import { MessageList } from "./MessageList";
 import { ModelSelector } from "./ModelSelector";
 import { SessionHistoryDialog } from "./SessionHistoryDialog";
 import { useAppStore } from "../state/appStore";
 
-export function ChatPanel() {
+interface ChatPanelProps {
+  historyPanelOpen: boolean;
+  onToggleHistoryPanel: () => void;
+}
+
+export function ChatPanel({ historyPanelOpen, onToggleHistoryPanel }: ChatPanelProps) {
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [chatPreferencesOpen, setChatPreferencesOpen] = useState(false);
   const providers = useAppStore((state) => state.providers);
   const models = useAppStore((state) => state.models);
   const selectedModelId = useAppStore((state) => state.selectedModelId);
@@ -31,10 +38,23 @@ export function ChatPanel() {
   return (
     <section className="chat-panel">
       <div className="chat-model-row">
+        <button
+          className="ui-button-secondary chat-history-panel-toggle"
+          type="button"
+          aria-label={historyPanelOpen ? "折叠历史对话" : "展开历史对话"}
+          aria-expanded={historyPanelOpen}
+          data-history-panel-open={historyPanelOpen}
+          onClick={onToggleHistoryPanel}
+        />
         <ModelSelector />
-        <button className="ui-button-secondary chat-history-trigger" type="button" onClick={() => setHistoryOpen(true)}>
-          历史
-        </button>
+        <div className="chat-header-actions">
+          <button className="ui-button-secondary chat-history-trigger" type="button" onClick={() => setHistoryOpen(true)}>
+            历史
+          </button>
+          <button className="ui-button-secondary chat-drawer-trigger" type="button" aria-label="打开当前聊天设置" onClick={() => setChatPreferencesOpen(true)}>
+            ⚙
+          </button>
+        </div>
       </div>
       <MessageList messages={activeSession?.messages ?? []} />
       {providers.length === 0 || models.length === 0 ? <p className="chat-warning">请先配置 API Key 后再开始对话</p> : null}
@@ -48,6 +68,7 @@ export function ChatPanel() {
       ) : null}
       <ChatComposer canSend={canSend} matchedRuleLabel={matchedRuleLabel} />
       <SessionHistoryDialog open={historyOpen} onOpenChange={setHistoryOpen} />
+      <ChatPreferenceDrawer open={chatPreferencesOpen} onOpenChange={setChatPreferencesOpen} />
     </section>
   );
 }

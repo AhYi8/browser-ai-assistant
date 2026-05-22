@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAppStore } from "../../../src/side-panel/state/appStore";
-import { clearDatabase, getChatSession, saveModelProvider, saveProviderModel } from "../../../src/shared/storage/repositories";
+import { clearDatabase, getAppSetting, getChatSession, saveAppSetting, saveModelProvider, saveProviderModel } from "../../../src/shared/storage/repositories";
 import type { ChatMessage, ModelProvider, ProviderModel } from "../../../src/shared/types";
 
 const repositoryMockState = vi.hoisted(() => ({
@@ -257,6 +257,56 @@ describe("appStore", () => {
     expect(useAppStore.getState().selectedModelId).toBe("model-1");
   });
 
+  it("删除默认对话模型所属渠道时清空默认对话模型配置", async () => {
+    const provider = createProvider();
+    const fallbackModel = createModel();
+    const defaultModel: ProviderModel = {
+      ...createModel(),
+      id: "model-default",
+      displayName: "默认对话模型",
+      modelId: "gpt-default",
+      updatedAt: 2,
+    };
+
+    await saveModelProvider(provider);
+    await saveProviderModel(fallbackModel);
+    await saveProviderModel(defaultModel);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().setDefaultChatModel("model-default");
+
+    useAppStore.getState().deleteProvider("provider-1");
+
+    expect(useAppStore.getState().defaultChatModelId).toBe("");
+    await vi.waitFor(async () => {
+      await expect(getAppSetting<string>("defaultChatModelId")).resolves.toBe("");
+    });
+  });
+
+  it("删除默认对话模型时清空默认对话模型配置", async () => {
+    const provider = createProvider();
+    const fallbackModel = createModel();
+    const defaultModel: ProviderModel = {
+      ...createModel(),
+      id: "model-default",
+      displayName: "默认对话模型",
+      modelId: "gpt-default",
+      updatedAt: 2,
+    };
+
+    await saveModelProvider(provider);
+    await saveProviderModel(fallbackModel);
+    await saveProviderModel(defaultModel);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().setDefaultChatModel("model-default");
+
+    useAppStore.getState().deleteModel("model-default");
+
+    expect(useAppStore.getState().defaultChatModelId).toBe("");
+    await vi.waitFor(async () => {
+      await expect(getAppSetting<string>("defaultChatModelId")).resolves.toBe("");
+    });
+  });
+
   it("兼容 callback 形态的当前标签页 URL 响应", async () => {
     const provider = createProvider();
     const model = createModel();
@@ -361,6 +411,131 @@ describe("appStore", () => {
       }),
       expect.any(Function),
     );
+  });
+
+  it("发送聊天时使用全局聊天偏好覆盖模型默认参数", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const sendMessage = vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+      if (message.type === "pageContext.extract") {
+        callback({
+          ok: true,
+          text: "",
+          truncated: false,
+          usedFallback: false,
+        });
+        return undefined;
+      }
+
+      callback({
+        ok: true,
+        content: "AI 回复",
+      });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await saveAppSetting({
+      key: "chatPreferences",
+      value: {
+        systemPrompt: "全局系统提示",
+        temperature: 0.4,
+        maxTokens: 2048,
+        topK: 20,
+        historyDrawerDefaultOpen: true,
+      },
+      updatedAt: 2,
+    });
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    await useAppStore.getState().refreshPageContext();
+    useAppStore.getState().setStreamMode(false);
+
+    await useAppStore.getState().sendChatMessage("第一问");
+
+    const chatRequest = sendMessage.mock.calls
+      .map(([message]) => message as { type: string; model?: ProviderModel; messages?: ChatMessage[] })
+      .find((message) => message.type === "chat.send");
+    expect(chatRequest?.model).toMatchObject({
+      systemPrompt: "全局系统提示",
+      temperature: 0.4,
+      maxTokens: 2048,
+      topK: 20,
+    });
+    expect(chatRequest?.messages?.[0]).toMatchObject({
+      role: "system",
+      content: "全局系统提示",
+      systemPrompt: "全局系统提示",
+    });
+  });
+
+  it("当前会话聊天偏好优先于全局聊天偏好", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const sendMessage = vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+      if (message.type === "pageContext.extract") {
+        callback({
+          ok: true,
+          text: "",
+          truncated: false,
+          usedFallback: false,
+        });
+        return undefined;
+      }
+
+      callback({
+        ok: true,
+        content: "AI 回复",
+      });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await saveAppSetting({
+      key: "chatPreferences",
+      value: {
+        systemPrompt: "全局系统提示",
+        temperature: 0.4,
+        maxTokens: 2048,
+        topK: 20,
+        historyDrawerDefaultOpen: false,
+      },
+      updatedAt: 2,
+    });
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    await useAppStore.getState().updateActiveSessionChatPreferences({
+      systemPrompt: "当前会话系统提示",
+      temperature: 0.2,
+      maxTokens: 512,
+      topK: 8,
+    });
+    await useAppStore.getState().refreshPageContext();
+    useAppStore.getState().setStreamMode(false);
+
+    await useAppStore.getState().sendChatMessage("第一问");
+
+    const chatRequest = sendMessage.mock.calls
+      .map(([message]) => message as { type: string; model?: ProviderModel; messages?: ChatMessage[] })
+      .find((message) => message.type === "chat.send");
+    expect(chatRequest?.model).toMatchObject({
+      systemPrompt: "当前会话系统提示",
+      temperature: 0.2,
+      maxTokens: 512,
+      topK: 8,
+    });
   });
 
   it("未配置 AI 标题生成模型时不会额外发送标题请求", async () => {

@@ -20,6 +20,7 @@ export interface ProviderModel {
   modelId: string;
   temperature: number;
   maxTokens: number;
+  topK?: number;
   systemPrompt: string;
   isTitleModel: boolean;
   enabled: boolean;
@@ -33,6 +34,21 @@ export interface ModelConfig extends ProviderModel {
   endpointType: EndpointType;
   endpointUrl: string;
   apiKey: string;
+}
+
+export interface ChatPreferenceValues {
+  systemPrompt: string;
+  temperature: number;
+  maxTokens: number;
+  topK?: number;
+  historyDrawerDefaultOpen: boolean;
+}
+
+export interface ChatSessionPreferenceOverrides {
+  systemPrompt?: string;
+  temperature?: number;
+  maxTokens?: number;
+  topK?: number;
 }
 
 export interface ExtractionRule {
@@ -71,6 +87,7 @@ export interface ChatSession {
   createdAt: number;
   updatedAt: number;
   messages: ChatMessage[];
+  chatPreferenceOverrides?: ChatSessionPreferenceOverrides;
 }
 
 export interface ChatFolder {

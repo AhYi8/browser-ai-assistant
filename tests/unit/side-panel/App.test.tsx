@@ -6,6 +6,7 @@ import { App } from "../../../src/side-panel/App";
 import { useAppStore } from "../../../src/side-panel/state/appStore";
 import {
   clearDatabase,
+  saveAppSetting,
   saveChatFolder,
   saveChatSession,
   saveExtractionRule,
@@ -95,6 +96,110 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "Browser AI Assistant" })).toBeInTheDocument();
   });
 
+  it("设置中提供全局聊天偏好入口", async () => {
+    const styles = readFileSync(resolve(process.cwd(), "src/side-panel/styles.css"), "utf8");
+
+    render(<App />);
+
+    await userEvent.click(screen.getByRole("button", { name: "设置" }));
+    await userEvent.click(screen.getByRole("tab", { name: "聊天偏好" }));
+
+    expect(screen.getByRole("textbox", { name: "全局系统提示词" })).toBeInTheDocument();
+    expect(screen.getByRole("spinbutton", { name: "全局 temperature" })).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "默认展开左侧历史面板" })).toBeInTheDocument();
+    expect(styles).toContain(".chat-preference-switch-input");
+    expect(styles).toContain(".chat-preference-switch-control");
+    expect(styles).toContain(".chat-preference-switch-input:checked + .chat-preference-switch-control");
+    expect(styles).toContain("border-radius: 9999px;");
+    expect(styles).toContain("transform: translateX(18px);");
+    expect(styles).toContain("grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));");
+    expect(styles).toContain(".chat-preference-field");
+    expect(styles).toContain(".chat-preference-number-input");
+    expect(styles).toContain("width: 100%;");
+    expect(styles).toContain("min-width: 0;");
+    expect(styles).toContain("align-content: start;");
+    expect(styles).toContain("align-items: start;");
+  });
+
+  it("聊天区提供历史抽屉和当前聊天设置抽屉入口", async () => {
+    render(<App />);
+
+    await userEvent.click(screen.getByRole("button", { name: "打开当前聊天设置" }));
+
+    expect(screen.getByRole("dialog", { name: "当前聊天设置" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "当前聊天系统提示词" })).toBeInTheDocument();
+    expect(screen.getByRole("spinbutton", { name: "当前聊天 temperature" })).toHaveClass("chat-preference-number-input");
+    expect(screen.getByRole("spinbutton", { name: "当前聊天 top_k" }).closest("label")).toHaveClass("chat-preference-field");
+  });
+
+  it("聊天偏好可以控制宽面板左侧历史区域默认折叠并手动展开", async () => {
+    await saveAppSetting({
+      key: "chatPreferences",
+      value: {
+        systemPrompt: "你是网页助手",
+        temperature: 0.7,
+        maxTokens: 1024,
+        historyDrawerDefaultOpen: false,
+      },
+      updatedAt: 1,
+    });
+
+    render(<App />);
+
+    await screen.findByRole("button", { name: "展开历史对话" });
+    expect(screen.queryByLabelText("历史会话")).not.toBeInTheDocument();
+    expect(screen.queryByText("默认文件夹")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "展开历史对话" }));
+
+    expect(screen.getByLabelText("历史会话")).toBeInTheDocument();
+    expect(screen.getByText("默认文件夹")).toBeInTheDocument();
+  });
+
+  it("历史展开按钮位于模型选择器左侧，折叠时左侧面板不占宽", async () => {
+    await saveAppSetting({
+      key: "chatPreferences",
+      value: {
+        systemPrompt: "你是网页助手",
+        temperature: 0.7,
+        maxTokens: 1024,
+        historyDrawerDefaultOpen: true,
+      },
+      updatedAt: 1,
+    });
+    const styles = readFileSync(resolve(process.cwd(), "src/side-panel/styles.css"), "utf8");
+
+    render(<App />);
+
+    const modelSelector = document.querySelector(".model-selector");
+    const toggleButton = screen.getByRole("button", { name: "折叠历史对话" });
+
+    expect(modelSelector?.previousElementSibling).toBe(toggleButton);
+    await userEvent.click(toggleButton);
+    expect(screen.queryByLabelText("历史会话")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "展开历史对话" })).toHaveAttribute("aria-expanded", "false");
+    expect(styles).toContain("grid-template-columns: 0 minmax(0, 1fr);");
+    expect(styles).toContain("transition:");
+    expect(styles).toContain("transform:");
+    expect(styles).toContain("opacity:");
+    expect(styles).toContain(".chat-model-row {");
+    expect(styles).toContain("position: relative;");
+    expect(styles).toContain(".chat-history-panel-toggle");
+    expect(styles).toMatch(/\.chat-history-panel-toggle\s*\{[^}]*display:\s*none;/s);
+    expect(styles).toMatch(/@media \(min-width:\s*720px\)\s*\{[^}]*\.chat-history-panel-toggle\s*\{[^}]*display:\s*grid;/s);
+    expect(styles).toContain("left: 0;");
+    expect(styles).toContain("top: 50%;");
+    expect(styles).toContain("transform: translate(-50%, -50%);");
+    expect(styles).toContain("border-radius: 9999px;");
+    expect(styles).toMatch(/\.chat-panel\s*\{[^}]*overflow:\s*visible;/s);
+    expect(styles).toContain(".chat-history-panel-toggle::before");
+    expect(styles).toContain("box-shadow:");
+    expect(styles).toContain("0 -4px 0 currentColor");
+    expect(styles).toContain("0 4px 0 currentColor");
+    expect(styles).toContain("left: 50%;");
+    expect(styles).toContain("top: 50%;");
+  });
+
   it("聊天主区域固定在面板内并只让消息列表内部滚动", async () => {
     render(<App />);
 
@@ -174,6 +279,11 @@ describe("App", () => {
     expect(styles).toContain("font-size: 1.65rem;");
     expect(styles).toContain("counter(message-list-item)");
     expect(styles).toContain(".message-bubble li");
+    expect(styles).toContain(".message-bubble ol > li");
+    expect(styles).toContain(".message-bubble ol > li::before");
+    expect(styles).toContain("font-size: 0.875rem;");
+    expect(styles).toContain(".message-bubble li > ol");
+    expect(styles).toContain("margin-top: 0.25rem;");
     expect(styles).toContain("overflow-wrap: anywhere;");
     expect(styles).toContain("max-width: 100%;");
   });

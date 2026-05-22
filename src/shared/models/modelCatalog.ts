@@ -1,6 +1,6 @@
 import { validateModelConfig } from "./modelValidation";
 import type { ModelValidationResult } from "./types";
-import type { ModelConfig, ModelProvider, ProviderModel } from "../types";
+import type { ChatSessionPreferenceOverrides, ModelConfig, ModelProvider, ProviderModel } from "../types";
 
 export interface RemoteModelInfo {
   id: string;
@@ -17,7 +17,7 @@ type Fetcher = typeof fetch;
 export function createListModelsRequest(provider: ModelProvider): ModelListRequest {
   if (provider.endpointType === "anthropic_messages") {
     return {
-      url: createSiblingEndpointUrl(provider.endpointUrl, "models"),
+      url: createEndpointUrl(provider.endpointUrl, "anthropic_models"),
       headers: {
         "x-api-key": provider.apiKey,
         "anthropic-version": "2023-06-01",
@@ -26,7 +26,7 @@ export function createListModelsRequest(provider: ModelProvider): ModelListReque
   }
 
   return {
-    url: createSiblingEndpointUrl(provider.endpointUrl, "models"),
+    url: createEndpointUrl(provider.endpointUrl, "openai_models"),
     headers: {
       Authorization: `Bearer ${provider.apiKey}`,
     },
@@ -91,9 +91,14 @@ export async function testProviderModel(
       };
 }
 
-export function createModelConfig(provider: ModelProvider, model: ProviderModel): ModelConfig {
+export function createModelConfig(
+  provider: ModelProvider,
+  model: ProviderModel,
+  overrides: ChatSessionPreferenceOverrides = {},
+): ModelConfig {
   return {
     ...model,
+    ...pickDefinedPreferenceOverrides(overrides),
     name: model.displayName,
     channelName: provider.name,
     endpointType: provider.endpointType,
@@ -102,23 +107,53 @@ export function createModelConfig(provider: ModelProvider, model: ProviderModel)
   };
 }
 
-function createSiblingEndpointUrl(endpointUrl: string, siblingName: string): string {
-  const url = new URL(endpointUrl);
-  const segments = url.pathname.split("/").filter(Boolean);
+export function createEndpointUrl(
+  endpointUrl: string,
+  endpointKind: "openai_chat" | "anthropic_messages" | "openai_models" | "anthropic_models",
+): string {
+  const url = new URL(endpointUrl.trim());
+  const suffixByKind = {
+    openai_chat: ["v1", "chat", "completions"],
+    anthropic_messages: ["v1", "messages"],
+    openai_models: ["v1", "models"],
+    anthropic_models: ["v1", "models"],
+  } satisfies Record<typeof endpointKind, string[]>;
+  const targetSuffix = suffixByKind[endpointKind];
+  const currentSegments = url.pathname.split("/").filter(Boolean);
 
-  if (segments.length === 0) {
-    url.pathname = `/${siblingName}`;
-    return url.toString();
-  }
+  // 用户配置只要求填写基础域名；这里同时兼容历史上已保存完整接口路径的用户数据。
+  const knownSuffixes = [
+    ["v1", "chat", "completions"],
+    ["chat", "completions"],
+    ["v1", "messages"],
+    ["messages"],
+    ["v1", "models"],
+    ["models"],
+  ];
+  const baseSegments = removeKnownEndpointSuffix(currentSegments, knownSuffixes);
 
-  if (segments.at(-1) === "completions" && segments.at(-2) === "chat") {
-    segments.splice(segments.length - 2, 2, siblingName);
-  } else {
-    segments[segments.length - 1] = siblingName;
-  }
-
-  url.pathname = `/${segments.join("/")}`;
+  url.pathname = `/${[...baseSegments, ...targetSuffix].join("/")}`;
   return url.toString();
+}
+
+function removeKnownEndpointSuffix(segments: string[], knownSuffixes: string[][]): string[] {
+  for (const suffix of knownSuffixes) {
+    if (segments.length < suffix.length) {
+      continue;
+    }
+
+    const start = segments.length - suffix.length;
+    const matched = suffix.every((segment, index) => segments[start + index] === segment);
+    if (matched) {
+      return segments.slice(0, start);
+    }
+  }
+
+  return segments;
+}
+
+function pickDefinedPreferenceOverrides(overrides: ChatSessionPreferenceOverrides): ChatSessionPreferenceOverrides {
+  return Object.fromEntries(Object.entries(overrides).filter(([, value]) => value !== undefined)) as ChatSessionPreferenceOverrides;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

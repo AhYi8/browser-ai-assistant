@@ -131,6 +131,7 @@ body {
   .chat-main-layout {
     @apply grid min-h-0 flex-1 gap-4 p-4;
     overflow: hidden;
+    transition: grid-template-columns 220ms ease;
   }
 
   .settings-main-layout {
@@ -141,16 +142,35 @@ body {
     .chat-main-layout {
       grid-template-columns: 264px minmax(0, 1fr);
     }
+
+    .chat-main-layout-history-collapsed {
+      grid-template-columns: 0 minmax(0, 1fr);
+    }
   }
 
   .session-list {
     @apply hidden min-h-0 flex-col overflow-hidden rounded-lg p-3;
     background: var(--color-surface-card);
     border: 1px solid var(--color-hairline);
+    opacity: 1;
+    transform: translateX(0);
+    transition:
+      opacity 180ms ease,
+      transform 220ms ease;
+  }
+
+  .session-list-placeholder {
+    @apply hidden min-h-0 overflow-hidden;
+    opacity: 0;
+    transform: translateX(-12px);
+    transition:
+      opacity 180ms ease,
+      transform 220ms ease;
   }
 
   @media (min-width: 720px) {
-    .session-list {
+    .session-list,
+    .session-list-placeholder {
       @apply flex;
     }
   }
@@ -319,14 +339,16 @@ body {
   }
 
   .chat-panel {
-    @apply flex min-h-0 min-w-0 flex-col overflow-hidden rounded-lg;
+    @apply flex min-h-0 min-w-0 flex-col rounded-lg;
     height: 100%;
+    overflow: visible;
     background: var(--color-canvas);
     border: 1px solid var(--color-hairline);
   }
 
   .chat-model-row {
-    @apply flex items-end gap-2 p-3;
+    @apply relative flex items-end gap-2 p-3 pl-5;
+    position: relative;
     border-bottom: 1px solid var(--color-hairline);
   }
 
@@ -355,7 +377,43 @@ body {
     @apply shrink-0;
   }
 
+  .chat-history-panel-toggle {
+    @apply absolute hidden h-7 w-7 shrink-0 place-items-center px-0 text-sm leading-none;
+    display: none;
+    left: 0;
+    top: 50%;
+    border-radius: 9999px;
+    transform: translate(-50%, -50%);
+    z-index: 1;
+  }
+
+  .chat-history-panel-toggle::before {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 12px;
+    height: 1.5px;
+    background: currentColor;
+    box-shadow:
+      0 -4px 0 currentColor,
+      0 4px 0 currentColor;
+    transform: translate(-50%, -50%);
+  }
+
+  .chat-header-actions {
+    @apply flex shrink-0 items-end gap-2;
+  }
+
+  .chat-drawer-trigger {
+    @apply grid h-10 w-10 shrink-0 place-items-center px-0 text-base;
+  }
+
   @media (min-width: 720px) {
+    .chat-history-panel-toggle {
+      display: grid;
+    }
+
     .chat-history-trigger {
       @apply hidden;
     }
@@ -386,7 +444,7 @@ body {
 
   .message-bubble-wrap {
     min-width: 0;
-    max-width: min(78%, 560px);
+    max-width: 78%;
     overflow-wrap: anywhere;
   }
 
@@ -460,7 +518,7 @@ body {
     overflow-wrap: anywhere;
   }
 
-  .message-bubble ul li::before {
+  .message-bubble ul > li::before {
     content: "·";
     position: absolute;
     left: 0.125rem;
@@ -475,17 +533,28 @@ body {
     counter-reset: message-list-item;
   }
 
-  .message-bubble ol li {
+  .message-bubble ol > li {
     counter-increment: message-list-item;
   }
 
-  .message-bubble ol li::before {
+  .message-bubble ol > li::before {
     content: counter(message-list-item) ".";
     position: absolute;
     left: 0;
     min-width: 1rem;
     color: var(--color-primary);
     font-weight: 500;
+    font-size: 0.875rem;
+    line-height: 1.4;
+  }
+
+  .message-bubble li > ul,
+  .message-bubble li > ol {
+    margin-top: 0.25rem;
+  }
+
+  .message-bubble li > ol {
+    counter-reset: message-list-item;
   }
 
   .message-row-user .message-bubble {
@@ -607,6 +676,90 @@ body {
     background: color-mix(in srgb, var(--color-surface-dark) 42%, transparent);
   }
 
+  .drawer-panel {
+    @apply fixed bottom-0 right-0 top-0 z-30 grid min-h-0 w-[min(360px,calc(100vw-24px))] gap-3 overflow-hidden p-4;
+    grid-template-rows: auto minmax(0, 1fr);
+    background: var(--color-canvas);
+    border-left: 1px solid var(--color-hairline);
+  }
+
+  .drawer-header {
+    @apply flex items-center justify-between gap-3;
+  }
+
+  .drawer-body {
+    @apply grid min-h-0 gap-3 overflow-y-auto;
+    align-content: start;
+  }
+
+  .drawer-icon-button {
+    @apply grid h-9 w-9 shrink-0 place-items-center px-0 text-base leading-none;
+  }
+
+  .chat-preference-grid {
+    @apply grid gap-3;
+    grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+    align-items: start;
+  }
+
+  .chat-preference-field {
+    @apply grid min-w-0 gap-1 text-sm;
+    align-content: start;
+  }
+
+  .chat-preference-number-input {
+    @apply w-full min-w-0;
+  }
+
+  .chat-preference-switch {
+    @apply relative flex min-h-12 cursor-pointer items-center gap-3 rounded-lg px-3 py-2 text-sm transition;
+    background: var(--color-surface-soft);
+    border: 1px solid var(--color-hairline);
+    color: var(--color-body);
+  }
+
+  .chat-preference-switch:hover {
+    background: var(--color-surface-cream-strong);
+  }
+
+  .chat-preference-switch-input {
+    @apply sr-only;
+  }
+
+  .chat-preference-switch-control {
+    @apply relative inline-flex h-6 w-11 shrink-0 items-center transition;
+    border-radius: 9999px;
+    background: var(--color-primary-disabled);
+    border: 1px solid var(--color-hairline);
+  }
+
+  .chat-preference-switch-thumb {
+    @apply absolute left-0.5 h-5 w-5 transition;
+    border-radius: 9999px;
+    background: var(--color-canvas);
+    border: 1px solid var(--color-hairline);
+    box-shadow: 0 1px 2px rgba(20, 20, 19, 0.08);
+  }
+
+  .chat-preference-switch-label {
+    @apply min-w-0 flex-1;
+  }
+
+  .chat-preference-switch-input:checked + .chat-preference-switch-control {
+    background: var(--color-primary);
+    border-color: var(--color-primary);
+  }
+
+  .chat-preference-switch-input:checked + .chat-preference-switch-control .chat-preference-switch-thumb {
+    transform: translateX(18px);
+    border-color: var(--color-on-primary);
+  }
+
+  .chat-preference-switch-input:focus-visible + .chat-preference-switch-control {
+    outline: 3px solid color-mix(in srgb, var(--color-primary) 15%, transparent);
+    outline-offset: 2px;
+  }
+
   .context-dialog {
     @apply fixed left-3 right-3 top-1/2 z-30 grid max-h-[78vh] -translate-y-1/2 gap-3 rounded-lg p-4 sm:left-1/2 sm:right-auto sm:w-[min(520px,calc(100vw-32px))] sm:-translate-x-1/2;
     background: var(--color-canvas);
@@ -627,11 +780,12 @@ body {
     @apply shrink-0;
   }
 
+  .history-drawer {
+    @apply w-[min(380px,calc(100vw-24px))];
+  }
+
   .history-dialog {
-    @apply fixed bottom-0 left-0 right-0 grid min-h-0 max-h-[86vh] gap-3 overflow-hidden rounded-t-xl p-4;
     grid-template-rows: auto minmax(0, 1fr) auto;
-    background: var(--color-canvas);
-    border: 1px solid var(--color-hairline);
   }
 
   .history-dialog-body {

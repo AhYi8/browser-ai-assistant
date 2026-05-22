@@ -11,16 +11,19 @@ export function SessionHistoryDialog({ open, onOpenChange }: SessionHistoryDialo
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
         <Dialog.Overlay className="dialog-overlay" />
-        <Dialog.Content className="history-dialog">
-          <Dialog.Title className="history-dialog-title">历史记录</Dialog.Title>
+        <Dialog.Content className="drawer-panel history-dialog history-drawer">
+          <div className="drawer-header">
+            <Dialog.Title className="history-dialog-title">历史记录</Dialog.Title>
+            <Dialog.Description className="sr-only">浏览和管理历史对话</Dialog.Description>
+            <Dialog.Close className="ui-button-secondary drawer-icon-button" type="button" aria-label="关闭历史记录">
+              ×
+            </Dialog.Close>
+          </div>
           <div className="history-dialog-body">
             <div className="history-dialog-scroll">
               <SessionList compact />
             </div>
           </div>
-          <Dialog.Close className="ui-button-secondary" type="button">
-            关闭
-          </Dialog.Close>
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>

@@ -99,4 +99,23 @@ describe("聊天请求消息构造", () => {
       { role: "user", content: "你好" },
     ]);
   });
+
+  it("优先使用聊天偏好中的系统提示词作为首条 system 消息", () => {
+    const model = createModelConfig(createProvider(), createModel());
+    const userMessage = createMessage("message-1", "user", "你好", 1);
+
+    const result = buildChatRequestMessages({
+      model,
+      pageContext: "当前页面正文",
+      existingMessages: [],
+      userMessage,
+      systemPrompt: "你是更严格的网页分析助手",
+    });
+
+    expect(result.map((message) => ({ role: message.role, content: message.content }))).toEqual([
+      { role: "system", content: "你是更严格的网页分析助手\n\n当前页面上下文：\n当前页面正文" },
+      { role: "user", content: "你好" },
+    ]);
+    expect(result[0].systemPrompt).toBe("你是更严格的网页分析助手");
+  });
 });

@@ -1,14 +1,15 @@
 import { useMemo, useState } from "react";
-import type { ExtractionRule, ModelProvider, ProviderModel } from "../../shared/types";
+import type { ChatPreferenceValues, ExtractionRule, ModelProvider, ProviderModel } from "../../shared/types";
 import { useAppStore } from "../state/appStore";
 
 const DEBUG_PREFIX = "[提取规则 AI 生成诊断]";
 
-type SettingsTab = "channels" | "rules" | "sync" | "appearance";
+type SettingsTab = "channels" | "rules" | "chat" | "sync" | "appearance";
 
 const settingsTabs: Array<{ id: SettingsTab; label: string }> = [
   { id: "channels", label: "渠道管理" },
   { id: "rules", label: "提取规则" },
+  { id: "chat", label: "聊天偏好" },
   { id: "sync", label: "同步设置" },
   { id: "appearance", label: "界面偏好" },
 ];
@@ -17,7 +18,7 @@ const draftProvider: ModelProvider = {
   id: "draft-provider",
   name: "默认渠道",
   endpointType: "openai_chat",
-  endpointUrl: "https://api.openai.com/v1/chat/completions",
+  endpointUrl: "https://api.openai.com",
   apiKey: "",
   enabled: true,
   createdAt: 0,
@@ -70,6 +71,7 @@ export function SettingsPanel() {
         <div className="min-w-0">
           {activeTab === "channels" ? <ChannelManagement /> : null}
           {activeTab === "rules" ? <ExtractionRules /> : null}
+          {activeTab === "chat" ? <ChatPreferenceSettings /> : null}
           {activeTab === "sync" ? <SyncSettings /> : null}
           {activeTab === "appearance" ? <AppearanceSettings /> : null}
         </div>
@@ -602,6 +604,92 @@ function ExtractionRules() {
         ) : null}
       </div>
     </section>
+  );
+}
+
+function ChatPreferenceSettings() {
+  const chatPreferences = useAppStore((state) => state.chatPreferences);
+  const updateChatPreferences = useAppStore((state) => state.updateChatPreferences);
+
+  return (
+    <fieldset className="grid w-full gap-3">
+      <legend className="font-medium">聊天偏好</legend>
+      <label className="grid gap-1 text-sm">
+        系统提示词
+        <textarea
+          className="ui-input min-h-32"
+          aria-label="全局系统提示词"
+          value={chatPreferences.systemPrompt}
+          onChange={(event) => void updateChatPreferences({ systemPrompt: event.target.value })}
+        />
+      </label>
+      <div className="chat-preference-grid">
+        <GlobalPreferenceNumberInput
+          label="temperature"
+          value={chatPreferences.temperature}
+          min={0}
+          max={2}
+          step={0.1}
+          onChange={(value) => void updateChatPreferences({ temperature: value })}
+        />
+        <GlobalPreferenceNumberInput
+          label="max_token"
+          value={chatPreferences.maxTokens}
+          min={1}
+          step={1}
+          onChange={(value) => void updateChatPreferences({ maxTokens: value })}
+        />
+        <GlobalPreferenceNumberInput
+          label="top_k"
+          value={chatPreferences.topK}
+          min={1}
+          step={1}
+          onChange={(value) => void updateChatPreferences({ topK: value })}
+        />
+      </div>
+      <label className="chat-preference-switch">
+        <input
+          className="chat-preference-switch-input"
+          type="checkbox"
+          checked={chatPreferences.historyDrawerDefaultOpen}
+          onChange={(event) => void updateChatPreferences({ historyDrawerDefaultOpen: event.target.checked })}
+        />
+        <span className="chat-preference-switch-control" aria-hidden="true">
+          <span className="chat-preference-switch-thumb" />
+        </span>
+        <span className="chat-preference-switch-label">默认展开左侧历史面板</span>
+      </label>
+    </fieldset>
+  );
+}
+
+interface GlobalPreferenceNumberInputProps {
+  label: string;
+  value?: number;
+  min: number;
+  max?: number;
+  step: number;
+  onChange: (value: number | undefined) => void;
+}
+
+function GlobalPreferenceNumberInput({ label, value, min, max, step, onChange }: GlobalPreferenceNumberInputProps) {
+  return (
+    <label className="chat-preference-field">
+      {label}
+      <input
+        className="ui-input chat-preference-number-input"
+        aria-label={`全局 ${label}`}
+        type="number"
+        min={min}
+        max={max}
+        step={step}
+        value={value ?? ""}
+        onChange={(event) => {
+          const inputValue = event.target.value.trim();
+          onChange(inputValue ? Number(inputValue) : undefined);
+        }}
+      />
+    </label>
   );
 }
 

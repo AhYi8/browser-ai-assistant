@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createAnthropicMessagesPayload } from "../../../src/shared/models/anthropicMessagesAdapter";
-import { createListModelsRequest, parseModelListResponse, testProviderModel } from "../../../src/shared/models/modelCatalog";
+import { createListModelsRequest, createModelConfig, parseModelListResponse, testProviderModel } from "../../../src/shared/models/modelCatalog";
 import { createOpenAIChatPayload } from "../../../src/shared/models/openaiChatAdapter";
 import { validateModelConfig } from "../../../src/shared/models/modelValidation";
 import type { ChatMessage, ModelConfig, ModelProvider, ProviderModel } from "../../../src/shared/types";
@@ -108,6 +108,18 @@ describe("模型适配器", () => {
     });
   });
 
+  it("OpenAI-compatible 渠道只保存基础端点时自动补全 Chat Completions 路径", () => {
+    const payload = createOpenAIChatPayload(
+      createModel({
+        endpointUrl: "https://api.example.com",
+      }),
+      messages,
+      true,
+    );
+
+    expect(payload.url).toBe("https://api.example.com/v1/chat/completions");
+  });
+
   it("构造 Anthropic Messages 请求并将 system 放到顶层", () => {
     const model = createModel({
       endpointType: "anthropic_messages",
@@ -135,6 +147,34 @@ describe("模型适配器", () => {
     });
   });
 
+  it("Anthropic 渠道只保存基础端点时自动补全 Messages 路径", () => {
+    const model = createModel({
+      endpointType: "anthropic_messages",
+      endpointUrl: "https://api.anthropic.com",
+      modelId: "claude-test",
+    });
+
+    const payload = createAnthropicMessagesPayload(model, messages, false);
+
+    expect(payload.url).toBe("https://api.anthropic.com/v1/messages");
+  });
+
+  it("创建聊天模型配置时允许用聊天偏好覆盖采样参数", () => {
+    const model = createModelConfig(createProvider(), createProviderModel(), {
+      systemPrompt: "全局系统提示",
+      temperature: 0.4,
+      maxTokens: 2048,
+      topK: 20,
+    });
+
+    expect(model).toMatchObject({
+      systemPrompt: "全局系统提示",
+      temperature: 0.4,
+      maxTokens: 2048,
+      topK: 20,
+    });
+  });
+
   it("API Key 校验失败时返回结构化错误", async () => {
     const fetcher = vi.fn().mockResolvedValue({
       ok: false,
@@ -151,7 +191,7 @@ describe("模型适配器", () => {
   });
 
   it("构造 OpenAI-compatible 模型列表请求", () => {
-    expect(createListModelsRequest(createProvider())).toEqual({
+    expect(createListModelsRequest(createProvider({ endpointUrl: "https://api.example.com" }))).toEqual({
       url: "https://api.example.com/v1/models",
       headers: {
         Authorization: "Bearer sk-test",

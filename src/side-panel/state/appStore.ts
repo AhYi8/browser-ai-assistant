@@ -29,7 +29,9 @@ import { generateUrlPatternsWithModel } from "../../shared/extractionRules/urlPa
 import type {
   ChatFolder,
   ChatMessage,
+  ChatPreferenceValues,
   ChatSession,
+  ChatSessionPreferenceOverrides,
   EndpointType,
   ExtractionRule,
   ModelProvider,
@@ -78,6 +80,7 @@ interface AppState {
   modelConnectivity: Record<string, ModelConnectivityState>;
   selectedModelId: string;
   defaultChatModelId: string;
+  chatPreferences: ChatPreferenceValues;
   activeSessionId: string;
   pendingDeleteSessionId?: string;
   streamMode: boolean;
@@ -89,9 +92,11 @@ interface AppState {
   updateProvider: (providerId: string, updates: Partial<Pick<ModelProvider, "name" | "endpointType" | "endpointUrl" | "apiKey">>) => void;
   addModel: (providerId: string) => ProviderModel;
   addRemoteModel: (providerId: string, remoteModel: RemoteModelInfo) => ProviderModel;
-  updateModel: (modelId: string, updates: Partial<Pick<ProviderModel, "displayName" | "modelId" | "temperature" | "maxTokens" | "systemPrompt">>) => void;
+  updateModel: (modelId: string, updates: Partial<Pick<ProviderModel, "displayName" | "modelId" | "temperature" | "maxTokens" | "topK" | "systemPrompt">>) => void;
   setTitleModel: (modelId: string) => void;
   setDefaultChatModel: (modelId: string) => Promise<void>;
+  updateChatPreferences: (updates: Partial<ChatPreferenceValues>) => Promise<void>;
+  updateActiveSessionChatPreferences: (updates: ChatSessionPreferenceOverrides) => Promise<void>;
   deleteProvider: (providerId: string) => void;
   deleteModel: (modelId: string) => void;
   loadChannelConfig: () => Promise<void>;
@@ -148,6 +153,14 @@ const exampleModel: ProviderModel = {
   updatedAt: 1,
 };
 
+const DEFAULT_CHAT_PREFERENCES: ChatPreferenceValues = {
+  systemPrompt: "你是网页助手",
+  temperature: 0.7,
+  maxTokens: 1024,
+  topK: undefined,
+  historyDrawerDefaultOpen: true,
+};
+
 export const useAppStore = create<AppState>()((set, get) => ({
   providers: [],
   models: [],
@@ -166,6 +179,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   modelConnectivity: {},
   selectedModelId: "",
   defaultChatModelId: "",
+  chatPreferences: DEFAULT_CHAT_PREFERENCES,
   activeSessionId: "",
   streamMode: true,
   sending: false,
@@ -188,7 +202,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       id: `provider-${now}-${index}`,
       name: `新渠道 ${index}`,
       endpointType: "openai_chat",
-      endpointUrl: "https://api.openai.com/v1/chat/completions",
+      endpointUrl: "https://api.openai.com",
       apiKey: "",
       enabled: true,
       createdAt: now,
@@ -276,12 +290,58 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
     set({ defaultChatModelId: normalizedModelId });
   },
+  updateChatPreferences: async (updates) => {
+    const preferences = normalizeChatPreferences({
+      ...get().chatPreferences,
+      ...updates,
+    });
+
+    await saveAppSetting({
+      key: "chatPreferences",
+      value: preferences,
+      updatedAt: Date.now(),
+    });
+
+    set({ chatPreferences: preferences });
+  },
+  updateActiveSessionChatPreferences: async (updates) => {
+    const state = get();
+    const now = Date.now();
+    const existingSession = state.chatSessions.find((session) => session.id === state.activeSessionId);
+    const activeSession =
+      existingSession ??
+      ({
+        id: `session-${now}`,
+        title: "新对话",
+        archived: false,
+        sortOrder: now,
+        createdAt: now,
+        updatedAt: now,
+        messages: [],
+      } satisfies ChatSession);
+    const chatPreferenceOverrides = normalizeChatPreferenceOverrides({
+      ...activeSession.chatPreferenceOverrides,
+      ...updates,
+    });
+    const nextSession: ChatSession = {
+      ...activeSession,
+      updatedAt: now,
+      chatPreferenceOverrides,
+    };
+
+    await saveChatSession(nextSession);
+    set((current) => ({
+      activeSessionId: nextSession.id,
+      chatSessions: upsertSession(current.chatSessions, nextSession),
+    }));
+  },
   deleteProvider: (providerId) =>
     set((state) => {
       const removedModelIds = new Set(state.models.filter((model) => model.providerId === providerId).map((model) => model.id));
       const models = state.models.filter((model) => model.providerId !== providerId);
       const selectedModelId = removedModelIds.has(state.selectedModelId) ? models[0]?.id ?? "" : state.selectedModelId;
-      const defaultChatModelId = removedModelIds.has(state.defaultChatModelId) ? "" : state.defaultChatModelId;
+      const shouldClearDefaultChatModel = removedModelIds.has(state.defaultChatModelId);
+      const defaultChatModelId = shouldClearDefaultChatModel ? "" : state.defaultChatModelId;
       const { [providerId]: _remoteModels, ...remoteModels } = state.remoteModels;
       const { [providerId]: _operation, ...channelOperations } = state.channelOperations;
       const modelConnectivity = Object.fromEntries(
@@ -291,7 +351,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
       removedModelIds.forEach(clearModelConnectivityResetTimer);
 
       void deleteModelProvider(providerId);
-      if (defaultChatModelId !== state.defaultChatModelId) {
+      if (shouldClearDefaultChatModel) {
+        // 默认对话模型不能指向已删除模型，否则刷新后会留下无效配置。
         void saveAppSetting({ key: "defaultChatModelId", value: "", updatedAt: Date.now() });
       }
 
@@ -309,13 +370,15 @@ export const useAppStore = create<AppState>()((set, get) => ({
     set((state) => {
       const models = state.models.filter((model) => model.id !== modelId);
       const selectedModelId = state.selectedModelId === modelId ? models[0]?.id ?? "" : state.selectedModelId;
-      const defaultChatModelId = state.defaultChatModelId === modelId ? "" : state.defaultChatModelId;
+      const shouldClearDefaultChatModel = state.defaultChatModelId === modelId;
+      const defaultChatModelId = shouldClearDefaultChatModel ? "" : state.defaultChatModelId;
       const { [modelId]: _operation, ...modelConnectivity } = state.modelConnectivity;
 
       clearModelConnectivityResetTimer(modelId);
 
       void deleteProviderModel(modelId);
-      if (defaultChatModelId !== state.defaultChatModelId) {
+      if (shouldClearDefaultChatModel) {
+        // 默认对话模型不能指向已删除模型，否则刷新后会留下无效配置。
         void saveAppSetting({ key: "defaultChatModelId", value: "", updatedAt: Date.now() });
       }
 
@@ -327,10 +390,11 @@ export const useAppStore = create<AppState>()((set, get) => ({
       };
     }),
   loadChannelConfig: async () => {
-    const [providers, models, savedDefaultChatModelId] = await Promise.all([
+    const [providers, models, savedDefaultChatModelId, savedChatPreferences] = await Promise.all([
       getModelProviders(),
       getProviderModels(),
       getAppSetting<string>("defaultChatModelId"),
+      getAppSetting<Partial<ChatPreferenceValues>>("chatPreferences"),
     ]);
     const defaultChatModelId = resolveConfiguredModelId(savedDefaultChatModelId ?? "", models, providers);
     const currentSelectedModelId = get().selectedModelId;
@@ -342,6 +406,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       providers,
       models,
       defaultChatModelId,
+      chatPreferences: normalizeChatPreferences(savedChatPreferences),
       selectedModelId: selectedModelStillExists ? currentSelectedModelId : (defaultChatModelId || resolveAvailableModelId("", models, providers)),
     });
   },
@@ -766,9 +831,10 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
     set({ sending: true, failure: undefined });
 
-    const modelConfig = createModelConfig(provider, model);
     const now = Date.now();
     const baseSession = state.chatSessions.find((session) => session.id === state.activeSessionId);
+    const effectiveChatPreferences = resolveEffectiveChatPreferences(state.chatPreferences, baseSession?.chatPreferenceOverrides);
+    const modelConfig = createModelConfig(provider, model, effectiveChatPreferences);
     const session =
       baseSession ??
       {
@@ -788,7 +854,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       modelId: model.id,
       endpointType: provider.endpointType,
       streamMode: state.streamMode,
-      systemPrompt: model.systemPrompt,
+      systemPrompt: effectiveChatPreferences.systemPrompt,
       contextPrompt: state.pageContext.text,
       contextMode: state.contextMode,
       matchedRuleId: state.pageContext.matchedRuleId,
@@ -829,6 +895,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
           pageContext: state.pageContext.text,
           existingMessages: session.messages,
           userMessage,
+          systemPrompt: effectiveChatPreferences.systemPrompt,
         }),
         stream: state.streamMode,
       };
@@ -839,7 +906,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
           sessionId: nextSession.id,
           modelId: model.id,
           endpointType: provider.endpointType,
-          systemPrompt: model.systemPrompt,
+          systemPrompt: effectiveChatPreferences.systemPrompt,
           contextPrompt: state.pageContext.text,
           contextMode: state.contextMode,
           matchedRuleId: state.pageContext.matchedRuleId,
@@ -876,7 +943,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
         modelId: model.id,
         endpointType: provider.endpointType,
         streamMode: state.streamMode,
-        systemPrompt: model.systemPrompt,
+        systemPrompt: effectiveChatPreferences.systemPrompt,
         contextPrompt: state.pageContext.text,
         contextMode: state.contextMode,
         matchedRuleId: state.pageContext.matchedRuleId,
@@ -941,6 +1008,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       modelConnectivity: {},
       selectedModelId: "",
       defaultChatModelId: "",
+      chatPreferences: DEFAULT_CHAT_PREFERENCES,
       activeSessionId: "",
       pendingDeleteSessionId: undefined,
       streamMode: true,
@@ -977,6 +1045,76 @@ function resolveConfiguredModelId(modelId: string, models: ProviderModel[], prov
 
 function createDefaultSessionTitle(content: string): string {
   return content.length > 20 ? `${content.slice(0, 20)}...` : content;
+}
+
+function normalizeChatPreferences(value?: Partial<ChatPreferenceValues>): ChatPreferenceValues {
+  return {
+    systemPrompt:
+      typeof value?.systemPrompt === "string" && value.systemPrompt.trim()
+        ? value.systemPrompt.trim()
+        : DEFAULT_CHAT_PREFERENCES.systemPrompt,
+    temperature: normalizeNumber(value?.temperature, DEFAULT_CHAT_PREFERENCES.temperature, 0, 2),
+    maxTokens: Math.round(normalizeNumber(value?.maxTokens, DEFAULT_CHAT_PREFERENCES.maxTokens, 1, 200_000)),
+    topK: normalizeOptionalInteger(value?.topK, 1, 1_000),
+    historyDrawerDefaultOpen: value?.historyDrawerDefaultOpen ?? DEFAULT_CHAT_PREFERENCES.historyDrawerDefaultOpen,
+  };
+}
+
+function normalizeChatPreferenceOverrides(value?: ChatSessionPreferenceOverrides): ChatSessionPreferenceOverrides {
+  const overrides: ChatSessionPreferenceOverrides = {};
+
+  if (typeof value?.systemPrompt === "string" && value.systemPrompt.trim()) {
+    overrides.systemPrompt = value.systemPrompt.trim();
+  }
+  if (value?.temperature !== undefined) {
+    overrides.temperature = normalizeNumber(value.temperature, DEFAULT_CHAT_PREFERENCES.temperature, 0, 2);
+  }
+  if (value?.maxTokens !== undefined) {
+    overrides.maxTokens = Math.round(normalizeNumber(value.maxTokens, DEFAULT_CHAT_PREFERENCES.maxTokens, 1, 200_000));
+  }
+  if (value?.topK !== undefined) {
+    overrides.topK = normalizeOptionalInteger(value.topK, 1, 1_000);
+  }
+
+  return overrides;
+}
+
+function resolveEffectiveChatPreferences(
+  preferences: ChatPreferenceValues,
+  overrides?: ChatSessionPreferenceOverrides,
+): Required<Pick<ChatSessionPreferenceOverrides, "systemPrompt" | "temperature" | "maxTokens">> &
+  Pick<ChatSessionPreferenceOverrides, "topK"> {
+  const normalizedOverrides = normalizeChatPreferenceOverrides({
+    systemPrompt: overrides?.systemPrompt ?? preferences.systemPrompt,
+    temperature: overrides?.temperature ?? preferences.temperature,
+    maxTokens: overrides?.maxTokens ?? preferences.maxTokens,
+    topK: overrides?.topK ?? preferences.topK,
+  });
+
+  return {
+    systemPrompt: normalizedOverrides.systemPrompt ?? preferences.systemPrompt,
+    temperature: normalizedOverrides.temperature ?? preferences.temperature,
+    maxTokens: normalizedOverrides.maxTokens ?? preferences.maxTokens,
+    topK: normalizedOverrides.topK,
+  };
+}
+
+function normalizeNumber(value: unknown, fallback: number, min: number, max: number): number {
+  const numberValue = typeof value === "number" ? value : Number(value);
+
+  if (!Number.isFinite(numberValue)) {
+    return fallback;
+  }
+
+  return Math.min(max, Math.max(min, numberValue));
+}
+
+function normalizeOptionalInteger(value: unknown, min: number, max: number): number | undefined {
+  if (value === "" || value === null || value === undefined) {
+    return undefined;
+  }
+
+  return Math.round(normalizeNumber(value, min, min, max));
 }
 
 function upsertSession(sessions: ChatSession[], session: ChatSession): ChatSession[] {
