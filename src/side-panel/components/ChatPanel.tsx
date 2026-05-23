@@ -5,6 +5,7 @@ import { MessageList } from "./MessageList";
 import { ModelSelector } from "./ModelSelector";
 import { SessionHistoryDialog } from "./SessionHistoryDialog";
 import { useAppStore } from "../state/appStore";
+import { downloadChatSessionMarkdown } from "../utils/chatMarkdownExport";
 
 interface ChatPanelProps {
   historyPanelOpen: boolean;
@@ -53,6 +54,19 @@ export function ChatPanel({ historyPanelOpen, onToggleHistoryPanel }: ChatPanelP
           </button>
           <button className="ui-button-secondary chat-drawer-trigger" type="button" aria-label="打开当前聊天设置" onClick={() => setChatPreferencesOpen(true)}>
             ⚙
+          </button>
+          <button
+            className="ui-button-secondary chat-export-trigger"
+            type="button"
+            aria-label="导出当前聊天为 Markdown"
+            disabled={!activeSession || activeSession.messages.length === 0}
+            onClick={() => {
+              if (activeSession && activeSession.messages.length > 0) {
+                downloadChatSessionMarkdown(activeSession);
+              }
+            }}
+          >
+            导出
           </button>
         </div>
       </div>

@@ -409,6 +409,10 @@ body {
     @apply grid h-10 w-10 shrink-0 place-items-center px-0 text-base;
   }
 
+  .chat-export-trigger {
+    @apply h-10 shrink-0 px-3 text-sm;
+  }
+
   @media (min-width: 720px) {
     .chat-history-panel-toggle {
       display: grid;

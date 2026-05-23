@@ -117,6 +117,42 @@ function getLastChatRequest(sendMessage: ReturnType<typeof createShortcutRuntime
     .find((message) => message.type === "chat.send");
 }
 
+function createDownloadMock() {
+  const appendChild = vi.spyOn(document.body, "appendChild");
+  const removeChild = vi.spyOn(document.body, "removeChild");
+  const click = vi.fn();
+  const anchor = document.createElement("a");
+  const createElement = vi.spyOn(document, "createElement").mockImplementation((tagName: string, options?: ElementCreationOptions) => {
+    if (tagName.toLowerCase() === "a") {
+      Object.defineProperty(anchor, "click", { configurable: true, value: click });
+      return anchor;
+    }
+
+    return Document.prototype.createElement.call(document, tagName, options);
+  });
+  const createObjectURL = vi.fn((blob: Blob) => {
+    void blob;
+    return "blob:chat-export";
+  });
+  const revokeObjectURL = vi.fn();
+
+  vi.stubGlobal("URL", {
+    ...URL,
+    createObjectURL,
+    revokeObjectURL,
+  });
+
+  return {
+    anchor,
+    appendChild,
+    click,
+    createElement,
+    createObjectURL,
+    removeChild,
+    revokeObjectURL,
+  };
+}
+
 describe("App", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
@@ -235,6 +271,51 @@ describe("App", () => {
     expect(screen.getByRole("textbox", { name: "当前聊天系统提示词" })).toBeInTheDocument();
     expect(screen.getByRole("spinbutton", { name: "当前聊天 temperature" })).toHaveClass("chat-preference-number-input");
     expect(screen.getByRole("spinbutton", { name: "当前聊天 top_k" }).closest("label")).toHaveClass("chat-preference-field");
+  });
+
+  it("导出按钮位于当前聊天设置右侧并下载当前会话 Markdown", async () => {
+    const user = userEvent.setup();
+    const downloadMock = createDownloadMock();
+    await saveChatSession(
+      createChatSession({
+        id: "session-export",
+        title: "导出会话",
+        createdAt: 1700000000000,
+        updatedAt: 1700000100000,
+        messages: [
+          createChatMessage({
+            id: "message-export-user",
+            role: "user",
+            content: "请总结页面",
+            createdAt: 1700000000000,
+          }),
+          createChatMessage({
+            id: "message-export-assistant",
+            role: "assistant",
+            content: "页面重点如下。",
+            createdAt: 1700000100000,
+          }),
+        ],
+      }),
+    );
+
+    render(<App />);
+
+    const settingsButton = screen.getByRole("button", { name: "打开当前聊天设置" });
+    const exportButton = await screen.findByRole("button", { name: "导出当前聊天为 Markdown" });
+    expect(settingsButton.nextElementSibling).toBe(exportButton);
+
+    await user.click(exportButton);
+
+    expect(downloadMock.createObjectURL).toHaveBeenCalledTimes(1);
+    expect(downloadMock.anchor.download).toMatch(/^导出会话-\d{4}-\d{2}-\d{2}\.md$/);
+    expect(downloadMock.anchor.href).toBe("blob:chat-export");
+    expect(downloadMock.click).toHaveBeenCalledTimes(1);
+    expect(downloadMock.revokeObjectURL).toHaveBeenCalledWith("blob:chat-export");
+    const blob = downloadMock.createObjectURL.mock.calls[0][0] as Blob;
+    const markdown = await blob.text();
+    expect(markdown).toContain("# 导出会话\n\n- 导出时间：");
+    expect(markdown).toContain("## 用户 · 2023-11-14T22:13:20.000Z\n\n```\n请总结页面\n```");
   });
 
   it("当前聊天系统提示词使用中文输入法组合输入时只保存最终文本", async () => {
