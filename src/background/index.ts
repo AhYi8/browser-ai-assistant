@@ -1,7 +1,7 @@
 import { handleModelCatalogMessage, type ModelCatalogMessage } from "./modelCatalogMessageHandler";
 import { handleChatSendMessage, type ChatSendMessage } from "./modelRequestHandler";
 import { handlePageContextMessage, type PageContextExtractMessage } from "./pageContextMessageHandler";
-import { handleSyncAlarm, handleSyncBackupMessage, type SyncBackupMessage } from "./syncBackupHandler";
+import { handleSyncAlarm, handleSyncBackupMessage, restoreSyncAlarmFromSettings, type SyncBackupMessage } from "./syncBackupHandler";
 import {
   handleCurrentTabUrlMessage,
   handleUrlPatternGenerationMessage,
@@ -17,7 +17,18 @@ chrome.runtime.onInstalled.addListener(() => {
     title: "打开 AI 助手",
     contexts: ["page"],
   });
+  runRestoreSyncAlarmFromSettings();
 });
+
+chrome.runtime.onStartup.addListener(() => {
+  runRestoreSyncAlarmFromSettings();
+});
+
+function runRestoreSyncAlarmFromSettings(): void {
+  void restoreSyncAlarmFromSettings().catch((error) => {
+    console.error("自动同步定时任务恢复失败", error);
+  });
+}
 
 async function openSidePanel(tabId?: number) {
   if (!tabId) {

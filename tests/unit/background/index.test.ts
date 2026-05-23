@@ -5,6 +5,7 @@ type Listener<T extends (...args: never[]) => void> = T;
 
 function createChromeMock() {
   const installedListeners: Array<Listener<() => void>> = [];
+  const startupListeners: Array<Listener<() => void>> = [];
   const actionListeners: Array<Listener<(tab: chrome.tabs.Tab) => void>> = [];
   const commandListeners: Array<Listener<(command: string) => void>> = [];
   const contextListeners: Array<Listener<(info: chrome.contextMenus.OnClickData, tab?: chrome.tabs.Tab) => void>> = [];
@@ -16,6 +17,7 @@ function createChromeMock() {
 
   return {
     installedListeners,
+    startupListeners,
     actionListeners,
     commandListeners,
     contextListeners,
@@ -26,6 +28,9 @@ function createChromeMock() {
       runtime: {
         onInstalled: {
           addListener: vi.fn((listener: Listener<() => void>) => installedListeners.push(listener)),
+        },
+        onStartup: {
+          addListener: vi.fn((listener: Listener<() => void>) => startupListeners.push(listener)),
         },
         onMessage: {
           addListener: vi.fn(
@@ -153,6 +158,69 @@ describe("background 入口", () => {
 
     expect(mock.chrome.runtime.onMessage.addListener).toHaveBeenCalledTimes(1);
     expect(mock.chrome.alarms.onAlarm.addListener).toHaveBeenCalledTimes(1);
+  });
+
+  it("浏览器启动时根据已保存设置恢复自动同步定时任务", async () => {
+    const mock = createChromeMock();
+    vi.stubGlobal("chrome", mock.chrome);
+    await saveAppSetting({
+      key: "syncSettings",
+      value: {
+        syncEnabled: true,
+        autoSyncEnabled: true,
+        intervalMinutes: 15,
+      },
+      updatedAt: 1,
+    });
+    await import("../../../src/background/index");
+
+    mock.startupListeners[0]();
+
+    await vi.waitFor(() => {
+      expect(mock.chrome.alarms.create).toHaveBeenCalledWith("browser-ai-assistant.sync-backup", {
+        periodInMinutes: 15,
+      });
+    });
+  });
+
+  it("定时任务触发时无需打开侧边栏即可执行备份", async () => {
+    const mock = createChromeMock();
+    vi.stubGlobal("chrome", mock.chrome);
+    await saveAppSetting({
+      key: "syncSettings",
+      value: {
+        syncEnabled: true,
+        autoSyncEnabled: true,
+        provider: "chrome_sync",
+        backupPrefix: "work",
+        intervalMinutes: 15,
+      },
+      updatedAt: 1,
+    });
+    await saveModelProvider({
+      id: "provider-1",
+      name: "渠道",
+      endpointType: "openai_chat",
+      endpointUrl: "https://api.example.com",
+      apiKey: "sk-local",
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    await import("../../../src/background/index");
+
+    mock.alarmListeners[0]({ name: "browser-ai-assistant.sync-backup" } as chrome.alarms.Alarm);
+
+    await vi.waitFor(() => {
+      expect(mock.chrome.storage.sync.set).toHaveBeenCalledWith(
+        expect.objectContaining({
+          "browserAiAssistantBackup:work": expect.objectContaining({
+            prefix: "work",
+            provider: "chrome_sync",
+          }),
+        }),
+      );
+    });
   });
 
   it("处理手动备份 runtime 消息", async () => {

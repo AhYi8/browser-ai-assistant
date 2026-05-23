@@ -52,6 +52,10 @@ export async function configureSyncAlarm(settings: SyncSettings): Promise<void> 
   });
 }
 
+export async function restoreSyncAlarmFromSettings(): Promise<void> {
+  await configureSyncAlarm(await getSyncSettings());
+}
+
 export async function handleSyncAlarm(alarm: chrome.alarms.Alarm): Promise<void> {
   if (alarm.name !== SYNC_ALARM_NAME) {
     return;
