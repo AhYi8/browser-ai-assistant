@@ -1,4 +1,11 @@
-import { createChatSessionMarkdown, createChatSessionMarkdownFilename, downloadChatSessionMarkdown } from "../../../src/side-panel/utils/chatMarkdownExport";
+import {
+  createChatSessionMarkdown,
+  createChatSessionMarkdownFilename,
+  createChatSessionPrintHtml,
+  downloadChatSessionMarkdown,
+  downloadChatSessionPdf,
+  downloadChatSessionWord,
+} from "../../../src/side-panel/utils/chatMarkdownExport";
 import type { ChatMessage, ChatSession } from "../../../src/shared/types";
 
 function createMessage(partial: Partial<ChatMessage>): ChatMessage {
@@ -31,6 +38,12 @@ function createSession(partial: Partial<ChatSession>): ChatSession {
 }
 
 describe("chatMarkdownExport", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
   it("把当前会话消息格式化为 Markdown", () => {
     const session = createSession({
       title: "资料会话",
@@ -100,6 +113,117 @@ const value = 1;
     const session = createSession({ title: "资料/会话:*?" });
 
     expect(createChatSessionMarkdownFilename(session, 1700000200000)).toBe("资料_会话___-2023-11-14.md");
+  });
+
+  it("下载当前会话 Word 文档", async () => {
+    const downloadMock = createDownloadMock("blob:session-word");
+    const session = createSession({
+      title: "Word 会话",
+      messages: [createMessage({ content: "Word 内容", createdAt: 1700000000000 })],
+    });
+
+    await downloadChatSessionWord(session, 1700000200000);
+
+    expect(downloadMock.createObjectURL).toHaveBeenCalledTimes(1);
+    expect(downloadMock.anchor.download).toBe("Word 会话-2023-11-14.docx");
+    expect(downloadMock.anchor.href).toBe("blob:session-word");
+    expect(downloadMock.click).toHaveBeenCalledTimes(1);
+    expect(downloadMock.revokeObjectURL).toHaveBeenCalledWith("blob:session-word");
+    const blob = downloadMock.createObjectURL.mock.calls[0][0] as Blob;
+    expect(blob.type).toBe("application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+    expect(blob.size).toBeGreaterThan(0);
+  });
+
+  it("Word 文档使用 A4 页面并把消息正文原文放进代码块", async () => {
+    const downloadMock = createDownloadMock("blob:session-word");
+    const session = createSession({
+      title: "Word 格式会话",
+      messages: [
+        createMessage({
+          role: "assistant",
+          content: "第一行\n第二行\n\n> 引用第一行\n> 引用第二行\n\n```ts\nconst value = 1;\nconsole.log(value);\n```",
+          thinking: "思考第一行\n思考第二行",
+          createdAt: 1700000000000,
+        }),
+      ],
+    });
+
+    await downloadChatSessionWord(session, 1700000200000);
+
+    const blob = downloadMock.createObjectURL.mock.calls[0][0] as Blob;
+    const documentXml = await getDocxEntryText(blob, "word/document.xml");
+    expect(documentXml).toContain('<w:pgSz w:w="11906" w:h="16838"');
+    expect(documentXml).toContain("<w:br/>");
+    expect(documentXml).toContain('<w:left w:val="single" w:color="E8A55A" w:sz="12"/>');
+    expect(documentXml).toContain('<w:jc w:val="left"/>');
+    expect(documentXml).toContain('<w:shd w:fill="181715"');
+    expect(documentXml).toContain('<w:color w:val="FAF9F5"/>');
+    expect(documentXml).toContain("&gt; 引用第一行");
+    expect(documentXml).toContain("```ts");
+  });
+
+  it("生成用于 Word/PDF 的打印 HTML，把消息正文原文放进代码块", () => {
+    const session = createSession({
+      title: "格式会话",
+      messages: [
+        createMessage({
+          role: "assistant",
+          content: "# 标题\n\n> 引用内容\n\n```ts\nconst value = 1;\n```\n\nBob's \"引用\"",
+          thinking: "第一步\n第二步",
+          createdAt: 1700000000000,
+        }),
+      ],
+    });
+
+    const html = createChatSessionPrintHtml(session, 1700000200000);
+
+    expect(html).toContain("@page { size: A4; margin: 18mm; }");
+    expect(html).toContain("<title>格式会话</title>");
+    expect(html).toContain("<h1>格式会话</h1>");
+    expect(html).toContain("<pre><code># 标题");
+    expect(html).toContain("&gt; 引用内容");
+    expect(html).toContain("```ts");
+    expect(html).toContain('<section class="thinking">');
+    expect(html).toContain("text-align: left;");
+    expect(html).toContain("思考过程：第一步<br>第二步");
+    expect(html).toContain("Bob&#39;s &quot;引用&quot;");
+    expect(html).not.toContain(".meta");
+    expect(html).not.toContain(".message");
+  });
+
+  it("打开打印窗口导出当前会话 PDF", async () => {
+    const printMock = createPrintWindowMock();
+    const session = createSession({
+      title: "PDF 会话",
+      messages: [createMessage({ content: "PDF 内容", createdAt: 1700000000000 })],
+    });
+
+    await downloadChatSessionPdf(session, 1700000200000);
+
+    expect(printMock.open).toHaveBeenCalledWith("", "_blank");
+    expect(printMock.document.open).toHaveBeenCalledTimes(1);
+    expect(printMock.document.write).toHaveBeenCalledWith(expect.stringContaining("@page { size: A4; margin: 18mm; }"));
+    expect(printMock.document.write).toHaveBeenCalledWith(expect.stringContaining("<pre><code>PDF 内容</code></pre>"));
+    expect(printMock.document.close).toHaveBeenCalledTimes(1);
+    expect(printMock.focus).toHaveBeenCalledTimes(1);
+    expect(printMock.print).toHaveBeenCalledTimes(1);
+  });
+
+  it("打印 PDF 失败时抛出明确错误", async () => {
+    vi.spyOn(window, "open").mockReturnValue(null);
+    const session = createSession({
+      title: "PDF 格式会话",
+      messages: [
+        createMessage({
+          role: "assistant",
+          content: "> 引用内容\n\n```ts\nconst value = 1;\n```\n\n普通段落",
+          thinking: "思考内容",
+          createdAt: 1700000000000,
+        }),
+      ],
+    });
+
+    await expect(downloadChatSessionPdf(session, 1700000200000)).rejects.toThrow("无法打开打印窗口，请允许弹窗后重试");
   });
 
   it("清理会话标题中的 Markdown 结构字符并为空标题提供回退", () => {
@@ -187,7 +311,6 @@ const value = 1;
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:session-markdown");
     const blob = createObjectURL.mock.calls[0][0] as Blob;
     await expect(blob.text()).resolves.toContain("```\n下载内容\n```");
-    vi.useRealTimers();
   });
 
   it("下载点击失败时仍清理临时链接并释放 Blob URL", () => {
@@ -224,6 +347,65 @@ const value = 1;
     expect(() => downloadChatSessionMarkdown(session)).toThrow(clickError);
     expect(removeChild).toHaveBeenCalledWith(anchor);
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:failed-download");
-    vi.useRealTimers();
   });
 });
+
+function createDownloadMock(url: string) {
+  const click = vi.fn();
+  const anchor = document.createElement("a");
+  Object.defineProperty(anchor, "click", { configurable: true, value: click });
+  const createElement = vi.spyOn(document, "createElement").mockImplementation((tagName: string, options?: ElementCreationOptions) => {
+    if (tagName.toLowerCase() === "a") {
+      return anchor;
+    }
+
+    return Document.prototype.createElement.call(document, tagName, options);
+  });
+  const createObjectURL = vi.fn((blob: Blob) => {
+    void blob;
+    return url;
+  });
+  const revokeObjectURL = vi.fn();
+  vi.stubGlobal("URL", {
+    ...URL,
+    createObjectURL,
+    revokeObjectURL,
+  });
+
+  return {
+    anchor,
+    click,
+    createElement,
+    createObjectURL,
+    revokeObjectURL,
+  };
+}
+
+function createPrintWindowMock() {
+  const printWindow = {
+    document: {
+      open: vi.fn(),
+      write: vi.fn(),
+      close: vi.fn(),
+    },
+    focus: vi.fn(),
+    print: vi.fn(),
+  };
+  const open = vi.spyOn(window, "open").mockReturnValue(printWindow as unknown as Window);
+
+  return {
+    open,
+    ...printWindow,
+  };
+}
+
+async function getDocxEntryText(blob: Blob, entryPath: string): Promise<string> {
+  const zipModule = await import("jszip");
+  const zip = await zipModule.default.loadAsync(await blob.arrayBuffer());
+  const entry = zip.file(entryPath);
+  if (!entry) {
+    throw new Error(`未找到 DOCX 条目：${entryPath}`);
+  }
+
+  return entry.async("text");
+}

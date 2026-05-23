@@ -153,6 +153,55 @@ function createDownloadMock() {
   };
 }
 
+function createSequentialDownloadMock(urls: string[]) {
+  const click = vi.fn();
+  const anchor = document.createElement("a");
+  Object.defineProperty(anchor, "click", { configurable: true, value: click });
+  vi.spyOn(document, "createElement").mockImplementation((tagName: string, options?: ElementCreationOptions) => {
+    if (tagName.toLowerCase() === "a") {
+      return anchor;
+    }
+
+    return Document.prototype.createElement.call(document, tagName, options);
+  });
+  const createObjectURL = vi.fn((blob: Blob) => {
+    void blob;
+    return urls[createObjectURL.mock.calls.length - 1] ?? "blob:chat-export";
+  });
+  const revokeObjectURL = vi.fn();
+
+  vi.stubGlobal("URL", {
+    ...URL,
+    createObjectURL,
+    revokeObjectURL,
+  });
+
+  return {
+    anchor,
+    click,
+    createObjectURL,
+    revokeObjectURL,
+  };
+}
+
+function createPrintWindowMock() {
+  const printWindow = {
+    document: {
+      open: vi.fn(),
+      write: vi.fn(),
+      close: vi.fn(),
+    },
+    focus: vi.fn(),
+    print: vi.fn(),
+  };
+  const open = vi.spyOn(window, "open").mockReturnValue(printWindow as unknown as Window);
+
+  return {
+    open,
+    ...printWindow,
+  };
+}
+
 describe("App", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
@@ -273,7 +322,7 @@ describe("App", () => {
     expect(screen.getByRole("spinbutton", { name: "当前聊天 top_k" }).closest("label")).toHaveClass("chat-preference-field");
   });
 
-  it("导出按钮位于当前聊天设置右侧并下载当前会话 Markdown", async () => {
+  it("导出按钮位于当前聊天设置右侧并提供 Markdown、Word、PDF 格式", async () => {
     const user = userEvent.setup();
     const downloadMock = createDownloadMock();
     await saveChatSession(
@@ -302,10 +351,19 @@ describe("App", () => {
     render(<App />);
 
     const settingsButton = screen.getByRole("button", { name: "打开当前聊天设置" });
-    const exportButton = await screen.findByRole("button", { name: "导出当前聊天为 Markdown" });
-    expect(settingsButton.nextElementSibling).toBe(exportButton);
+    const exportButton = await screen.findByRole("button", { name: "导出当前聊天" });
+    expect(settingsButton.nextElementSibling).toContainElement(exportButton);
 
     await user.click(exportButton);
+    expect(screen.getByRole("menuitem", { name: "Markdown" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Word" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "PDF" })).toBeInTheDocument();
+
+    await user.click(screen.getByLabelText("消息列表"));
+    expect(screen.queryByRole("menuitem", { name: "Markdown" })).not.toBeInTheDocument();
+
+    await user.click(exportButton);
+    await user.click(screen.getByRole("menuitem", { name: "Markdown" }));
 
     expect(downloadMock.createObjectURL).toHaveBeenCalledTimes(1);
     expect(downloadMock.anchor.download).toMatch(/^导出会话-\d{4}-\d{2}-\d{2}\.md$/);
@@ -316,6 +374,101 @@ describe("App", () => {
     const markdown = await blob.text();
     expect(markdown).toContain("# 导出会话\n\n- 导出时间：");
     expect(markdown).toContain("## 用户 · 2023-11-14T22:13:20.000Z\n\n```\n请总结页面\n```");
+  });
+
+  it("可以导出当前会话为 Word 和 PDF", async () => {
+    const user = userEvent.setup();
+    const downloadMock = createSequentialDownloadMock(["blob:word-export"]);
+    const printMock = createPrintWindowMock();
+    await saveChatSession(
+      createChatSession({
+        id: "session-export-doc",
+        title: "导出文档",
+        createdAt: 1700000000000,
+        updatedAt: 1700000100000,
+        messages: [
+          createChatMessage({
+            id: "message-export-doc",
+            role: "assistant",
+            content: "导出内容",
+            createdAt: 1700000000000,
+          }),
+        ],
+      }),
+    );
+
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "导出当前聊天" }));
+    await user.click(screen.getByRole("menuitem", { name: "Word" }));
+    await waitFor(() => {
+      expect(downloadMock.anchor.download).toMatch(/^导出文档-\d{4}-\d{2}-\d{2}\.docx$/);
+    });
+
+    await user.click(await screen.findByRole("button", { name: "导出当前聊天" }));
+    await user.click(screen.getByRole("menuitem", { name: "PDF" }));
+    await waitFor(() => {
+      expect(printMock.print).toHaveBeenCalledTimes(1);
+    });
+
+    expect(downloadMock.createObjectURL).toHaveBeenCalledTimes(1);
+    expect(downloadMock.revokeObjectURL).toHaveBeenCalledWith("blob:word-export");
+    expect(printMock.document.write).toHaveBeenCalledWith(expect.stringContaining("<pre><code>导出内容</code></pre>"));
+  });
+
+  it("导出失败时显示错误提示", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(window, "open").mockReturnValue(null);
+    await saveChatSession(
+      createChatSession({
+        id: "session-export-failed",
+        title: "导出失败会话",
+        messages: [
+          createChatMessage({
+            id: "message-export-failed",
+            role: "assistant",
+            content: "导出内容",
+            createdAt: 1700000000000,
+          }),
+        ],
+      }),
+    );
+
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "导出当前聊天" }));
+    await user.click(screen.getByRole("menuitem", { name: "PDF" }));
+
+    expect(await screen.findByText("无法打开打印窗口，请允许弹窗后重试")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "关闭导出错误提示" })).toBeInTheDocument();
+  });
+
+  it("Word 导出失败时显示具体错误提示", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(URL, "createObjectURL").mockImplementation(() => {
+      throw new Error("Word 文件生成失败");
+    });
+    await saveChatSession(
+      createChatSession({
+        id: "session-export-word-failed",
+        title: "Word 失败会话",
+        messages: [
+          createChatMessage({
+            id: "message-export-word-failed",
+            role: "assistant",
+            content: "导出内容",
+            createdAt: 1700000000000,
+          }),
+        ],
+      }),
+    );
+
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "导出当前聊天" }));
+    await user.click(screen.getByRole("menuitem", { name: "Word" }));
+
+    expect(await screen.findByText("Word 文件生成失败")).toBeInTheDocument();
   });
 
   it("当前聊天系统提示词使用中文输入法组合输入时只保存最终文本", async () => {

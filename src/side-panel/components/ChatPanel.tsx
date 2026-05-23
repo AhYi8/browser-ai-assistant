@@ -1,11 +1,11 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ChatPreferenceDrawer } from "./ChatPreferenceDrawer";
 import { ChatComposer } from "./ChatComposer";
 import { MessageList } from "./MessageList";
 import { ModelSelector } from "./ModelSelector";
 import { SessionHistoryDialog } from "./SessionHistoryDialog";
 import { useAppStore } from "../state/appStore";
-import { downloadChatSessionMarkdown } from "../utils/chatMarkdownExport";
+import { downloadChatSessionMarkdown, downloadChatSessionPdf, downloadChatSessionWord } from "../utils/chatMarkdownExport";
 
 interface ChatPanelProps {
   historyPanelOpen: boolean;
@@ -15,6 +15,9 @@ interface ChatPanelProps {
 export function ChatPanel({ historyPanelOpen, onToggleHistoryPanel }: ChatPanelProps) {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [chatPreferencesOpen, setChatPreferencesOpen] = useState(false);
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  const [exportError, setExportError] = useState<string | undefined>();
+  const exportMenuRef = useRef<HTMLDivElement>(null);
   const providers = useAppStore((state) => state.providers);
   const models = useAppStore((state) => state.models);
   const selectedModelId = useAppStore((state) => state.selectedModelId);
@@ -35,6 +38,47 @@ export function ChatPanel({ historyPanelOpen, onToggleHistoryPanel }: ChatPanelP
       : contextMode === "all"
         ? "全局 HTML"
         : "全局文本";
+  const canExport = Boolean(activeSession && activeSession.messages.length > 0);
+
+  useEffect(() => {
+    if (!exportMenuOpen) {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && !exportMenuRef.current?.contains(target)) {
+        setExportMenuOpen(false);
+      }
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, [exportMenuOpen]);
+
+  const handleExport = async (format: "markdown" | "word" | "pdf") => {
+    if (!activeSession || activeSession.messages.length === 0) {
+      return;
+    }
+
+    setExportMenuOpen(false);
+    setExportError(undefined);
+    try {
+      if (format === "word") {
+        await downloadChatSessionWord(activeSession);
+        return;
+      }
+
+      if (format === "pdf") {
+        await downloadChatSessionPdf(activeSession);
+        return;
+      }
+
+      downloadChatSessionMarkdown(activeSession);
+    } catch (error: unknown) {
+      setExportError(error instanceof Error ? error.message : "导出失败，请重试");
+    }
+  };
 
   return (
     <section className="chat-panel">
@@ -55,19 +99,32 @@ export function ChatPanel({ historyPanelOpen, onToggleHistoryPanel }: ChatPanelP
           <button className="ui-button-secondary chat-drawer-trigger" type="button" aria-label="打开当前聊天设置" onClick={() => setChatPreferencesOpen(true)}>
             ⚙
           </button>
-          <button
-            className="ui-button-secondary chat-export-trigger"
-            type="button"
-            aria-label="导出当前聊天为 Markdown"
-            disabled={!activeSession || activeSession.messages.length === 0}
-            onClick={() => {
-              if (activeSession && activeSession.messages.length > 0) {
-                downloadChatSessionMarkdown(activeSession);
-              }
-            }}
-          >
-            导出
-          </button>
+          <div className="chat-export-menu-wrap" ref={exportMenuRef}>
+            <button
+              className="ui-button-secondary chat-export-trigger"
+              type="button"
+              aria-label="导出当前聊天"
+              aria-haspopup="menu"
+              aria-expanded={exportMenuOpen}
+              disabled={!canExport}
+              onClick={() => setExportMenuOpen((value) => !value)}
+            >
+              导出
+            </button>
+            {exportMenuOpen ? (
+              <div className="chat-export-menu" role="menu">
+                <button className="chat-export-menu-item" type="button" role="menuitem" onClick={() => void handleExport("markdown")}>
+                  Markdown
+                </button>
+                <button className="chat-export-menu-item" type="button" role="menuitem" onClick={() => void handleExport("word")}>
+                  Word
+                </button>
+                <button className="chat-export-menu-item" type="button" role="menuitem" onClick={() => void handleExport("pdf")}>
+                  PDF
+                </button>
+              </div>
+            ) : null}
+          </div>
         </div>
       </div>
       <MessageList messages={activeSession?.messages ?? []} />
@@ -77,6 +134,14 @@ export function ChatPanel({ historyPanelOpen, onToggleHistoryPanel }: ChatPanelP
           <p>{failure.message}</p>
           <button className="ui-button-secondary" type="button" onClick={clearFailure}>
             重试
+          </button>
+        </div>
+      ) : null}
+      {exportError ? (
+        <div className="chat-failure" role="status">
+          <p>{exportError}</p>
+          <button className="ui-button-secondary" type="button" aria-label="关闭导出错误提示" onClick={() => setExportError(undefined)}>
+            关闭
           </button>
         </div>
       ) : null}

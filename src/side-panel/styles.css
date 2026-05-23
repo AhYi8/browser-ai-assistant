@@ -413,6 +413,26 @@ body {
     @apply h-10 shrink-0 px-3 text-sm;
   }
 
+  .chat-export-menu-wrap {
+    @apply relative shrink-0;
+  }
+
+  .chat-export-menu {
+    @apply absolute right-0 top-11 z-20 min-w-28 overflow-hidden rounded-md border text-sm;
+    background: var(--color-canvas);
+    border-color: var(--color-hairline);
+    box-shadow: 0 1px 3px rgba(20, 20, 19, 0.08);
+  }
+
+  .chat-export-menu-item {
+    @apply block h-9 w-full px-3 text-left;
+    color: var(--color-ink);
+  }
+
+  .chat-export-menu-item:hover {
+    background: var(--color-surface-card);
+  }
+
   @media (min-width: 720px) {
     .chat-history-panel-toggle {
       display: grid;
