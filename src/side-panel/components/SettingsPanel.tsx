@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import type { ChatPreferenceValues, ExtractionRule, ModelProvider, ProviderModel } from "../../shared/types";
+import type { ChatPreferenceValues, ExtractionRule, ModelProvider, ProviderModel, SendShortcut } from "../../shared/types";
 import { useAppStore } from "../state/appStore";
 import { useComposedTextInput } from "./useComposedTextInput";
 
@@ -13,6 +13,14 @@ const settingsTabs: Array<{ id: SettingsTab; label: string }> = [
   { id: "chat", label: "聊天偏好" },
   { id: "sync", label: "同步设置" },
   { id: "appearance", label: "界面偏好" },
+];
+
+const sendShortcutOptions: Array<{ value: SendShortcut; label: string }> = [
+  { value: "enter", label: "Enter" },
+  { value: "shift_enter", label: "Shift+Enter" },
+  { value: "ctrl_enter", label: "Ctrl+Enter" },
+  { value: "ctrl_shift_enter", label: "Ctrl+Shift+Enter" },
+  { value: "alt_enter", label: "Alt+Enter" },
 ];
 
 const draftProvider: ModelProvider = {
@@ -650,6 +658,21 @@ function ChatPreferenceSettings() {
           onChange={(value) => void updateChatPreferences({ topK: value })}
         />
       </div>
+      <label className="chat-preference-field">
+        发送快捷键
+        <select
+          className="ui-input chat-preference-shortcut-select"
+          aria-label="发送快捷键"
+          value={chatPreferences.sendShortcut}
+          onChange={(event) => void updateChatPreferences({ sendShortcut: event.target.value as SendShortcut })}
+        >
+          {sendShortcutOptions.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </label>
       <label className="chat-preference-switch">
         <input
           className="chat-preference-switch-input"

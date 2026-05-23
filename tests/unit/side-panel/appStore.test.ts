@@ -119,6 +119,33 @@ describe("appStore", () => {
     });
   });
 
+  it("刷新页面上下文时请求完整内容，等待发送前再决定是否裁剪", async () => {
+    const sendMessage = vi.fn().mockResolvedValue({
+      ok: true,
+      url: "https://example.com/article",
+      text: "完整页面内容",
+      truncated: false,
+      usedFallback: true,
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+      },
+    });
+
+    await useAppStore.getState().refreshPageContext();
+
+    expect(sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "pageContext.extract",
+        maxLength: undefined,
+      }),
+      expect.any(Function),
+    );
+    expect(useAppStore.getState().pageContext.text).toBe("完整页面内容");
+    expect(useAppStore.getState().pageContext.truncated).toBe(false);
+  });
+
   it("使用用户指定的模型请求 AI 生成 URL 正则候选", async () => {
     const provider = createProvider();
     const model = createModel();

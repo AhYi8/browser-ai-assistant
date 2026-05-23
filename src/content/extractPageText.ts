@@ -5,7 +5,7 @@ import { getSelectorLines } from "../shared/extractionRules/validation";
 export interface ExtractPageTextInput {
   url: string;
   rules: ExtractionRule[];
-  maxLength: number;
+  maxLength?: number;
   extractMode?: PageContextExtractMode;
 }
 
@@ -23,7 +23,7 @@ export function extractPageText(input: ExtractPageTextInput): ExtractPageTextRes
   const usedFallback = extractedContent.trim().length === 0;
   const rawContent = usedFallback ? extractGlobalContent(extractMode) : extractedContent;
   const normalizedContent = extractMode === "text" ? normalizeText(rawContent) : rawContent;
-  const truncated = truncateText(normalizedContent, input.maxLength);
+  const truncated = truncateText(normalizedContent, input.maxLength ?? Number.POSITIVE_INFINITY);
 
   return {
     ...truncated,

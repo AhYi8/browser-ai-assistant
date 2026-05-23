@@ -13,7 +13,7 @@ import {
   saveModelProvider,
   saveProviderModel,
 } from "../../../src/shared/storage/repositories";
-import type { ChatFolder, ChatMessage, ChatSession, ExtractionRule, ModelProvider, ProviderModel } from "../../../src/shared/types";
+import type { ChatFolder, ChatMessage, ChatSession, ExtractionRule, ModelProvider, ProviderModel, SendShortcut } from "../../../src/shared/types";
 
 function createChatMessage(partial: Partial<ChatMessage>): ChatMessage {
   return {
@@ -79,6 +79,44 @@ function createDataTransfer() {
   };
 }
 
+function createShortcutRuntimeMock() {
+  const sendMessage = vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+    if (message.type === "pageContext.extract") {
+      callback({
+        ok: true,
+        text: "页面内容",
+        truncated: false,
+        usedFallback: true,
+      });
+      return undefined;
+    }
+
+    callback({
+      ok: true,
+      content: "快捷键回复",
+    });
+    return undefined;
+  });
+
+  vi.stubGlobal("chrome", {
+    runtime: {
+      sendMessage,
+    },
+  });
+
+  return sendMessage;
+}
+
+function hasChatSendCall(sendMessage: ReturnType<typeof createShortcutRuntimeMock>): boolean {
+  return sendMessage.mock.calls.some(([message]) => (message as { type: string }).type === "chat.send");
+}
+
+function getLastChatRequest(sendMessage: ReturnType<typeof createShortcutRuntimeMock>): { type: string; messages?: ChatMessage[] } | undefined {
+  return sendMessage.mock.calls
+    .map(([message]) => message as { type: string; messages?: ChatMessage[] })
+    .find((message) => message.type === "chat.send");
+}
+
 describe("App", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
@@ -108,6 +146,7 @@ describe("App", () => {
     expect(screen.queryByRole("group", { name: "聊天偏好" })).not.toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "全局系统提示词" })).toBeInTheDocument();
     expect(screen.getByRole("spinbutton", { name: "全局 temperature" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "发送快捷键" })).toHaveDisplayValue("Enter");
     expect(screen.getByRole("checkbox", { name: "默认展开左侧历史面板" })).toBeInTheDocument();
     expect(styles).toContain(".chat-preference-switch-input");
     expect(styles).toContain(".chat-preference-switch-control");
@@ -242,6 +281,29 @@ describe("App", () => {
 
     expect(screen.getByLabelText("历史会话")).toBeInTheDocument();
     expect(screen.getByText("默认文件夹")).toBeInTheDocument();
+  });
+
+  it("聊天偏好可以保存发送按钮快捷键", async () => {
+    const user = userEvent.setup();
+    const updateChatPreferences = vi.fn(async () => undefined);
+    useAppStore.setState({
+      chatPreferences: {
+        systemPrompt: "你是网页助手",
+        temperature: 0.7,
+        maxTokens: 1024,
+        sendShortcut: "enter",
+        historyDrawerDefaultOpen: true,
+      },
+      updateChatPreferences,
+    });
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("tab", { name: "聊天偏好" }));
+    await user.selectOptions(screen.getByRole("combobox", { name: "发送快捷键" }), "ctrl_enter");
+
+    expect(updateChatPreferences).toHaveBeenCalledWith({ sendShortcut: "ctrl_enter" });
   });
 
   it("历史展开按钮位于模型选择器左侧，折叠时左侧面板不占宽", async () => {
@@ -486,6 +548,153 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "发送" })).toBeEnabled();
   });
 
+  it("默认按 Enter 触发发送，Shift+Enter 保留换行", async () => {
+    const user = userEvent.setup();
+    const provider: ModelProvider = {
+      id: "provider-shortcut",
+      name: "快捷键渠道",
+      endpointType: "openai_chat",
+      endpointUrl: "https://api.example.com/v1/chat/completions",
+      apiKey: "sk-shortcut",
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const model: ProviderModel = {
+      id: "model-shortcut",
+      providerId: "provider-shortcut",
+      displayName: "快捷键模型",
+      modelId: "gpt-shortcut",
+      temperature: 0.7,
+      maxTokens: 1024,
+      systemPrompt: "你是网页助手",
+      isTitleModel: false,
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const sendMessage = createShortcutRuntimeMock();
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+
+    render(<App />);
+
+    await screen.findByDisplayValue("快捷键渠道 / 快捷键模型");
+    const input = screen.getByLabelText("对话输入");
+    await user.type(input, "保留换行{Shift>}{Enter}{/Shift}继续输入");
+    expect(hasChatSendCall(sendMessage)).toBe(false);
+    expect(input).toHaveDisplayValue("保留换行\n继续输入");
+
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => expect(hasChatSendCall(sendMessage)).toBe(true));
+    const chatRequest = getLastChatRequest(sendMessage);
+    expect(chatRequest?.messages?.at(-1)?.content).toBe("保留换行\n继续输入");
+    expect(input).toHaveDisplayValue("");
+  });
+
+  it.each([
+    { shortcut: "shift_enter", eventInit: { key: "Enter", shiftKey: true } },
+    { shortcut: "ctrl_enter", eventInit: { key: "Enter", ctrlKey: true } },
+    { shortcut: "ctrl_shift_enter", eventInit: { key: "Enter", ctrlKey: true, shiftKey: true } },
+    { shortcut: "alt_enter", eventInit: { key: "Enter", altKey: true } },
+  ] satisfies Array<{ shortcut: SendShortcut; eventInit: Parameters<typeof fireEvent.keyDown>[1] }>)("按聊天偏好的 $shortcut 触发发送", async ({ shortcut, eventInit }) => {
+    const provider: ModelProvider = {
+      id: "provider-shortcut-custom",
+      name: "快捷键渠道",
+      endpointType: "openai_chat",
+      endpointUrl: "https://api.example.com/v1/chat/completions",
+      apiKey: "sk-shortcut",
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const model: ProviderModel = {
+      id: "model-shortcut-custom",
+      providerId: "provider-shortcut-custom",
+      displayName: "快捷键模型",
+      modelId: "gpt-shortcut",
+      temperature: 0.7,
+      maxTokens: 1024,
+      systemPrompt: "你是网页助手",
+      isTitleModel: false,
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const sendMessage = createShortcutRuntimeMock();
+    await saveAppSetting({
+      key: "chatPreferences",
+      value: {
+        systemPrompt: "你是网页助手",
+        temperature: 0.7,
+        maxTokens: 1024,
+        sendShortcut: shortcut,
+        historyDrawerDefaultOpen: true,
+      },
+      updatedAt: 1,
+    });
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+
+    render(<App />);
+
+    await screen.findByDisplayValue("快捷键渠道 / 快捷键模型");
+    const input = screen.getByLabelText("对话输入");
+    fireEvent.change(input, { target: { value: "快捷发送" } });
+
+    fireEvent.keyDown(input, eventInit);
+
+    await waitFor(() => expect(hasChatSendCall(sendMessage)).toBe(true));
+    const chatRequest = getLastChatRequest(sendMessage);
+    expect(chatRequest?.messages?.at(-1)?.content).toBe("快捷发送");
+    expect(input).toHaveDisplayValue("");
+  });
+
+  it("输入法组合输入期间不会用 Enter 快捷键触发发送", async () => {
+    const provider: ModelProvider = {
+      id: "provider-shortcut-composition",
+      name: "快捷键渠道",
+      endpointType: "openai_chat",
+      endpointUrl: "https://api.example.com/v1/chat/completions",
+      apiKey: "sk-shortcut",
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const model: ProviderModel = {
+      id: "model-shortcut-composition",
+      providerId: "provider-shortcut-composition",
+      displayName: "快捷键模型",
+      modelId: "gpt-shortcut",
+      temperature: 0.7,
+      maxTokens: 1024,
+      systemPrompt: "你是网页助手",
+      isTitleModel: false,
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const sendMessage = createShortcutRuntimeMock();
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+
+    render(<App />);
+
+    await screen.findByDisplayValue("快捷键渠道 / 快捷键模型");
+    const input = screen.getByLabelText("对话输入");
+    fireEvent.change(input, { target: { value: "shuru" } });
+    fireEvent.compositionStart(input);
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(hasChatSendCall(sendMessage)).toBe(false);
+
+    fireEvent.compositionEnd(input);
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => expect(hasChatSendCall(sendMessage)).toBe(true));
+  });
+
   it("请求失败时展示重试入口且不保存失败消息", async () => {
     const user = userEvent.setup();
     const provider: ModelProvider = {
@@ -542,6 +751,7 @@ describe("App", () => {
     await user.click(screen.getByRole("switch", { name: "流式响应" }));
     await user.type(screen.getByLabelText("对话输入"), "失败消息");
     await user.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(sendMessage.mock.calls.some(([message]) => (message as { type: string }).type === "chat.send")).toBe(true));
 
     expect(await screen.findByText("请求失败，请重试")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "重试" })).toBeInTheDocument();
@@ -1167,6 +1377,7 @@ describe("App", () => {
     await user.click(screen.getByRole("switch", { name: "流式响应" }));
     await user.type(screen.getByLabelText("对话输入"), "总结页面");
     await user.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(sendMessage.mock.calls.some(([message]) => (message as { type: string }).type === "chat.send")).toBe(true));
 
     expect((await screen.findAllByText("总结页面")).length).toBeGreaterThan(0);
     expect(await screen.findByText("AI 总结")).toBeInTheDocument();
@@ -1298,6 +1509,7 @@ describe("App", () => {
     await user.type(input, "第一条");
     await user.click(screen.getByRole("button", { name: "发送" }));
     expect(input).toHaveDisplayValue("");
+    await waitFor(() => expect(sendMessage.mock.calls.some(([message]) => (message as { type: string }).type === "chat.send")).toBe(true));
 
     await user.type(input, "下一条草稿");
     await act(async () => {

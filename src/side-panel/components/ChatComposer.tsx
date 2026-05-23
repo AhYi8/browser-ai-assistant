@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
+import type { SendShortcut } from "../../shared/types";
 import { useAppStore } from "../state/appStore";
 
 interface ChatComposerProps {
@@ -27,6 +29,8 @@ function ComposerSwitch({ ariaLabel, checked, label, onToggle }: ComposerSwitchP
 export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   const [input, setInput] = useState("");
   const [contextDialogOpen, setContextDialogOpen] = useState(false);
+  const [composing, setComposing] = useState(false);
+  const sendShortcut = useAppStore((state) => state.chatPreferences.sendShortcut);
   const streamMode = useAppStore((state) => state.streamMode);
   const contextMode = useAppStore((state) => state.contextMode);
   const sending = useAppStore((state) => state.sending);
@@ -61,6 +65,19 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
     await sendChatMessage(content);
   };
 
+  const handleInputKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    if (composing || !isSendShortcut(event, sendShortcut)) {
+      return;
+    }
+
+    event.preventDefault();
+    if (!canSend || sending || !input.trim()) {
+      return;
+    }
+
+    void submit();
+  };
+
   const contextModeLabel = contextMode === "all" ? "提取所有" : "提取文本";
 
   return (
@@ -80,6 +97,9 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
         className="ui-input chat-input"
         aria-label="对话输入"
         value={input}
+        onKeyDown={handleInputKeyDown}
+        onCompositionStart={() => setComposing(true)}
+        onCompositionEnd={() => setComposing(false)}
         onChange={(event) => setInput(event.target.value)}
       />
       <div className="composer-actions">
@@ -114,4 +134,32 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
       ) : null}
     </section>
   );
+}
+
+function isSendShortcut(event: ReactKeyboardEvent<HTMLTextAreaElement>, shortcut: SendShortcut): boolean {
+  if (event.key !== "Enter" || event.nativeEvent.isComposing) {
+    return false;
+  }
+
+  const modifiers = {
+    shiftKey: event.shiftKey,
+    ctrlKey: event.ctrlKey,
+    altKey: event.altKey,
+    metaKey: event.metaKey,
+  };
+
+  switch (shortcut) {
+    case "enter":
+      return !modifiers.shiftKey && !modifiers.ctrlKey && !modifiers.altKey && !modifiers.metaKey;
+    case "shift_enter":
+      return modifiers.shiftKey && !modifiers.ctrlKey && !modifiers.altKey && !modifiers.metaKey;
+    case "ctrl_enter":
+      return modifiers.ctrlKey && !modifiers.shiftKey && !modifiers.altKey && !modifiers.metaKey;
+    case "ctrl_shift_enter":
+      return modifiers.ctrlKey && modifiers.shiftKey && !modifiers.altKey && !modifiers.metaKey;
+    case "alt_enter":
+      return modifiers.altKey && !modifiers.shiftKey && !modifiers.ctrlKey && !modifiers.metaKey;
+    default:
+      return false;
+  }
 }

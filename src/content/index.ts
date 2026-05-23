@@ -1,4 +1,3 @@
-import { DEFAULT_CONTEXT_MAX_LENGTH } from "../shared/constants";
 import type { ExtractionRule, PageContextExtractMode } from "../shared/types";
 import { extractPageText } from "./extractPageText";
 
@@ -37,7 +36,7 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
   const result = extractPageText({
     url: window.location.href,
     rules: message.rules,
-    maxLength: message.maxLength ?? DEFAULT_CONTEXT_MAX_LENGTH,
+    maxLength: message.maxLength,
     extractMode: message.extractMode ?? "text",
   });
 

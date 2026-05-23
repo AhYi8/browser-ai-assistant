@@ -23,7 +23,6 @@ import {
   saveProviderModel,
   updateChatSession,
 } from "../../shared/storage/repositories";
-import { DEFAULT_CONTEXT_MAX_LENGTH } from "../../shared/constants";
 import { validateExtractionRuleDraft } from "../../shared/extractionRules/validation";
 import { generateUrlPatternsWithModel } from "../../shared/extractionRules/urlPatternGeneration";
 import type {
@@ -37,6 +36,7 @@ import type {
   ModelProvider,
   PageContextExtractMode,
   ProviderModel,
+  SendShortcut,
 } from "../../shared/types";
 
 const DEBUG_PREFIX = "[提取规则 AI 生成诊断]";
@@ -158,6 +158,7 @@ const DEFAULT_CHAT_PREFERENCES: ChatPreferenceValues = {
   temperature: 0.7,
   maxTokens: 1024,
   topK: undefined,
+  sendShortcut: "enter",
   historyDrawerDefaultOpen: true,
 };
 
@@ -640,7 +641,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
     >({
       type: "pageContext.extract",
       rules: get().extractionRules,
-      maxLength: DEFAULT_CONTEXT_MAX_LENGTH,
+      maxLength: undefined,
       extractMode: requestedContextMode,
     });
 
@@ -1056,8 +1057,17 @@ function normalizeChatPreferences(value?: Partial<ChatPreferenceValues>): ChatPr
     temperature: normalizeNumber(value?.temperature, DEFAULT_CHAT_PREFERENCES.temperature, 0, 2),
     maxTokens: Math.round(normalizeNumber(value?.maxTokens, DEFAULT_CHAT_PREFERENCES.maxTokens, 1, 200_000)),
     topK: normalizeOptionalInteger(value?.topK, 1, 1_000),
+    sendShortcut: normalizeSendShortcut(value?.sendShortcut),
     historyDrawerDefaultOpen: value?.historyDrawerDefaultOpen ?? DEFAULT_CHAT_PREFERENCES.historyDrawerDefaultOpen,
   };
+}
+
+function normalizeSendShortcut(value: unknown): SendShortcut {
+  return isSendShortcutValue(value) ? value : DEFAULT_CHAT_PREFERENCES.sendShortcut;
+}
+
+function isSendShortcutValue(value: unknown): value is SendShortcut {
+  return typeof value === "string" && ["enter", "shift_enter", "ctrl_enter", "ctrl_shift_enter", "alt_enter"].includes(value);
 }
 
 function normalizeChatPreferenceOverrides(value?: ChatSessionPreferenceOverrides): ChatSessionPreferenceOverrides {

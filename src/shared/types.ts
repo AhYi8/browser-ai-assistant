@@ -1,6 +1,7 @@
 export type EndpointType = "openai_chat" | "anthropic_messages";
 export type ChatRole = "system" | "user" | "assistant";
 export type PageContextExtractMode = "text" | "all";
+export type SendShortcut = "enter" | "shift_enter" | "ctrl_enter" | "ctrl_shift_enter" | "alt_enter";
 
 export interface ModelProvider {
   id: string;
@@ -41,6 +42,7 @@ export interface ChatPreferenceValues {
   temperature: number;
   maxTokens: number;
   topK?: number;
+  sendShortcut: SendShortcut;
   historyDrawerDefaultOpen: boolean;
 }
 

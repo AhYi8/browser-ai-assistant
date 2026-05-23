@@ -711,6 +711,10 @@ body {
     @apply w-full min-w-0;
   }
 
+  .chat-preference-shortcut-select {
+    @apply w-full min-w-0;
+  }
+
   .chat-preference-switch {
     @apply relative flex min-h-12 cursor-pointer items-center gap-3 rounded-lg px-3 py-2 text-sm transition;
     background: var(--color-surface-soft);
