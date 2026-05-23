@@ -153,8 +153,7 @@ interface AppState {
   backupNow: () => Promise<void>;
   restoreNow: () => Promise<void>;
   sendChatMessage: (content: string, attachments?: ChatImageAttachment[]) => Promise<void>;
-  simulateFailure: () => void;
-  clearFailure: () => void;
+  regenerateMessage: (messageId: string) => Promise<void>;
   reset: () => void;
 }
 
@@ -918,184 +917,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
     set({ syncOperation: { loading: false, error: response?.message ?? "恢复失败，请重试" } });
   },
-  sendChatMessage: async (content, attachments = []) => {
-    const trimmedContent = content.trim();
-    const imageAttachments = attachments.filter((attachment) => attachment.mediaType.startsWith("image/"));
-    if ((!trimmedContent && imageAttachments.length === 0) || get().sending) {
-      return;
-    }
-
-    const state = get();
-    const model = state.models.find((item) => item.id === state.selectedModelId);
-    const provider = model ? state.providers.find((item) => item.id === model.providerId) : undefined;
-    if (!model || !provider || !model.enabled || !provider.enabled) {
-      set({ failure: { message: "请先配置可用模型后再发送" } });
-      return;
-    }
-    if (imageAttachments.length > 0 && !model.supportsVision) {
-      set({ failure: { message: "当前模型不支持视觉理解，无法添加图片" } });
-      return;
-    }
-
-    set({ sending: true, failure: undefined });
-
-    const now = Date.now();
-    const baseSession = state.chatSessions.find((session) => session.id === state.activeSessionId);
-    const effectiveChatPreferences = resolveEffectiveChatPreferences(state.chatPreferences, baseSession?.chatPreferenceOverrides);
-    const modelConfig = createModelConfig(provider, model, effectiveChatPreferences);
-    const session =
-      baseSession ??
-      {
-        id: `session-${now}`,
-        title: createDefaultSessionTitle(trimmedContent),
-        archived: false,
-        sortOrder: now,
-        createdAt: now,
-        updatedAt: now,
-        messages: [],
-      };
-    const userMessage: ChatMessage = {
-      id: `message-${now}-user`,
-      role: "user",
-      content: trimmedContent,
-      createdAt: now,
-      modelId: model.id,
-      endpointType: provider.endpointType,
-      streamMode: state.streamMode,
-      systemPrompt: effectiveChatPreferences.systemPrompt,
-      contextPrompt: state.pageContext.text,
-      contextMode: state.contextMode,
-      matchedRuleId: state.pageContext.matchedRuleId,
-      attachments: imageAttachments.length > 0 ? imageAttachments : undefined,
-    };
-    const nextSession: ChatSession = {
-      ...session,
-      title: session.messages.length === 0 ? createDefaultSessionTitle(trimmedContent) : session.title,
-      titleGenerating: session.messages.length === 0 && hasAvailableTitleModel(state),
-      updatedAt: now,
-      messages: [...session.messages, userMessage],
-    };
-    const shouldGenerateTitle = Boolean(nextSession.titleGenerating);
-    const fallbackTitle = nextSession.title;
-
-    try {
-      await saveChatSession(nextSession);
-      set((current) => ({
-        activeSessionId: nextSession.id,
-        chatSessions: upsertSession(current.chatSessions, nextSession),
-      }));
-      const titleGenerationPromise = shouldGenerateTitle
-        ? generateTitleForSession({
-          sessionId: nextSession.id,
-          fallbackTitle,
-          userContent: trimmedContent,
-          pageContext: state.appendPageContextToSystemPrompt ? state.pageContext.text : "",
-          get,
-          set,
-        })
-        : Promise.resolve();
-      void titleGenerationPromise;
-
-      const request: ChatSendMessage = {
-        type: "chat.send",
-        model: modelConfig,
-        messages: buildChatRequestMessages({
-          model: modelConfig,
-          pageContext: state.pageContext.text,
-          existingMessages: session.messages,
-          userMessage,
-          systemPrompt: effectiveChatPreferences.systemPrompt,
-          appendPageContextToSystemPrompt: state.appendPageContextToSystemPrompt,
-        }),
-        stream: state.streamMode,
-      };
-
-      if (state.streamMode) {
-        const streamResult = await sendStreamingChatMessage({
-          set,
-          sessionId: nextSession.id,
-          modelId: model.id,
-          endpointType: provider.endpointType,
-          systemPrompt: effectiveChatPreferences.systemPrompt,
-          contextPrompt: state.pageContext.text,
-          contextMode: state.contextMode,
-          matchedRuleId: state.pageContext.matchedRuleId,
-          request,
-        });
-        if (streamResult.completed) {
-          return;
-        }
-
-        request.stream = false;
-      }
-
-      const response = await sendRuntimeMessage<
-        { ok: true; content: string; thinking?: string } | { ok: false; message: string } | undefined
-      >(request);
-
-      if (!response) {
-        set({ failure: { message: "模型请求失败，请重试" } });
-        return;
-      }
-
-      if (!response.ok) {
-        set({ failure: { message: response.message } });
-        return;
-      }
-
-      const assistantCreatedAt = Date.now();
-      const assistantMessage: ChatMessage = {
-        id: `message-${assistantCreatedAt}-assistant`,
-        role: "assistant",
-        content: response.content,
-        thinking: response.thinking,
-        createdAt: assistantCreatedAt,
-        modelId: model.id,
-        endpointType: provider.endpointType,
-        streamMode: state.streamMode,
-        systemPrompt: effectiveChatPreferences.systemPrompt,
-        contextPrompt: state.pageContext.text,
-        contextMode: state.contextMode,
-        matchedRuleId: state.pageContext.matchedRuleId,
-      };
-      const completedSession = await updateChatSession(nextSession.id, (latestSession) => ({
-        ...latestSession,
-        updatedAt: assistantMessage.createdAt,
-        messages: [...latestSession.messages, assistantMessage],
-      }));
-      if (!completedSession) {
-        return;
-      }
-
-      set((current) => {
-        const currentSession = current.chatSessions.find((session) => session.id === completedSession.id);
-        if (!currentSession) {
-          return {};
-        }
-
-        const currentCompletedSession: ChatSession = {
-          ...currentSession,
-          updatedAt: assistantMessage.createdAt,
-          messages: [...currentSession.messages, assistantMessage],
-        };
-
-        return {
-          chatSessions: upsertSession(current.chatSessions, currentCompletedSession),
-        };
-      });
-
-    } catch {
-      set({
-        failure: {
-          message: "消息保存失败，请重试",
-        },
-      });
-    } finally {
-      set({ sending: false });
-    }
-  },
-  simulateFailure: () => set({ failure: { message: "请求失败，请重试" } }),
-  clearFailure: () => set({ failure: undefined }),
+  sendChatMessage: (content, attachments = []) => sendChatMessageWithState({ content, attachments, get, set }),
+  regenerateMessage: (messageId) => regenerateChatMessage({ messageId, get, set }),
   reset: () => {
     clearAllModelConnectivityResetTimers();
     pageContextRefreshSequence += 1;
@@ -1292,6 +1115,34 @@ type ChatSendMessage = {
   stream: boolean;
 };
 
+interface SendChatMessageWithStateInput {
+  content: string;
+  attachments?: ChatImageAttachment[];
+  get: StoreGetter;
+  set: StoreSetter;
+}
+
+interface RegenerateChatMessageInput {
+  messageId: string;
+  get: StoreGetter;
+  set: StoreSetter;
+}
+
+interface RunChatRequestInput {
+  state: AppState;
+  session: ChatSession;
+  userMessage: ChatMessage;
+  existingMessages: ChatMessage[];
+  nextMessages: ChatMessage[];
+  shouldGenerateTitle: boolean;
+  nextTitle: string;
+  fallbackTitle: string;
+  model: ProviderModel;
+  provider: ModelProvider;
+  get: StoreGetter;
+  set: StoreSetter;
+}
+
 interface GenerateTitleForSessionInput {
   sessionId: string;
   fallbackTitle: string;
@@ -1306,6 +1157,261 @@ function hasAvailableTitleModel(state: AppState): boolean {
   const titleModel = state.models.find((model) => model.isTitleModel && model.enabled);
   const titleProvider = titleModel ? state.providers.find((provider) => provider.id === titleModel.providerId) : undefined;
   return Boolean(titleModel && titleProvider?.enabled);
+}
+
+async function sendChatMessageWithState(input: SendChatMessageWithStateInput): Promise<void> {
+  const trimmedContent = input.content.trim();
+  const imageAttachments = (input.attachments ?? []).filter((attachment) => attachment.mediaType.startsWith("image/"));
+  if ((!trimmedContent && imageAttachments.length === 0) || input.get().sending) {
+    return;
+  }
+
+  const state = input.get();
+  const model = state.models.find((item) => item.id === state.selectedModelId);
+  const provider = model ? state.providers.find((item) => item.id === model.providerId) : undefined;
+  if (!model || !provider || !model.enabled || !provider.enabled) {
+    input.set({ failure: { message: "请先配置可用模型后再发送" } });
+    return;
+  }
+  if (imageAttachments.length > 0 && !model.supportsVision) {
+    input.set({ failure: { message: "当前模型不支持视觉理解，无法添加图片" } });
+    return;
+  }
+
+  const now = Date.now();
+  const baseSession = state.chatSessions.find((session) => session.id === state.activeSessionId);
+  const effectiveChatPreferences = resolveEffectiveChatPreferences(state.chatPreferences, baseSession?.chatPreferenceOverrides);
+  const session =
+    baseSession ??
+    {
+      id: `session-${now}`,
+      title: createDefaultSessionTitle(trimmedContent),
+      archived: false,
+      sortOrder: now,
+      createdAt: now,
+      updatedAt: now,
+      messages: [],
+    };
+  const userMessage: ChatMessage = {
+    id: `message-${now}-user`,
+    role: "user",
+    content: trimmedContent,
+    createdAt: now,
+    modelId: model.id,
+    endpointType: provider.endpointType,
+    streamMode: state.streamMode,
+    systemPrompt: effectiveChatPreferences.systemPrompt,
+    contextPrompt: state.pageContext.text,
+    contextMode: state.contextMode,
+    matchedRuleId: state.pageContext.matchedRuleId,
+    attachments: imageAttachments.length > 0 ? imageAttachments : undefined,
+  };
+
+  await runChatRequest({
+    state,
+    session,
+    userMessage,
+    existingMessages: session.messages,
+    nextMessages: [...session.messages, userMessage],
+    shouldGenerateTitle: session.messages.length === 0 && hasAvailableTitleModel(state),
+    nextTitle: session.messages.length === 0 ? createDefaultSessionTitle(trimmedContent) : session.title,
+    fallbackTitle: session.messages.length === 0 ? createDefaultSessionTitle(trimmedContent) : session.title,
+    model,
+    provider,
+    get: input.get,
+    set: input.set,
+  });
+}
+
+async function regenerateChatMessage(input: RegenerateChatMessageInput): Promise<void> {
+  const state = input.get();
+  if (state.sending) {
+    return;
+  }
+
+  const session = state.chatSessions.find((item) => item.id === state.activeSessionId);
+  if (!session) {
+    return;
+  }
+
+  const messageIndex = session.messages.findIndex((message) => message.id === input.messageId);
+  const targetMessage = session.messages[messageIndex];
+  if (messageIndex < 0 || !targetMessage) {
+    return;
+  }
+
+  const userMessage = targetMessage.role === "assistant" ? findPreviousUserMessage(session.messages, messageIndex) : targetMessage;
+  if (!userMessage || userMessage.role !== "user") {
+    input.set({ failure: { message: "未找到可重新生成的用户消息" } });
+    return;
+  }
+
+  const model = state.models.find((item) => item.id === state.selectedModelId);
+  const provider = model ? state.providers.find((item) => item.id === model.providerId) : undefined;
+  if (!model || !provider || !model.enabled || !provider.enabled) {
+    input.set({ failure: { message: "请先配置可用模型后再发送" } });
+    return;
+  }
+  if ((userMessage.attachments?.length ?? 0) > 0 && !model.supportsVision) {
+    input.set({ failure: { message: "当前模型不支持视觉理解，无法添加图片" } });
+    return;
+  }
+
+  const userMessageIndex = session.messages.findIndex((message) => message.id === userMessage.id);
+  const existingMessages = session.messages.slice(0, userMessageIndex);
+
+  await runChatRequest({
+    state,
+    session,
+    userMessage,
+    existingMessages,
+    nextMessages: [...existingMessages, userMessage],
+    shouldGenerateTitle: false,
+    nextTitle: session.title,
+    fallbackTitle: session.title,
+    model,
+    provider,
+    get: input.get,
+    set: input.set,
+  });
+}
+
+function findPreviousUserMessage(messages: ChatMessage[], startIndex: number): ChatMessage | undefined {
+  for (let index = startIndex - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === "user") {
+      return messages[index];
+    }
+  }
+
+  return undefined;
+}
+
+async function runChatRequest(input: RunChatRequestInput): Promise<void> {
+  input.set({ sending: true, failure: undefined });
+
+  const effectiveChatPreferences = resolveEffectiveChatPreferences(input.state.chatPreferences, input.session.chatPreferenceOverrides);
+  const modelConfig = createModelConfig(input.provider, input.model, effectiveChatPreferences);
+  const now = Date.now();
+  const nextSession: ChatSession = {
+    ...input.session,
+    title: input.nextTitle,
+    titleGenerating: input.shouldGenerateTitle,
+    updatedAt: now,
+    messages: input.nextMessages,
+  };
+
+  try {
+    await saveChatSession(nextSession);
+    input.set((current) => ({
+      activeSessionId: nextSession.id,
+      chatSessions: upsertSession(current.chatSessions, nextSession),
+    }));
+    const titleGenerationPromise = input.shouldGenerateTitle
+      ? generateTitleForSession({
+        sessionId: nextSession.id,
+        fallbackTitle: input.fallbackTitle,
+        userContent: input.userMessage.content,
+        pageContext: input.state.appendPageContextToSystemPrompt ? input.state.pageContext.text : "",
+        get: input.get,
+        set: input.set,
+      })
+      : Promise.resolve();
+    void titleGenerationPromise;
+
+    const request: ChatSendMessage = {
+      type: "chat.send",
+      model: modelConfig,
+      messages: buildChatRequestMessages({
+        model: modelConfig,
+        pageContext: input.state.pageContext.text,
+        existingMessages: input.existingMessages,
+        userMessage: input.userMessage,
+        systemPrompt: effectiveChatPreferences.systemPrompt,
+        appendPageContextToSystemPrompt: input.state.appendPageContextToSystemPrompt,
+      }),
+      stream: input.state.streamMode,
+    };
+
+    if (input.state.streamMode) {
+      const streamResult = await sendStreamingChatMessage({
+        set: input.set,
+        sessionId: nextSession.id,
+        modelId: input.model.id,
+        endpointType: input.provider.endpointType,
+        systemPrompt: effectiveChatPreferences.systemPrompt,
+        contextPrompt: input.state.pageContext.text,
+        contextMode: input.state.contextMode,
+        matchedRuleId: input.state.pageContext.matchedRuleId,
+        request,
+      });
+      if (streamResult.completed) {
+        return;
+      }
+
+      request.stream = false;
+    }
+
+    const response = await sendRuntimeMessage<
+      { ok: true; content: string; thinking?: string } | { ok: false; message: string } | undefined
+    >(request);
+
+    if (!response) {
+      input.set({ failure: { message: "模型请求失败，请重试" } });
+      return;
+    }
+
+    if (!response.ok) {
+      input.set({ failure: { message: response.message } });
+      return;
+    }
+
+    const assistantCreatedAt = Date.now();
+    const assistantMessage: ChatMessage = {
+      id: `message-${assistantCreatedAt}-assistant`,
+      role: "assistant",
+      content: response.content,
+      thinking: response.thinking,
+      createdAt: assistantCreatedAt,
+      modelId: input.model.id,
+      endpointType: input.provider.endpointType,
+      streamMode: input.state.streamMode,
+      systemPrompt: effectiveChatPreferences.systemPrompt,
+      contextPrompt: input.state.pageContext.text,
+      contextMode: input.state.contextMode,
+      matchedRuleId: input.state.pageContext.matchedRuleId,
+    };
+    const completedSession = await updateChatSession(nextSession.id, (latestSession) => ({
+      ...latestSession,
+      updatedAt: assistantMessage.createdAt,
+      messages: [...latestSession.messages, assistantMessage],
+    }));
+    if (!completedSession) {
+      return;
+    }
+
+    input.set((current) => {
+      const currentSession = current.chatSessions.find((session) => session.id === completedSession.id);
+      if (!currentSession) {
+        return {};
+      }
+
+      return {
+        chatSessions: upsertSession(current.chatSessions, {
+          ...currentSession,
+          updatedAt: assistantMessage.createdAt,
+          messages: [...currentSession.messages, assistantMessage],
+        }),
+      };
+    });
+  } catch {
+    input.set({
+      failure: {
+        message: "消息保存失败，请重试",
+      },
+    });
+  } finally {
+    input.set({ sending: false });
+  }
 }
 
 async function generateTitleForSession(input: GenerateTitleForSessionInput): Promise<void> {

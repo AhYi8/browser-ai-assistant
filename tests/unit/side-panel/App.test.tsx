@@ -668,6 +668,102 @@ describe("App", () => {
     expect(styles).toContain("overflow-x: auto;");
   });
 
+  it("用户和 AI 消息下方提供重新生成按钮，并在确认后重新请求", async () => {
+    const user = userEvent.setup();
+    const regenerateMessage = vi.fn(async () => undefined);
+    await saveChatSession(
+      createChatSession({
+        id: "session-regenerate-ui",
+        title: "重新生成",
+        messages: [
+          createChatMessage({
+            id: "message-regenerate-user",
+            role: "user",
+            content: "请总结页面",
+            createdAt: 1,
+          }),
+          createChatMessage({
+            id: "message-regenerate-ai",
+            role: "assistant",
+            content: "页面总结",
+            createdAt: 2,
+          }),
+        ],
+      }),
+    );
+    useAppStore.setState({ regenerateMessage });
+
+    render(<App />);
+
+    await screen.findByText("请总结页面");
+    const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>(".message-regenerate-button"));
+    expect(buttons).toHaveLength(2);
+    expect(buttons[0].closest(".message-regenerate-action")).toHaveClass("message-regenerate-action-user");
+    expect(buttons[1].closest(".message-regenerate-action")).toHaveClass("message-regenerate-action-assistant");
+
+    await user.click(buttons[1]);
+    expect(screen.getByRole("dialog", { name: "确认重新生成" })).toBeInTheDocument();
+    expect(screen.getByText("重新生成会丢弃这条消息后面的聊天记录。")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "确认重新生成" }));
+
+    expect(regenerateMessage).toHaveBeenCalledWith("message-regenerate-ai");
+  });
+
+  it("重新生成确认浮层可以取消或点击外部关闭", async () => {
+    const user = userEvent.setup();
+    const regenerateMessage = vi.fn(async () => undefined);
+    await saveChatSession(
+      createChatSession({
+        id: "session-regenerate-dismiss",
+        title: "重新生成取消",
+        messages: [
+          createChatMessage({
+            id: "message-regenerate-dismiss-user",
+            role: "user",
+            content: "需要重新生成的问题",
+            createdAt: 1,
+          }),
+          createChatMessage({
+            id: "message-regenerate-dismiss-ai",
+            role: "assistant",
+            content: "旧回复",
+            createdAt: 2,
+          }),
+        ],
+      }),
+    );
+    useAppStore.setState({ regenerateMessage });
+
+    render(<App />);
+
+    await screen.findByText("需要重新生成的问题");
+    const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>(".message-regenerate-button"));
+    await user.click(buttons[1]);
+    await user.click(screen.getByRole("button", { name: "取消" }));
+
+    expect(screen.queryByRole("dialog", { name: "确认重新生成" })).not.toBeInTheDocument();
+    expect(regenerateMessage).not.toHaveBeenCalled();
+
+    await user.click(buttons[1]);
+    expect(screen.getByRole("dialog", { name: "确认重新生成" })).toBeInTheDocument();
+    await user.click(screen.getByRole("heading", { name: "Browser AI Assistant" }));
+
+    expect(screen.queryByRole("dialog", { name: "确认重新生成" })).not.toBeInTheDocument();
+    expect(regenerateMessage).not.toHaveBeenCalled();
+  });
+
+  it("请求失败时不再展示失败重试占位入口", async () => {
+    act(() => {
+      useAppStore.setState({ failure: { message: "请求失败，请重试" } });
+    });
+
+    render(<App />);
+
+    expect(screen.getByText("请求失败，请重试")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("请求失败，请重试");
+    expect(screen.queryByRole("button", { name: "重试" })).not.toBeInTheDocument();
+  });
+
   it("聊天消息中的有序列表和无序列表展示可见序号标记", async () => {
     await saveChatSession(
       createChatSession({
@@ -969,7 +1065,7 @@ describe("App", () => {
     await waitFor(() => expect(hasChatSendCall(sendMessage)).toBe(true));
   });
 
-  it("请求失败时展示重试入口且不保存失败消息", async () => {
+  it("请求失败时展示失败提示且不保存失败消息", async () => {
     const user = userEvent.setup();
     const provider: ModelProvider = {
       id: "provider-failure",
@@ -1028,7 +1124,7 @@ describe("App", () => {
     await waitFor(() => expect(sendMessage.mock.calls.some(([message]) => (message as { type: string }).type === "chat.send")).toBe(true));
 
     expect(await screen.findByText("请求失败，请重试")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "重试" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "重试" })).not.toBeInTheDocument();
     expect(screen.queryByText("AI 失败消息")).not.toBeInTheDocument();
   });
 

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAppStore } from "../../../src/side-panel/state/appStore";
-import { clearDatabase, getAppSetting, getChatSession, getProviderModels, saveAppSetting, saveModelProvider, saveProviderModel } from "../../../src/shared/storage/repositories";
+import { clearDatabase, getAppSetting, getChatSession, getProviderModels, saveAppSetting, saveChatSession, saveModelProvider, saveProviderModel } from "../../../src/shared/storage/repositories";
 import {
   SYNC_ENCRYPTION_SECRET_KEY,
   SYNC_S3_SECRET_KEY,
@@ -93,6 +93,22 @@ function createTitleModel(): ProviderModel {
     displayName: "标题模型",
     modelId: "gpt-title",
     isTitleModel: false,
+  };
+}
+
+function createChatMessage(partial: Partial<ChatMessage>): ChatMessage {
+  return {
+    id: "message-1",
+    role: "assistant",
+    content: "消息内容",
+    createdAt: 1,
+    modelId: "model-1",
+    endpointType: "openai_chat",
+    streamMode: false,
+    systemPrompt: "你是网页助手",
+    contextPrompt: "",
+    contextMode: "text",
+    ...partial,
   };
 }
 
@@ -1618,6 +1634,135 @@ describe("appStore", () => {
       updatedAt: expect.any(Number),
       messages: [message],
     });
+  });
+
+  it("重新生成 AI 消息时会丢弃该 AI 及后续消息，并用上方用户消息重新请求", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const sendMessage = vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+      if (message.type === "pageContext.extract") {
+        callback({
+          ok: true,
+          text: "页面上下文",
+          truncated: false,
+          usedFallback: true,
+        });
+        return undefined;
+      }
+
+      callback({
+        ok: true,
+        content: "重新生成回复",
+      });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+      },
+    });
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().refreshPageContext();
+    await useAppStore.getState().loadChatData();
+    useAppStore.getState().setStreamMode(false);
+    await useAppStore.getState().createChatSession();
+    const sessionId = useAppStore.getState().activeSessionId;
+    await saveChatSession({
+      id: sessionId,
+      title: "已有会话",
+      archived: false,
+      sortOrder: 1,
+      createdAt: 1,
+      updatedAt: 4,
+      messages: [
+        createChatMessage({ id: "message-user-1", role: "user", content: "第一问", createdAt: 1 }),
+        createChatMessage({ id: "message-ai-1", role: "assistant", content: "第一答", createdAt: 2 }),
+        createChatMessage({ id: "message-user-2", role: "user", content: "第二问", createdAt: 3 }),
+        createChatMessage({ id: "message-ai-2", role: "assistant", content: "第二答", createdAt: 4 }),
+      ],
+    });
+    await useAppStore.getState().loadChatData();
+
+    await useAppStore.getState().regenerateMessage("message-ai-1");
+
+    const state = useAppStore.getState();
+    const activeSession = state.chatSessions.find((session) => session.id === sessionId);
+    const chatRequest = sendMessage.mock.calls
+      .map(([message]) => message as { type: string; messages?: ChatMessage[] })
+      .filter((message) => message.type === "chat.send")
+      .at(-1);
+
+    expect(chatRequest?.messages?.map((message) => `${message.role}:${message.content}`)).toEqual(["system:你是网页助手\n\n当前页面上下文：\n页面上下文", "user:第一问"]);
+    expect(activeSession?.messages.map((message) => message.content)).toEqual(["第一问", "重新生成回复"]);
+  });
+
+  it("重新生成用户消息时会丢弃该用户消息后的所有消息，并用该用户消息重新请求", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const sendMessage = vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+      if (message.type === "pageContext.extract") {
+        callback({
+          ok: true,
+          text: "",
+          truncated: false,
+          usedFallback: true,
+        });
+        return undefined;
+      }
+
+      callback({
+        ok: true,
+        content: "第二问新回复",
+      });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+      },
+    });
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    await useAppStore.getState().refreshPageContext();
+    useAppStore.getState().setStreamMode(false);
+    await useAppStore.getState().createChatSession();
+    const sessionId = useAppStore.getState().activeSessionId;
+    await saveChatSession({
+      id: sessionId,
+      title: "已有会话",
+      archived: false,
+      sortOrder: 1,
+      createdAt: 1,
+      updatedAt: 4,
+      messages: [
+        createChatMessage({ id: "message-user-1", role: "user", content: "第一问", createdAt: 1 }),
+        createChatMessage({ id: "message-ai-1", role: "assistant", content: "第一答", createdAt: 2 }),
+        createChatMessage({ id: "message-user-2", role: "user", content: "第二问", createdAt: 3 }),
+        createChatMessage({ id: "message-ai-2", role: "assistant", content: "第二答", createdAt: 4 }),
+      ],
+    });
+    await useAppStore.getState().loadChatData();
+
+    await useAppStore.getState().regenerateMessage("message-user-2");
+
+    const state = useAppStore.getState();
+    const activeSession = state.chatSessions.find((session) => session.id === sessionId);
+    const chatRequest = sendMessage.mock.calls
+      .map(([message]) => message as { type: string; messages?: ChatMessage[] })
+      .filter((message) => message.type === "chat.send")
+      .at(-1);
+
+    expect(chatRequest?.messages?.map((message) => `${message.role}:${message.content}`)).toEqual([
+      "system:你是网页助手",
+      "user:第一问",
+      "assistant:第一答",
+      "user:第二问",
+    ]);
+    expect(activeSession?.messages.map((message) => message.content)).toEqual(["第一问", "第一答", "第二问", "第二问新回复"]);
   });
 
   it("聊天发送没有返回响应时恢复发送状态并记录失败", async () => {

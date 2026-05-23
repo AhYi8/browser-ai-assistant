@@ -488,9 +488,85 @@ body {
   }
 
   .message-bubble-wrap {
+    @apply relative grid gap-1;
     min-width: 0;
     max-width: 78%;
     overflow-wrap: anywhere;
+  }
+
+  .message-regenerate-action {
+    @apply relative flex min-h-8 items-center;
+  }
+
+  .message-regenerate-action-user {
+    @apply justify-end;
+  }
+
+  .message-regenerate-action-assistant {
+    @apply justify-start;
+  }
+
+  .message-row-user .message-regenerate-action-user {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 160ms ease;
+  }
+
+  .message-row-user .message-bubble-wrap:hover .message-regenerate-action-user,
+  .message-row-user .message-bubble-wrap:focus-within .message-regenerate-action-user {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .message-regenerate-button {
+    @apply grid h-8 w-8 place-items-center rounded-full p-0 transition disabled:cursor-not-allowed disabled:opacity-50;
+    background: var(--color-canvas);
+    border: 1px solid var(--color-hairline);
+    color: var(--color-body);
+  }
+
+  .message-regenerate-button:hover {
+    background: var(--color-surface-soft);
+    color: var(--color-ink);
+  }
+
+  .message-regenerate-button svg {
+    @apply h-4 w-4;
+    display: block;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.6;
+    stroke-linecap: square;
+    stroke-linejoin: round;
+  }
+
+  .message-regenerate-popover {
+    @apply absolute top-9 z-20 grid w-56 gap-2 rounded-lg p-3 text-sm;
+    background: var(--color-canvas);
+    border: 1px solid var(--color-hairline);
+    box-shadow: 0 1px 3px rgba(20, 20, 19, 0.08);
+    color: var(--color-body);
+  }
+
+  .message-regenerate-action-assistant .message-regenerate-popover {
+    left: 0;
+  }
+
+  .message-regenerate-action-user .message-regenerate-popover {
+    right: 0;
+  }
+
+  .message-regenerate-popover p {
+    @apply m-0;
+  }
+
+  .message-regenerate-popover-actions {
+    @apply flex justify-end gap-2;
+  }
+
+  .message-regenerate-cancel,
+  .message-regenerate-confirm {
+    @apply min-h-8 px-2 py-1 text-xs;
   }
 
   .message-bubble {

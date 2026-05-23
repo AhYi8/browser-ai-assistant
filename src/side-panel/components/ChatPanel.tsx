@@ -22,7 +22,8 @@ export function ChatPanel({ historyPanelOpen, onToggleHistoryPanel }: ChatPanelP
   const models = useAppStore((state) => state.models);
   const selectedModelId = useAppStore((state) => state.selectedModelId);
   const failure = useAppStore((state) => state.failure);
-  const clearFailure = useAppStore((state) => state.clearFailure);
+  const regenerateMessage = useAppStore((state) => state.regenerateMessage);
+  const sending = useAppStore((state) => state.sending);
   const pageContext = useAppStore((state) => state.pageContext);
   const contextMode = useAppStore((state) => state.contextMode);
   const extractionRules = useAppStore((state) => state.extractionRules);
@@ -127,14 +128,11 @@ export function ChatPanel({ historyPanelOpen, onToggleHistoryPanel }: ChatPanelP
           </div>
         </div>
       </div>
-      <MessageList messages={activeSession?.messages ?? []} />
+      <MessageList messages={activeSession?.messages ?? []} onRegenerateMessage={(messageId) => void regenerateMessage(messageId)} regenerating={sending} />
       {providers.length === 0 || models.length === 0 ? <p className="chat-warning">请先配置 API Key 后再开始对话</p> : null}
       {failure ? (
-        <div className="chat-failure">
+        <div className="chat-failure" role="alert">
           <p>{failure.message}</p>
-          <button className="ui-button-secondary" type="button" onClick={clearFailure}>
-            重试
-          </button>
         </div>
       ) : null}
       {exportError ? (
