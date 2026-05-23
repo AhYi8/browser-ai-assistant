@@ -1,4 +1,5 @@
 import { useAppStore } from "../state/appStore";
+import { formatModelLabelWithVision } from "./ModelVisionIndicator";
 
 export function ModelSelector() {
   const providers = useAppStore((state) => state.providers);
@@ -11,7 +12,7 @@ export function ModelSelector() {
       return provider && provider.enabled && model.enabled
         ? {
             id: model.id,
-            label: `${provider.name} / ${model.displayName}`,
+            label: formatModelLabelWithVision(`${provider.name} / ${model.displayName}`, model.supportsVision),
           }
         : undefined;
     })

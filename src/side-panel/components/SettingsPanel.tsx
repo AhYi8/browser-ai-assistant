@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import type { ChatPreferenceValues, ExtractionRule, ModelProvider, ProviderModel, SendShortcut } from "../../shared/types";
 import { useAppStore } from "../state/appStore";
+import { formatModelLabelWithVision, ModelVisionIcon } from "./ModelVisionIndicator";
 import { useComposedTextInput } from "./useComposedTextInput";
 
 const DEBUG_PREFIX = "[提取规则 AI 生成诊断]";
@@ -43,6 +44,7 @@ const draftModel: ProviderModel = {
   maxTokens: 1024,
   systemPrompt: "你是网页助手",
   isTitleModel: false,
+  supportsVision: false,
   enabled: true,
   createdAt: 0,
   updatedAt: 0,
@@ -100,6 +102,7 @@ function ChannelManagement() {
   const deleteModel = useAppStore((state) => state.deleteModel);
   const fetchRemoteModels = useAppStore((state) => state.fetchRemoteModels);
   const testModel = useAppStore((state) => state.testModel);
+  const updateModel = useAppStore((state) => state.updateModel);
   const setTitleModel = useAppStore((state) => state.setTitleModel);
   const defaultChatModelId = useAppStore((state) => state.defaultChatModelId);
   const setDefaultChatModel = useAppStore((state) => state.setDefaultChatModel);
@@ -109,6 +112,7 @@ function ChannelManagement() {
   const visibleProviders = providers.length > 0 ? providers : [draftProvider];
   const [selectedProviderId, setSelectedProviderId] = useState(visibleProviders[0].id);
   const [remoteModelQuery, setRemoteModelQuery] = useState("");
+  const [settingsModelId, setSettingsModelId] = useState<string>();
   const realSelectedProvider = providers.find((provider) => provider.id === selectedProviderId);
   const selectedProvider = realSelectedProvider ?? providers[0] ?? draftProvider;
   const realProviderModels = useMemo(
@@ -134,7 +138,7 @@ function ChannelManagement() {
           return provider
             ? {
                 id: model.id,
-                label: `${provider.name} / ${model.displayName}`,
+                label: formatModelLabelWithVision(`${provider.name} / ${model.displayName}`, model.supportsVision),
               }
             : undefined;
         })
@@ -180,6 +184,7 @@ function ChannelManagement() {
   const handleTestModel = (modelId: string) => {
     void testModel(selectedProvider.id, modelId);
   };
+  const settingsModel = settingsModelId ? models.find((model) => model.id === settingsModelId) : undefined;
 
   return (
     <section className="grid w-full gap-4" aria-label="渠道管理">
@@ -369,9 +374,20 @@ function ChannelManagement() {
                 ].join(" ")}
               >
                 <div className="flex items-center justify-between gap-3">
-                  <span className="min-w-0 truncate text-sm font-medium">{model.modelId}</span>
+                  <span className="model-list-name">
+                    <span className="min-w-0 truncate text-sm font-medium">{model.modelId}</span>
+                    {model.supportsVision ? <ModelVisionIcon label={`${model.modelId} 支持视觉理解`} /> : null}
+                  </span>
                   {realSelectedProvider && model.id !== draftModel.id ? (
                     <div className="flex shrink-0 flex-wrap gap-2">
+                      <button
+                        aria-label={`设置 ${model.modelId}`}
+                        className="ui-button-secondary px-2 py-1"
+                        type="button"
+                        onClick={() => setSettingsModelId(model.id)}
+                      >
+                        设置
+                      </button>
                       <button
                         aria-label={`测试模型连通性 ${model.modelId}`}
                         className="ui-button-secondary px-2 py-1"
@@ -397,7 +413,56 @@ function ChannelManagement() {
           })}
         </div>
       </section>
+      {settingsModel ? (
+        <ModelSettingsDialog
+          model={settingsModel}
+          onClose={() => setSettingsModelId(undefined)}
+          onChangeSupportsVision={(supportsVision) => updateModel(settingsModel.id, { supportsVision })}
+        />
+      ) : null}
     </section>
+  );
+}
+
+interface ModelSettingsDialogProps {
+  model: ProviderModel;
+  onClose: () => void;
+  onChangeSupportsVision: (supportsVision: boolean) => void;
+}
+
+function ModelSettingsDialog({ model, onClose, onChangeSupportsVision }: ModelSettingsDialogProps) {
+  const supportsVision = Boolean(model.supportsVision);
+
+  return (
+    <>
+      <div className="dialog-overlay" aria-hidden="true" onClick={onClose} />
+      <section className="model-settings-dialog" role="dialog" aria-modal="true" aria-label="模型设置">
+        <div className="context-dialog-header">
+          <div className="min-w-0">
+            <h4 className="context-dialog-title">模型设置</h4>
+            <p className="ui-muted mt-1 truncate text-xs">{model.modelId}</p>
+          </div>
+          <button className="ui-button-secondary context-dialog-close" type="button" aria-label="关闭模型设置" onClick={onClose}>
+            关闭
+          </button>
+        </div>
+        <label className="chat-preference-switch">
+          <input
+            className="chat-preference-switch-input"
+            type="checkbox"
+            checked={supportsVision}
+            onChange={(event) => onChangeSupportsVision(event.target.checked)}
+          />
+          <span className="chat-preference-switch-control" aria-hidden="true">
+            <span className="chat-preference-switch-thumb" />
+          </span>
+          <span className="chat-preference-switch-label">支持视觉理解</span>
+        </label>
+        <p className="rounded-lg border border-[var(--color-hairline)] bg-[var(--color-surface-soft)] p-2 text-sm text-[var(--color-body)]">
+          {supportsVision ? "当前支持视觉理解" : "当前不支持视觉理解"}
+        </p>
+      </section>
+    </>
   );
 }
 
@@ -436,7 +501,7 @@ function ExtractionRules() {
           return provider
             ? {
                 id: model.id,
-                label: `${provider.name} / ${model.displayName}`,
+                label: formatModelLabelWithVision(`${provider.name} / ${model.displayName}`, model.supportsVision),
               }
             : undefined;
         })

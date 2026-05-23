@@ -24,6 +24,7 @@ export interface ProviderModel {
   topK?: number;
   systemPrompt: string;
   isTitleModel: boolean;
+  supportsVision?: boolean;
   enabled: boolean;
   createdAt: number;
   updatedAt: number;

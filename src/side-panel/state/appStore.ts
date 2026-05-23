@@ -112,7 +112,7 @@ interface AppState {
   updateProvider: (providerId: string, updates: Partial<Pick<ModelProvider, "name" | "endpointType" | "endpointUrl" | "apiKey">>) => void;
   addModel: (providerId: string) => ProviderModel;
   addRemoteModel: (providerId: string, remoteModel: RemoteModelInfo) => ProviderModel;
-  updateModel: (modelId: string, updates: Partial<Pick<ProviderModel, "displayName" | "modelId" | "temperature" | "maxTokens" | "topK" | "systemPrompt">>) => void;
+  updateModel: (modelId: string, updates: Partial<Pick<ProviderModel, "displayName" | "modelId" | "temperature" | "maxTokens" | "topK" | "systemPrompt" | "supportsVision">>) => void;
   setTitleModel: (modelId: string) => void;
   setDefaultChatModel: (modelId: string) => Promise<void>;
   updateChatPreferences: (updates: Partial<ChatPreferenceValues>) => Promise<void>;
@@ -173,6 +173,7 @@ const exampleModel: ProviderModel = {
   maxTokens: 1024,
   systemPrompt: "你是网页助手",
   isTitleModel: false,
+  supportsVision: false,
   enabled: true,
   createdAt: 1,
   updatedAt: 1,
@@ -1626,6 +1627,7 @@ function createAndStoreModel(
     maxTokens: 1024,
     systemPrompt: "你是网页助手",
     isTitleModel: false,
+    supportsVision: false,
     enabled: true,
     createdAt: now,
     updatedAt: now,

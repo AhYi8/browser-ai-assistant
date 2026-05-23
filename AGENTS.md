@@ -114,6 +114,13 @@
 * 修复或新增涉及中文输入的表单时，必须补充回归测试，覆盖“组合输入期间不保存拼音中间态，组合结束后只保存最终中文文本”。
 * API Key、URL、路径、备份前缀、模型名等看似英文的配置项也可能被用户用中文输入法输入，应按文本输入统一处理，避免出现 `beifen`、`shizhong` 等拼音残留。
 
+### 10.4 模型视觉能力标识
+
+* 任何展示已添加模型、默认对话模型、AI 标题生成模型、当前聊天模型或类似模型选择列表的 UI，都必须检查 `ProviderModel.supportsVision`。
+* 当 `supportsVision` 为 `true` 时，模型名后面必须显示符合当前主题的眼睛状标识，提示该模型支持视觉理解。
+* 普通 DOM 列表优先复用 `ModelVisionIcon` 和 `.model-vision-icon`；原生 `<select><option>` 不能渲染 HTML 时，必须通过 `formatModelLabelWithVision` 在 option 文本后追加“视觉”文本标识。
+* 新增类似模型列表时必须补充测试，覆盖支持视觉理解的模型能看到眼睛状标识，避免不同入口能力提示不一致。
+
 ## 11. 前端设计系统约束
 
 本项目的前端视觉风格采用 VoltAgent `awesome-design-md` 中的 Claude 设计规范，来源：`https://github.com/VoltAgent/awesome-design-md/blob/main/design-md/claude/DESIGN.md`。

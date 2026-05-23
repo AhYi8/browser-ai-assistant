@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAppStore } from "../../../src/side-panel/state/appStore";
-import { clearDatabase, getAppSetting, getChatSession, saveAppSetting, saveModelProvider, saveProviderModel } from "../../../src/shared/storage/repositories";
+import { clearDatabase, getAppSetting, getChatSession, getProviderModels, saveAppSetting, saveModelProvider, saveProviderModel } from "../../../src/shared/storage/repositories";
 import {
   SYNC_ENCRYPTION_SECRET_KEY,
   SYNC_S3_SECRET_KEY,
@@ -296,6 +296,27 @@ describe("appStore", () => {
     useAppStore.getState().setTitleModel("");
 
     expect(useAppStore.getState().models.every((model) => !model.isTitleModel)).toBe(true);
+  });
+
+  it("可以保存模型是否支持视觉理解并在重新加载后保留", async () => {
+    const provider = createProvider();
+    const model = createModel();
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+
+    useAppStore.getState().updateModel("model-1", { supportsVision: true });
+
+    await vi.waitFor(async () => {
+      const [savedModel] = await getProviderModels("provider-1");
+      expect(savedModel.supportsVision).toBe(true);
+    });
+
+    useAppStore.getState().reset();
+    await useAppStore.getState().loadChannelConfig();
+
+    expect(useAppStore.getState().models.find((item) => item.id === "model-1")?.supportsVision).toBe(true);
   });
 
   it("可以保存默认对话模型并在新建对话时选中该模型", async () => {

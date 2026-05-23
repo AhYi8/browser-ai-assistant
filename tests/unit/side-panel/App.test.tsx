@@ -6,6 +6,7 @@ import { App } from "../../../src/side-panel/App";
 import { useAppStore } from "../../../src/side-panel/state/appStore";
 import {
   clearDatabase,
+  getProviderModels,
   saveAppSetting,
   saveChatFolder,
   saveChatSession,
@@ -1329,6 +1330,112 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "测试模型连通性 gpt-4.1-mini" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "删除 gpt-4.1-mini" })).toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "连通性校验" })).not.toBeInTheDocument();
+  });
+
+  it("可以在已添加模型设置弹窗中切换视觉理解能力并持久化", async () => {
+    const provider: ModelProvider = {
+      id: "provider-vision",
+      name: "视觉渠道",
+      endpointType: "openai_chat",
+      endpointUrl: "https://api.example.com/v1/chat/completions",
+      apiKey: "sk-vision",
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const model: ProviderModel = {
+      id: "model-vision",
+      providerId: "provider-vision",
+      displayName: "视觉模型",
+      modelId: "gpt-vision",
+      temperature: 0.7,
+      maxTokens: 1024,
+      systemPrompt: "你是网页助手",
+      isTitleModel: false,
+      enabled: true,
+      supportsVision: false,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const user = userEvent.setup();
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(await screen.findByRole("button", { name: "设置 gpt-vision" }));
+
+    expect(screen.getByRole("dialog", { name: "模型设置" })).toBeInTheDocument();
+    const visionSwitch = screen.getByRole("checkbox", { name: "支持视觉理解" });
+    expect(visionSwitch).not.toBeChecked();
+    expect(screen.getByText("当前不支持视觉理解")).toBeInTheDocument();
+
+    await user.click(visionSwitch);
+
+    expect(screen.getByText("当前支持视觉理解")).toBeInTheDocument();
+    await waitFor(async () => {
+      const [savedModel] = await getProviderModels("provider-vision");
+      expect(savedModel.supportsVision).toBe(true);
+    });
+
+    await user.click(screen.getByRole("button", { name: "关闭模型设置" }));
+
+    expect(screen.queryByRole("dialog", { name: "模型设置" })).not.toBeInTheDocument();
+  });
+
+  it("支持视觉理解的模型在所有模型列表名称后显示眼睛状标识", async () => {
+    const provider: ModelProvider = {
+      id: "provider-vision-list",
+      name: "视觉渠道",
+      endpointType: "openai_chat",
+      endpointUrl: "https://api.example.com/v1/chat/completions",
+      apiKey: "sk-vision-list",
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const visionModel: ProviderModel = {
+      id: "model-vision-list",
+      providerId: "provider-vision-list",
+      displayName: "视觉模型",
+      modelId: "gpt-vision-list",
+      temperature: 0.7,
+      maxTokens: 1024,
+      systemPrompt: "你是网页助手",
+      isTitleModel: false,
+      enabled: true,
+      supportsVision: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const textModel: ProviderModel = {
+      ...visionModel,
+      id: "model-text-list",
+      displayName: "文本模型",
+      modelId: "gpt-text-list",
+      supportsVision: false,
+      updatedAt: 2,
+    };
+    const user = userEvent.setup();
+
+    await saveModelProvider(provider);
+    await saveProviderModel(visionModel);
+    await saveProviderModel(textModel);
+
+    render(<App />);
+
+    expect(await screen.findByDisplayValue("视觉渠道 / 视觉模型 · 视觉")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "当前模型" })).toHaveTextContent("视觉渠道 / 视觉模型 · 视觉");
+    expect(screen.getByRole("combobox", { name: "当前模型" })).toHaveTextContent("视觉渠道 / 文本模型");
+
+    await user.click(screen.getByRole("button", { name: "设置" }));
+
+    expect(await screen.findByLabelText("gpt-vision-list 支持视觉理解")).toHaveClass("model-vision-icon");
+    expect(screen.queryByLabelText("gpt-text-list 支持视觉理解")).not.toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "默认对话模型" })).toHaveTextContent("视觉渠道 / 视觉模型 · 视觉");
+    expect(screen.getByRole("combobox", { name: "AI 标题生成模型" })).toHaveTextContent("视觉渠道 / 视觉模型 · 视觉");
   });
 
   it("模型连通性测试只让当前模型进入等待态，其他模型仍可测试", async () => {
