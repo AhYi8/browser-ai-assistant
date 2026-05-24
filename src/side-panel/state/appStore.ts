@@ -142,7 +142,7 @@ interface AppState {
   generateUrlPatterns: (modelId?: string) => Promise<{ ok: true; patterns: string[] } | { ok: false; message: string }>;
   fetchRemoteModels: (providerId: string) => Promise<void>;
   testModel: (providerId: string, modelId: string) => Promise<void>;
-  selectModel: (modelId: string) => void;
+  selectModel: (modelId: string) => Promise<void>;
   setComposerHasDraft: (hasDraft: boolean) => void;
   setAppendPageContextToSystemPrompt: (enabled: boolean) => void;
   setStreamMode: (streamMode: boolean) => void;
@@ -356,6 +356,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
         sortOrder: now,
         createdAt: now,
         updatedAt: now,
+        selectedModelId: state.selectedModelId,
         messages: [],
       } satisfies ChatSession);
     const chatPreferenceOverrides = normalizeChatPreferenceOverrides({
@@ -374,7 +375,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
       chatSessions: upsertSession(current.chatSessions, nextSession),
     }));
   },
-  deleteProvider: (providerId) =>
+  deleteProvider: (providerId) => {
+    let sessionToPersist: ChatSession | undefined;
     set((state) => {
       const removedModelIds = new Set(state.models.filter((model) => model.providerId === providerId).map((model) => model.id));
       const models = state.models.filter((model) => model.providerId !== providerId);
@@ -395,17 +397,31 @@ export const useAppStore = create<AppState>()((set, get) => ({
         void saveAppSetting({ key: "defaultChatModelId", value: "", updatedAt: Date.now() });
       }
 
+      const modelSyncResult = syncActiveSessionSelectedModelAfterModelRemoval(
+        state.chatSessions,
+        state.activeSessionId,
+        removedModelIds,
+        selectedModelId,
+      );
+      sessionToPersist = modelSyncResult.session;
+
       return {
         providers: state.providers.filter((provider) => provider.id !== providerId),
         models,
+        chatSessions: modelSyncResult.chatSessions,
         selectedModelId,
         defaultChatModelId,
         remoteModels,
         channelOperations,
         modelConnectivity,
       };
-    }),
-  deleteModel: (modelId) =>
+    });
+    if (sessionToPersist) {
+      void persistSessionSelectedModel(sessionToPersist);
+    }
+  },
+  deleteModel: (modelId) => {
+    let sessionToPersist: ChatSession | undefined;
     set((state) => {
       const models = state.models.filter((model) => model.id !== modelId);
       const selectedModelId = state.selectedModelId === modelId ? models[0]?.id ?? "" : state.selectedModelId;
@@ -421,13 +437,26 @@ export const useAppStore = create<AppState>()((set, get) => ({
         void saveAppSetting({ key: "defaultChatModelId", value: "", updatedAt: Date.now() });
       }
 
+      const modelSyncResult = syncActiveSessionSelectedModelAfterModelRemoval(
+        state.chatSessions,
+        state.activeSessionId,
+        new Set([modelId]),
+        selectedModelId,
+      );
+      sessionToPersist = modelSyncResult.session;
+
       return {
         models,
+        chatSessions: modelSyncResult.chatSessions,
         selectedModelId,
         defaultChatModelId,
         modelConnectivity,
       };
-    }),
+    });
+    if (sessionToPersist) {
+      void persistSessionSelectedModel(sessionToPersist);
+    }
+  },
   loadChannelConfig: async () => {
     const [providers, models, savedDefaultChatModelId, savedChatPreferences] = await Promise.all([
       getModelProviders(),
@@ -440,13 +469,18 @@ export const useAppStore = create<AppState>()((set, get) => ({
     const selectedModelStillExists = Boolean(
       currentSelectedModelId && resolveAvailableModelId(currentSelectedModelId, models, providers) === currentSelectedModelId,
     );
+    const activeSession = get().chatSessions.find((session) => session.id === get().activeSessionId);
+    const activeSessionModelId = activeSession?.selectedModelId
+      ? resolveAvailableModelId(activeSession.selectedModelId, models, providers)
+      : "";
 
     set({
       providers,
       models,
       defaultChatModelId,
       chatPreferences: normalizeChatPreferences(savedChatPreferences),
-      selectedModelId: selectedModelStillExists ? currentSelectedModelId : (defaultChatModelId || resolveAvailableModelId("", models, providers)),
+      selectedModelId:
+        activeSessionModelId || (selectedModelStillExists ? currentSelectedModelId : (defaultChatModelId || resolveAvailableModelId("", models, providers))),
     });
   },
   loadChatData: async () => {
@@ -454,10 +488,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
     set((state) => ({
       chatSessions,
       chatFolders,
-      activeSessionId:
-        state.activeSessionId && chatSessions.some((session) => session.id === state.activeSessionId)
-          ? state.activeSessionId
-          : (chatSessions[0]?.id ?? ""),
+      ...resolveActiveChatSessionSelection(state, chatSessions),
     }));
   },
   createChatSession: async (options) => {
@@ -473,6 +504,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       sortOrder: now,
       createdAt: now,
       updatedAt: now,
+      selectedModelId,
       messages: [],
     };
 
@@ -485,7 +517,19 @@ export const useAppStore = create<AppState>()((set, get) => ({
     }));
     return session;
   },
-  selectChatSession: (sessionId) => set({ activeSessionId: sessionId, pendingDeleteSessionId: undefined }),
+  selectChatSession: (sessionId) =>
+    set((state) => {
+      const session = state.chatSessions.find((item) => item.id === sessionId);
+      if (!session) {
+        return { pendingDeleteSessionId: undefined };
+      }
+
+      return {
+        activeSessionId: sessionId,
+        pendingDeleteSessionId: undefined,
+        selectedModelId: resolveSessionModelId(session, state),
+      };
+    }),
   renameChatSession: async (sessionId, title) => {
     const trimmedTitle = title.trim();
     if (!trimmedTitle) {
@@ -523,7 +567,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       const chatSessions = state.chatSessions.filter((session) => session.id !== sessionId);
       return {
         chatSessions,
-        activeSessionId: state.activeSessionId === sessionId ? (chatSessions[0]?.id ?? "") : state.activeSessionId,
+        ...resolveActiveChatSessionSelection(state, chatSessions),
         pendingDeleteSessionId: undefined,
       };
     });
@@ -840,7 +884,30 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
     setModelConnectivity(set, modelId, { loading: false, error: response.message });
   },
-  selectModel: (modelId) => set({ selectedModelId: modelId }),
+  selectModel: async (modelId) => {
+    const state = get();
+    const normalizedModelId = modelId.trim();
+    const selectedModelId = normalizedModelId
+      ? resolveAvailableModelId(normalizedModelId, state.models, state.providers)
+      : "";
+    const activeSession = state.chatSessions.find((session) => session.id === state.activeSessionId);
+
+    if (!activeSession) {
+      set({ selectedModelId });
+      return;
+    }
+
+    const updatedSession = await updateChatSession(activeSession.id, (latestSession) => ({
+      ...latestSession,
+      selectedModelId,
+      updatedAt: Date.now(),
+    }));
+
+    set((current) => ({
+      selectedModelId,
+      chatSessions: updatedSession ? upsertSession(current.chatSessions, updatedSession) : current.chatSessions,
+    }));
+  },
   setComposerHasDraft: (hasDraft) => set({ composerHasDraft: hasDraft }),
   setAppendPageContextToSystemPrompt: (enabled) => set({ appendPageContextToSystemPrompt: enabled }),
   setStreamMode: (streamMode) => set({ streamMode }),
@@ -983,6 +1050,62 @@ function resolveConfiguredModelId(modelId: string, models: ProviderModel[], prov
 
   const resolvedModelId = resolveAvailableModelId(modelId, models, providers);
   return resolvedModelId === modelId ? modelId : "";
+}
+
+function resolveSessionModelId(session: ChatSession, state: AppState): string {
+  const sessionModelId = session.selectedModelId
+    ? resolveAvailableModelId(session.selectedModelId, state.models, state.providers)
+    : "";
+  return sessionModelId || resolveAvailableModelId(state.defaultChatModelId, state.models, state.providers);
+}
+
+function resolveActiveChatSessionSelection(
+  state: AppState,
+  chatSessions: ChatSession[],
+): Pick<AppState, "activeSessionId" | "selectedModelId"> {
+  const activeSession =
+    (state.activeSessionId && chatSessions.find((session) => session.id === state.activeSessionId)) || chatSessions[0];
+  if (!activeSession) {
+    return {
+      activeSessionId: "",
+      selectedModelId: resolveAvailableModelId(state.defaultChatModelId || state.selectedModelId, state.models, state.providers),
+    };
+  }
+
+  return {
+    activeSessionId: activeSession.id,
+    selectedModelId: resolveSessionModelId(activeSession, state),
+  };
+}
+
+function syncActiveSessionSelectedModelAfterModelRemoval(
+  chatSessions: ChatSession[],
+  activeSessionId: string,
+  removedModelIds: Set<string>,
+  selectedModelId: string,
+): { chatSessions: ChatSession[]; session?: ChatSession } {
+  const activeSession = chatSessions.find((session) => session.id === activeSessionId);
+  if (!activeSession?.selectedModelId || !removedModelIds.has(activeSession.selectedModelId)) {
+    return { chatSessions };
+  }
+
+  const nextSession: ChatSession = {
+    ...activeSession,
+    selectedModelId,
+    updatedAt: Date.now(),
+  };
+  return {
+    chatSessions: upsertSession(chatSessions, nextSession),
+    session: nextSession,
+  };
+}
+
+async function persistSessionSelectedModel(session: ChatSession): Promise<void> {
+  await updateChatSession(session.id, (latestSession) => ({
+    ...latestSession,
+    selectedModelId: session.selectedModelId,
+    updatedAt: session.updatedAt,
+  }));
 }
 
 function createDefaultSessionTitle(content: string): string {
@@ -1199,6 +1322,7 @@ async function sendChatMessageWithState(input: SendChatMessageWithStateInput): P
       sortOrder: now,
       createdAt: now,
       updatedAt: now,
+      selectedModelId: model.id,
       messages: [],
     };
   const userMessage: ChatMessage = {
@@ -1358,6 +1482,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
     title: input.nextTitle,
     titleGenerating: input.shouldGenerateTitle,
     updatedAt: now,
+    selectedModelId: input.model.id,
     messages: input.nextMessages,
   };
 

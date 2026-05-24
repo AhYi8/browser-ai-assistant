@@ -2430,4 +2430,199 @@ describe("appStore", () => {
       usedFallback: true,
     });
   });
+
+  it("切换当前对话模型后会保存到当前会话，切回会话时恢复该模型", async () => {
+    const provider = createProvider();
+    const firstModel = createModel();
+    const secondModel: ProviderModel = {
+      ...createModel(),
+      id: "model-second",
+      displayName: "第二个模型",
+      modelId: "gpt-second",
+      updatedAt: 2,
+    };
+
+    await saveModelProvider(provider);
+    await saveProviderModel(firstModel);
+    await saveProviderModel(secondModel);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+
+    const firstSession = await useAppStore.getState().createChatSession();
+    await useAppStore.getState().selectModel("model-second");
+    const secondSession = await useAppStore.getState().createChatSession();
+    await useAppStore.getState().selectModel("model-1");
+
+    useAppStore.getState().selectChatSession(firstSession.id);
+
+    expect(useAppStore.getState().selectedModelId).toBe("model-second");
+    await expect(getChatSession(firstSession.id)).resolves.toMatchObject({ selectedModelId: "model-second" });
+    await expect(getChatSession(secondSession.id)).resolves.toMatchObject({ selectedModelId: "model-1" });
+  });
+
+  it("重新加载聊天数据时优先使用当前会话保存的模型而不是默认对话模型", async () => {
+    const provider = createProvider();
+    const firstModel = createModel();
+    const defaultModel: ProviderModel = {
+      ...createModel(),
+      id: "model-default",
+      displayName: "默认对话模型",
+      modelId: "gpt-default",
+      updatedAt: 2,
+    };
+
+    await saveModelProvider(provider);
+    await saveProviderModel(firstModel);
+    await saveProviderModel(defaultModel);
+    await saveAppSetting({ key: "defaultChatModelId", value: "model-default", updatedAt: 1 });
+    await saveChatSession({
+      id: "session-uses-first-model",
+      title: "已有会话",
+      archived: false,
+      sortOrder: 1,
+      createdAt: 1,
+      updatedAt: 2,
+      selectedModelId: "model-1",
+      messages: [],
+    });
+
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+
+    expect(useAppStore.getState().defaultChatModelId).toBe("model-default");
+    expect(useAppStore.getState().activeSessionId).toBe("session-uses-first-model");
+    expect(useAppStore.getState().selectedModelId).toBe("model-1");
+  });
+
+  it("删除当前会话后会同步到新活跃会话保存的模型", async () => {
+    const provider = createProvider();
+    const firstModel = createModel();
+    const secondModel: ProviderModel = {
+      ...createModel(),
+      id: "model-second",
+      displayName: "第二个模型",
+      modelId: "gpt-second",
+      updatedAt: 2,
+    };
+
+    await saveModelProvider(provider);
+    await saveProviderModel(firstModel);
+    await saveProviderModel(secondModel);
+    await saveChatSession({
+      id: "session-first",
+      title: "第一个会话",
+      archived: false,
+      sortOrder: 1,
+      createdAt: 1,
+      updatedAt: 1,
+      selectedModelId: "model-1",
+      messages: [],
+    });
+    await saveChatSession({
+      id: "session-second",
+      title: "第二个会话",
+      archived: false,
+      sortOrder: 2,
+      createdAt: 2,
+      updatedAt: 2,
+      selectedModelId: "model-second",
+      messages: [],
+    });
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+
+    expect(useAppStore.getState().activeSessionId).toBe("session-second");
+    expect(useAppStore.getState().selectedModelId).toBe("model-second");
+
+    await useAppStore.getState().confirmDeleteChatSession("session-second");
+
+    expect(useAppStore.getState().activeSessionId).toBe("session-first");
+    expect(useAppStore.getState().selectedModelId).toBe("model-1");
+  });
+
+  it("旧会话没有保存模型时切换会回退到默认对话模型", async () => {
+    const provider = createProvider();
+    const firstModel = createModel();
+    const defaultModel: ProviderModel = {
+      ...createModel(),
+      id: "model-default",
+      displayName: "默认对话模型",
+      modelId: "gpt-default",
+      updatedAt: 2,
+    };
+
+    await saveModelProvider(provider);
+    await saveProviderModel(firstModel);
+    await saveProviderModel(defaultModel);
+    await saveAppSetting({ key: "defaultChatModelId", value: "model-default", updatedAt: 1 });
+    await saveChatSession({
+      id: "legacy-session",
+      title: "旧会话",
+      archived: false,
+      sortOrder: 1,
+      createdAt: 1,
+      updatedAt: 1,
+      messages: [],
+    });
+
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+
+    expect(useAppStore.getState().activeSessionId).toBe("legacy-session");
+    expect(useAppStore.getState().selectedModelId).toBe("model-default");
+  });
+
+  it("选择空模型时会清空当前会话保存的模型", async () => {
+    const provider = createProvider();
+    const model = createModel();
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    const session = await useAppStore.getState().createChatSession();
+
+    await useAppStore.getState().selectModel("");
+
+    expect(useAppStore.getState().selectedModelId).toBe("");
+    await expect(getChatSession(session.id)).resolves.toMatchObject({ selectedModelId: "" });
+  });
+
+  it("活跃会话正在使用的模型被删除后，会话模型会回退到下一个可用模型", async () => {
+    const provider = createProvider();
+    const fallbackModel = createModel();
+    const activeModel: ProviderModel = {
+      ...createModel(),
+      id: "model-active",
+      displayName: "当前模型",
+      modelId: "gpt-active",
+      updatedAt: 2,
+    };
+
+    await saveModelProvider(provider);
+    await saveProviderModel(fallbackModel);
+    await saveProviderModel(activeModel);
+    await saveChatSession({
+      id: "session-active-model",
+      title: "使用当前模型的会话",
+      archived: false,
+      sortOrder: 1,
+      createdAt: 1,
+      updatedAt: 1,
+      selectedModelId: "model-active",
+      messages: [],
+    });
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+
+    expect(useAppStore.getState().selectedModelId).toBe("model-active");
+
+    useAppStore.getState().deleteModel("model-active");
+
+    expect(useAppStore.getState().selectedModelId).toBe("model-1");
+    expect(useAppStore.getState().chatSessions.find((session) => session.id === "session-active-model")?.selectedModelId).toBe("model-1");
+    await vi.waitFor(async () => {
+      await expect(getChatSession("session-active-model")).resolves.toMatchObject({ selectedModelId: "model-1" });
+    });
+  });
 });

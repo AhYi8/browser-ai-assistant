@@ -92,6 +92,7 @@ export interface ChatSession {
   id: string;
   title: string;
   titleGenerating?: boolean;
+  selectedModelId?: string;
   folderId?: string;
   archived: boolean;
   sortOrder: number;
