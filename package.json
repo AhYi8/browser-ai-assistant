@@ -15,7 +15,7 @@
   },
   "keywords": [],
   "author": "",
-  "license": "UNLICENSED",
+  "license": "GPL-3.0-only",
   "description": "基于当前网页内容进行 AI 对话的浏览器侧边栏助手。",
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.15",
