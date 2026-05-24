@@ -189,4 +189,5 @@ describe("聊天请求消息构造", () => {
     expect(result[0].content).toContain(pageContext);
     expect(result[0].contextPrompt).toBe(pageContext);
   });
+
 });

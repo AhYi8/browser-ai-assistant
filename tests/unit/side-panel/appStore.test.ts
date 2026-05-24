@@ -1694,7 +1694,7 @@ describe("appStore", () => {
       .filter((message) => message.type === "chat.send")
       .at(-1);
 
-    expect(chatRequest?.messages?.map((message) => `${message.role}:${message.content}`)).toEqual(["system:你是网页助手\n\n当前页面上下文：\n页面上下文", "user:第一问"]);
+    expect(chatRequest?.messages?.map((message) => `${message.role}:${message.content}`)).toEqual(["system:你是网页助手\n\n当前页面上下文：\nPage content:\n页面上下文", "user:第一问"]);
     expect(activeSession?.messages.map((message) => message.content)).toEqual(["第一问", "重新生成回复"]);
   });
 

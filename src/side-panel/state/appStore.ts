@@ -1,6 +1,7 @@
 import { create, type StoreApi } from "zustand";
 import { buildChatRequestMessages } from "../../shared/chat/buildChatRequestMessages";
 import { createModelConfig } from "../../shared/chat/modelConfig";
+import { createPageContextPrompt } from "../../shared/chat/pageContextPrompt";
 import type { RemoteModelInfo } from "../../shared/models/modelCatalog";
 import { createTitleGenerationMessages, generateSessionTitle } from "../../shared/models/titleGeneration";
 import {
@@ -72,6 +73,7 @@ interface ModelConnectivityState {
 interface PageContextState {
   loading: boolean;
   url?: string;
+  title?: string;
   text: string;
   extractMode: PageContextExtractMode;
   truncated: boolean;
@@ -712,6 +714,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       | {
           ok: true;
           url?: string;
+          title?: string;
           text: string;
           truncated: boolean;
           usedFallback: boolean;
@@ -745,6 +748,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
         pageContext: {
           loading: false,
           url: response.url,
+          title: response.title,
           text: response.text,
           extractMode: requestedContextMode,
           truncated: response.truncated,
@@ -1262,6 +1266,7 @@ interface EditAndRegenerateUserMessageInput {
 
 interface RunChatRequestInput {
   state: AppState;
+  pageContextPrompt: string;
   session: ChatSession;
   userMessage: ChatMessage;
   existingMessages: ChatMessage[];
@@ -1313,6 +1318,7 @@ async function sendChatMessageWithState(input: SendChatMessageWithStateInput): P
   const now = Date.now();
   const baseSession = state.chatSessions.find((session) => session.id === state.activeSessionId);
   const effectiveChatPreferences = resolveEffectiveChatPreferences(state.chatPreferences, baseSession?.chatPreferenceOverrides);
+  const requestPageContextPrompt = createPageContextPrompt(state.pageContext);
   const session =
     baseSession ??
     {
@@ -1342,6 +1348,7 @@ async function sendChatMessageWithState(input: SendChatMessageWithStateInput): P
 
   await runChatRequest({
     state,
+    pageContextPrompt: requestPageContextPrompt,
     session,
     userMessage,
     existingMessages: session.messages,
@@ -1395,6 +1402,7 @@ async function regenerateChatMessage(input: RegenerateChatMessageInput): Promise
 
   await runChatRequest({
     state,
+    pageContextPrompt: createPageContextPrompt(state.pageContext),
     session,
     userMessage,
     existingMessages,
@@ -1447,6 +1455,7 @@ async function editAndRegenerateUserMessage(input: EditAndRegenerateUserMessageI
 
   await runChatRequest({
     state,
+    pageContextPrompt: createPageContextPrompt(state.pageContext),
     session,
     userMessage: editedUserMessage,
     existingMessages,
@@ -1509,7 +1518,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
       model: modelConfig,
       messages: buildChatRequestMessages({
         model: modelConfig,
-        pageContext: input.state.pageContext.text,
+        pageContext: input.pageContextPrompt,
         existingMessages: input.existingMessages,
         userMessage: input.userMessage,
         systemPrompt: effectiveChatPreferences.systemPrompt,

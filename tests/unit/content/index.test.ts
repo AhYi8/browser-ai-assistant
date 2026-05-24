@@ -16,7 +16,7 @@ function createRule(): ExtractionRule {
 describe("content 脚本消息", () => {
   beforeEach(() => {
     vi.resetModules();
-    document.documentElement.innerHTML = "<head><title>测试页</title></head><body><main>正文内容</main></body>";
+    document.documentElement.innerHTML = "<head><title>Test Page</title></head><body><main>正文内容</main></body>";
     Object.defineProperty(window, "location", {
       configurable: true,
       value: new URL("https://example.com/article"),
@@ -55,6 +55,7 @@ describe("content 脚本消息", () => {
     expect(sendResponse).toHaveBeenCalledWith({
       ok: true,
       url: "https://example.com/article",
+      title: "Test Page",
       text: "正文内容",
       truncated: false,
       usedFallback: false,
@@ -96,6 +97,7 @@ describe("content 脚本消息", () => {
       expect.objectContaining({
         ok: true,
         url: "https://example.com/article",
+        title: "Test Page",
         truncated: false,
         usedFallback: true,
       }),

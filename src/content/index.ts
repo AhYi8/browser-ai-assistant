@@ -11,6 +11,7 @@ export interface PageContextExtractMessage {
 export interface PageContextExtractResponse {
   ok: true;
   url: string;
+  title?: string;
   text: string;
   truncated: boolean;
   usedFallback: boolean;
@@ -43,6 +44,7 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
   sendResponse({
     ok: true,
     url: window.location.href,
+    title: document.title,
     ...result,
   });
 

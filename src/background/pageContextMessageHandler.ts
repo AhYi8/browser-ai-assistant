@@ -11,6 +11,7 @@ export type PageContextExtractResponse =
   | {
       ok: true;
       url: string;
+      title?: string;
       text: string;
       truncated: boolean;
       usedFallback: boolean;
