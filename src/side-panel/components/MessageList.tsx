@@ -6,12 +6,15 @@ import type { ChatImageAttachment, ChatMessage } from "../../shared/types";
 interface MessageListProps {
   messages: ChatMessage[];
   onRegenerateMessage: (messageId: string) => void;
+  onEditAndRegenerateUserMessage: (messageId: string, content: string) => void;
   regenerating: boolean;
 }
 
-export function MessageList({ messages, onRegenerateMessage, regenerating }: MessageListProps) {
+export function MessageList({ messages, onRegenerateMessage, onEditAndRegenerateUserMessage, regenerating }: MessageListProps) {
   const [previewAttachment, setPreviewAttachment] = useState<ChatImageAttachment | undefined>();
   const [pendingRegenerateMessageId, setPendingRegenerateMessageId] = useState<string | undefined>();
+  const [editingMessageId, setEditingMessageId] = useState<string | undefined>();
+  const [editingContent, setEditingContent] = useState("");
   const regeneratePopoverRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -67,12 +70,72 @@ export function MessageList({ messages, onRegenerateMessage, regenerating }: Mes
                 ))}
               </div>
             ) : null}
-            <div className="message-bubble">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
-            </div>
+            {editingMessageId === message.id ? (
+              <div className="message-edit-panel">
+                <textarea
+                  className="ui-input message-edit-input"
+                  aria-label="编辑用户消息"
+                  value={editingContent}
+                  onChange={(event) => setEditingContent(event.target.value)}
+                />
+                <div className="message-edit-actions">
+                  <button
+                    className="message-icon-button message-edit-cancel-button"
+                    type="button"
+                    aria-label="取消编辑"
+                    title="取消编辑"
+                    onClick={() => {
+                      setEditingMessageId(undefined);
+                      setEditingContent("");
+                    }}
+                  >
+                    <CancelEditIcon />
+                  </button>
+                  <button
+                    className="message-icon-button message-edit-send-button"
+                    type="button"
+                    aria-label="发送编辑后的消息"
+                    title="发送编辑后的消息"
+                    disabled={regenerating || !editingContent.trim()}
+                    onClick={() => {
+                      const trimmedContent = editingContent.trim();
+                      if (!trimmedContent) {
+                        return;
+                      }
+
+                      setEditingMessageId(undefined);
+                      setEditingContent("");
+                      onEditAndRegenerateUserMessage(message.id, trimmedContent);
+                    }}
+                  >
+                    <SendEditedMessageIcon />
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="message-bubble">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+              </div>
+            )}
             <div className={`message-regenerate-action message-regenerate-action-${message.role}`}>
+              {message.role === "user" ? (
+                <button
+                  className="message-icon-button message-edit-button"
+                  type="button"
+                  aria-label="编辑消息"
+                  title="编辑消息"
+                  disabled={regenerating || message.streaming}
+                  onClick={() => {
+                    setPendingRegenerateMessageId(undefined);
+                    setEditingMessageId(message.id);
+                    setEditingContent(message.content);
+                  }}
+                >
+                  <EditMessageIcon />
+                </button>
+              ) : null}
               <button
-                className="message-regenerate-button"
+                className="message-icon-button message-regenerate-button"
                 type="button"
                 aria-label="重新生成"
                 title="重新生成"
@@ -127,6 +190,33 @@ function RegenerateIcon() {
       <path d="M5.5 5.5v3h3" />
       <path d="M5.5 14.5a6.2 6.2 0 0 0 10.7 3.3l2.3-2.3" />
       <path d="M18.5 18.5v-3h-3" />
+    </svg>
+  );
+}
+
+function EditMessageIcon() {
+  return (
+    <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24">
+      <path d="M5 18.5 6.2 14 15.7 4.5a2.1 2.1 0 0 1 3 3L9.2 17 5 18.5Z" />
+      <path d="m14.2 6 3.8 3.8" />
+    </svg>
+  );
+}
+
+function SendEditedMessageIcon() {
+  return (
+    <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24">
+      <path d="M4.5 5.5 19.5 12 4.5 18.5 7.5 12 4.5 5.5Z" />
+      <path d="M7.8 12h5.8" />
+    </svg>
+  );
+}
+
+function CancelEditIcon() {
+  return (
+    <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24">
+      <path d="M7 7 17 17" />
+      <path d="M17 7 7 17" />
     </svg>
   );
 }

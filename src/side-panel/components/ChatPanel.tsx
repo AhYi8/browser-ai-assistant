@@ -23,6 +23,7 @@ export function ChatPanel({ historyPanelOpen, onToggleHistoryPanel }: ChatPanelP
   const selectedModelId = useAppStore((state) => state.selectedModelId);
   const failure = useAppStore((state) => state.failure);
   const regenerateMessage = useAppStore((state) => state.regenerateMessage);
+  const editAndRegenerateUserMessage = useAppStore((state) => state.editAndRegenerateUserMessage);
   const sending = useAppStore((state) => state.sending);
   const pageContext = useAppStore((state) => state.pageContext);
   const contextMode = useAppStore((state) => state.contextMode);
@@ -128,7 +129,12 @@ export function ChatPanel({ historyPanelOpen, onToggleHistoryPanel }: ChatPanelP
           </div>
         </div>
       </div>
-      <MessageList messages={activeSession?.messages ?? []} onRegenerateMessage={(messageId) => void regenerateMessage(messageId)} regenerating={sending} />
+      <MessageList
+        messages={activeSession?.messages ?? []}
+        onRegenerateMessage={(messageId) => void regenerateMessage(messageId)}
+        onEditAndRegenerateUserMessage={(messageId, content) => void editAndRegenerateUserMessage(messageId, content)}
+        regenerating={sending}
+      />
       {providers.length === 0 || models.length === 0 ? <p className="chat-warning">请先配置 API Key 后再开始对话</p> : null}
       {failure ? (
         <div className="chat-failure" role="alert">

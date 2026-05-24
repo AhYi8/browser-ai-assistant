@@ -1765,6 +1765,283 @@ describe("appStore", () => {
     expect(activeSession?.messages.map((message) => message.content)).toEqual(["第一问", "第一答", "第二问", "第二问新回复"]);
   });
 
+  it("编辑用户消息后会替换该消息内容并丢弃后续消息重新请求", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const sendMessage = vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+      if (message.type === "pageContext.extract") {
+        callback({
+          ok: true,
+          text: "",
+          truncated: false,
+          usedFallback: true,
+        });
+        return undefined;
+      }
+
+      callback({
+        ok: true,
+        content: "编辑后回复",
+      });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+      },
+    });
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    await useAppStore.getState().refreshPageContext();
+    useAppStore.getState().setStreamMode(false);
+    await useAppStore.getState().createChatSession();
+    const sessionId = useAppStore.getState().activeSessionId;
+    await saveChatSession({
+      id: sessionId,
+      title: "已有会话",
+      archived: false,
+      sortOrder: 1,
+      createdAt: 1,
+      updatedAt: 4,
+      messages: [
+        createChatMessage({ id: "message-user-1", role: "user", content: "第一问", createdAt: 1 }),
+        createChatMessage({ id: "message-ai-1", role: "assistant", content: "第一答", createdAt: 2 }),
+        createChatMessage({ id: "message-user-2", role: "user", content: "第二问", createdAt: 3 }),
+        createChatMessage({ id: "message-ai-2", role: "assistant", content: "第二答", createdAt: 4 }),
+      ],
+    });
+    await useAppStore.getState().loadChatData();
+
+    await useAppStore.getState().editAndRegenerateUserMessage("message-user-2", "第二问改写");
+
+    const state = useAppStore.getState();
+    const activeSession = state.chatSessions.find((session) => session.id === sessionId);
+    const chatRequest = sendMessage.mock.calls
+      .map(([message]) => message as { type: string; messages?: ChatMessage[] })
+      .filter((message) => message.type === "chat.send")
+      .at(-1);
+
+    expect(chatRequest?.messages?.map((message) => `${message.role}:${message.content}`)).toEqual([
+      "system:你是网页助手",
+      "user:第一问",
+      "assistant:第一答",
+      "user:第二问改写",
+    ]);
+    expect(activeSession?.messages.map((message) => message.content)).toEqual(["第一问", "第一答", "第二问改写", "编辑后回复"]);
+  });
+
+  it("编辑用户消息时找不到消息会记录失败且不发起请求", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const sendMessage = vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+      if (message.type === "pageContext.extract") {
+        callback({
+          ok: true,
+          text: "",
+          truncated: false,
+          usedFallback: true,
+        });
+        return undefined;
+      }
+
+      callback({
+        ok: true,
+        content: "不应生成的回复",
+      });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+      },
+    });
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    await useAppStore.getState().createChatSession();
+    const sessionId = useAppStore.getState().activeSessionId;
+    await saveChatSession({
+      id: sessionId,
+      title: "已有会话",
+      archived: false,
+      sortOrder: 1,
+      createdAt: 1,
+      updatedAt: 2,
+      messages: [
+        createChatMessage({ id: "message-user-1", role: "user", content: "第一问", createdAt: 1 }),
+        createChatMessage({ id: "message-ai-1", role: "assistant", content: "第一答", createdAt: 2 }),
+      ],
+    });
+    await useAppStore.getState().loadChatData();
+
+    await useAppStore.getState().editAndRegenerateUserMessage("message-missing", "改写内容");
+
+    const state = useAppStore.getState();
+    const activeSession = state.chatSessions.find((session) => session.id === sessionId);
+    const chatRequest = sendMessage.mock.calls
+      .map(([message]) => message as { type: string })
+      .find((message) => message.type === "chat.send");
+
+    expect(state.failure?.message).toBe("未找到可编辑的用户消息");
+    expect(chatRequest).toBeUndefined();
+    expect(activeSession?.messages.map((message) => message.content)).toEqual(["第一问", "第一答"]);
+  });
+
+  it("编辑用户消息传入空白内容时不改变会话且不发起请求", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const sendMessage = vi.fn();
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+      },
+    });
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    await useAppStore.getState().createChatSession();
+    const sessionId = useAppStore.getState().activeSessionId;
+    await saveChatSession({
+      id: sessionId,
+      title: "已有会话",
+      archived: false,
+      sortOrder: 1,
+      createdAt: 1,
+      updatedAt: 2,
+      messages: [
+        createChatMessage({ id: "message-user-1", role: "user", content: "第一问", createdAt: 1 }),
+        createChatMessage({ id: "message-ai-1", role: "assistant", content: "第一答", createdAt: 2 }),
+      ],
+    });
+    await useAppStore.getState().loadChatData();
+
+    await useAppStore.getState().editAndRegenerateUserMessage("message-user-1", "   ");
+
+    const state = useAppStore.getState();
+    const activeSession = state.chatSessions.find((session) => session.id === sessionId);
+    expect(state.failure).toBeUndefined();
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(activeSession?.messages.map((message) => message.content)).toEqual(["第一问", "第一答"]);
+  });
+
+  it("编辑带图片的用户消息时保留附件并随请求发送", async () => {
+    const provider = createProvider();
+    const model = { ...createModel(), supportsVision: true };
+    const attachment = {
+      id: "image-edit-1",
+      name: "截图.png",
+      mediaType: "image/png",
+      dataUrl: "data:image/png;base64,QUJD",
+    };
+    const sendMessage = vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+      if (message.type === "pageContext.extract") {
+        callback({
+          ok: true,
+          text: "",
+          truncated: false,
+          usedFallback: true,
+        });
+        return undefined;
+      }
+
+      callback({
+        ok: true,
+        content: "看图回复",
+      });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+      },
+    });
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    await useAppStore.getState().refreshPageContext();
+    useAppStore.getState().setStreamMode(false);
+    await useAppStore.getState().createChatSession();
+    const sessionId = useAppStore.getState().activeSessionId;
+    await saveChatSession({
+      id: sessionId,
+      title: "已有会话",
+      archived: false,
+      sortOrder: 1,
+      createdAt: 1,
+      updatedAt: 2,
+      messages: [
+        createChatMessage({ id: "message-user-1", role: "user", content: "看图", createdAt: 1, attachments: [attachment] }),
+        createChatMessage({ id: "message-ai-1", role: "assistant", content: "旧回复", createdAt: 2 }),
+      ],
+    });
+    await useAppStore.getState().loadChatData();
+
+    await useAppStore.getState().editAndRegenerateUserMessage("message-user-1", "看图并总结");
+
+    const activeSession = useAppStore.getState().chatSessions.find((session) => session.id === sessionId);
+    const chatRequest = sendMessage.mock.calls
+      .map(([message]) => message as { type: string; messages?: ChatMessage[] })
+      .filter((message) => message.type === "chat.send")
+      .at(-1);
+    const sentUserMessage = chatRequest?.messages?.find((message) => message.role === "user");
+
+    expect(sentUserMessage?.content).toBe("看图并总结");
+    expect(sentUserMessage?.attachments).toEqual([attachment]);
+    expect(activeSession?.messages[0]).toMatchObject({
+      content: "看图并总结",
+      attachments: [attachment],
+    });
+  });
+
+  it("编辑带图片的用户消息但模型不支持视觉时记录失败且不发起请求", async () => {
+    const provider = createProvider();
+    const model = { ...createModel(), supportsVision: false };
+    const attachment = {
+      id: "image-edit-unsupported",
+      name: "截图.png",
+      mediaType: "image/png",
+      dataUrl: "data:image/png;base64,QUJD",
+    };
+    const sendMessage = vi.fn();
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+      },
+    });
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    await useAppStore.getState().createChatSession();
+    const sessionId = useAppStore.getState().activeSessionId;
+    await saveChatSession({
+      id: sessionId,
+      title: "已有会话",
+      archived: false,
+      sortOrder: 1,
+      createdAt: 1,
+      updatedAt: 2,
+      messages: [
+        createChatMessage({ id: "message-user-1", role: "user", content: "看图", createdAt: 1, attachments: [attachment] }),
+        createChatMessage({ id: "message-ai-1", role: "assistant", content: "旧回复", createdAt: 2 }),
+      ],
+    });
+    await useAppStore.getState().loadChatData();
+
+    await useAppStore.getState().editAndRegenerateUserMessage("message-user-1", "看图并总结");
+
+    const state = useAppStore.getState();
+    const activeSession = state.chatSessions.find((session) => session.id === sessionId);
+    expect(state.failure?.message).toBe("当前模型不支持视觉理解，无法添加图片");
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(activeSession?.messages.map((message) => message.content)).toEqual(["看图", "旧回复"]);
+  });
+
   it("聊天发送没有返回响应时恢复发送状态并记录失败", async () => {
     const provider = createProvider();
     const model = createModel();

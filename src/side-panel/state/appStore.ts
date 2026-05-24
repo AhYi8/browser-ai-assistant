@@ -154,6 +154,7 @@ interface AppState {
   restoreNow: () => Promise<void>;
   sendChatMessage: (content: string, attachments?: ChatImageAttachment[]) => Promise<void>;
   regenerateMessage: (messageId: string) => Promise<void>;
+  editAndRegenerateUserMessage: (messageId: string, content: string) => Promise<void>;
   reset: () => void;
 }
 
@@ -919,6 +920,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
   sendChatMessage: (content, attachments = []) => sendChatMessageWithState({ content, attachments, get, set }),
   regenerateMessage: (messageId) => regenerateChatMessage({ messageId, get, set }),
+  editAndRegenerateUserMessage: (messageId, content) => editAndRegenerateUserMessage({ messageId, content, get, set }),
   reset: () => {
     clearAllModelConnectivityResetTimers();
     pageContextRefreshSequence += 1;
@@ -1128,6 +1130,13 @@ interface RegenerateChatMessageInput {
   set: StoreSetter;
 }
 
+interface EditAndRegenerateUserMessageInput {
+  messageId: string;
+  content: string;
+  get: StoreGetter;
+  set: StoreSetter;
+}
+
 interface RunChatRequestInput {
   state: AppState;
   session: ChatSession;
@@ -1266,6 +1275,58 @@ async function regenerateChatMessage(input: RegenerateChatMessageInput): Promise
     userMessage,
     existingMessages,
     nextMessages: [...existingMessages, userMessage],
+    shouldGenerateTitle: false,
+    nextTitle: session.title,
+    fallbackTitle: session.title,
+    model,
+    provider,
+    get: input.get,
+    set: input.set,
+  });
+}
+
+async function editAndRegenerateUserMessage(input: EditAndRegenerateUserMessageInput): Promise<void> {
+  const trimmedContent = input.content.trim();
+  const state = input.get();
+  if (!trimmedContent || state.sending) {
+    return;
+  }
+
+  const session = state.chatSessions.find((item) => item.id === state.activeSessionId);
+  if (!session) {
+    return;
+  }
+
+  const userMessageIndex = session.messages.findIndex((message) => message.id === input.messageId);
+  const originalUserMessage = session.messages[userMessageIndex];
+  if (!originalUserMessage || originalUserMessage.role !== "user") {
+    input.set({ failure: { message: "未找到可编辑的用户消息" } });
+    return;
+  }
+
+  const model = state.models.find((item) => item.id === state.selectedModelId);
+  const provider = model ? state.providers.find((item) => item.id === model.providerId) : undefined;
+  if (!model || !provider || !model.enabled || !provider.enabled) {
+    input.set({ failure: { message: "请先配置可用模型后再发送" } });
+    return;
+  }
+  if ((originalUserMessage.attachments?.length ?? 0) > 0 && !model.supportsVision) {
+    input.set({ failure: { message: "当前模型不支持视觉理解，无法添加图片" } });
+    return;
+  }
+
+  const editedUserMessage: ChatMessage = {
+    ...originalUserMessage,
+    content: trimmedContent,
+  };
+  const existingMessages = session.messages.slice(0, userMessageIndex);
+
+  await runChatRequest({
+    state,
+    session,
+    userMessage: editedUserMessage,
+    existingMessages,
+    nextMessages: [...existingMessages, editedUserMessage],
     shouldGenerateTitle: false,
     nextTitle: session.title,
     fallbackTitle: session.title,

@@ -752,6 +752,87 @@ describe("App", () => {
     expect(regenerateMessage).not.toHaveBeenCalled();
   });
 
+  it("用户消息可以直接编辑并用纸飞机按钮重新发送", async () => {
+    const user = userEvent.setup();
+    const styles = readFileSync(resolve(process.cwd(), "src/side-panel/styles.css"), "utf8");
+    const editAndRegenerateUserMessage = vi.fn(async () => undefined);
+    await saveChatSession(
+      createChatSession({
+        id: "session-edit-user-message",
+        title: "编辑用户消息",
+        messages: [
+          createChatMessage({
+            id: "message-edit-user",
+            role: "user",
+            content: "原始问题",
+            createdAt: 1,
+          }),
+          createChatMessage({
+            id: "message-edit-ai",
+            role: "assistant",
+            content: "旧回复",
+            createdAt: 2,
+          }),
+        ],
+      }),
+    );
+    useAppStore.setState({ editAndRegenerateUserMessage });
+
+    render(<App />);
+
+    await screen.findByText("原始问题");
+    await user.click(screen.getByRole("button", { name: "编辑消息" }));
+    const editor = screen.getByRole("textbox", { name: "编辑用户消息" });
+    await user.clear(editor);
+    await user.type(editor, "改写后的问题");
+    await user.click(screen.getByRole("button", { name: "发送编辑后的消息" }));
+
+    expect(editAndRegenerateUserMessage).toHaveBeenCalledWith("message-edit-user", "改写后的问题");
+    expect(screen.queryByRole("dialog", { name: "确认重新生成" })).not.toBeInTheDocument();
+    expect(styles).toContain(".message-bubble-wrap:has(.message-edit-panel)");
+    expect(styles).toContain("width: 80%;");
+  });
+
+  it("用户消息编辑态可以用叉号按钮取消且不重发", async () => {
+    const user = userEvent.setup();
+    const editAndRegenerateUserMessage = vi.fn(async () => undefined);
+    await saveChatSession(
+      createChatSession({
+        id: "session-cancel-edit-user-message",
+        title: "取消编辑用户消息",
+        messages: [
+          createChatMessage({
+            id: "message-cancel-edit-user",
+            role: "user",
+            content: "原始问题",
+            createdAt: 1,
+          }),
+          createChatMessage({
+            id: "message-cancel-edit-ai",
+            role: "assistant",
+            content: "旧回复",
+            createdAt: 2,
+          }),
+        ],
+      }),
+    );
+    useAppStore.setState({ editAndRegenerateUserMessage });
+
+    render(<App />);
+
+    await screen.findByText("原始问题");
+    await user.click(screen.getByRole("button", { name: "编辑消息" }));
+    const editor = screen.getByRole("textbox", { name: "编辑用户消息" });
+    await user.clear(editor);
+    await user.type(editor, "不应该发送的内容");
+    await user.click(screen.getByRole("button", { name: "取消编辑" }));
+
+    expect(screen.queryByRole("textbox", { name: "编辑用户消息" })).not.toBeInTheDocument();
+    expect(screen.getByText("原始问题")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "确认重新生成" })).not.toBeInTheDocument();
+    expect(editAndRegenerateUserMessage).not.toHaveBeenCalled();
+  });
+
   it("请求失败时不再展示失败重试占位入口", async () => {
     act(() => {
       useAppStore.setState({ failure: { message: "请求失败，请重试" } });
