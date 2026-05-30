@@ -84,6 +84,7 @@ function createChromeMock() {
       },
       tabs: {
         query: vi.fn().mockResolvedValue([{ id: 7 }]),
+        update: vi.fn().mockResolvedValue({ id: 7, url: "https://example.com/next" }),
         captureVisibleTab: vi.fn().mockResolvedValue("data:image/png;base64,QUJD"),
         sendMessage: vi.fn().mockResolvedValue({
           ok: true,
@@ -450,6 +451,99 @@ describe("background 入口", () => {
       files: ["content/index.js"],
     });
     expect(mock.chrome.tabs.sendMessage).toHaveBeenCalledTimes(2);
+  });
+
+  it("转发自动化 DOM 动作到当前活动页 content script", async () => {
+    const mock = createChromeMock();
+    mock.chrome.tabs.sendMessage.mockResolvedValueOnce({
+      ok: true,
+      html: "<html><body>第二页</body></html>",
+      url: "https://example.com/orders",
+      title: "订单",
+    });
+    vi.stubGlobal("chrome", mock.chrome);
+    await import("../../../src/background/index");
+    const sendResponse = vi.fn();
+
+    const keepChannelOpen = mock.messageListeners[0](
+      {
+        type: "automation.executeDomAction",
+        action: { type: "click", selector: ".next-page" },
+      },
+      {} as chrome.runtime.MessageSender,
+      sendResponse,
+    );
+
+    expect(keepChannelOpen).toBe(true);
+    await vi.waitFor(() => {
+      expect(sendResponse).toHaveBeenCalledWith({
+        ok: true,
+        html: "<html><body>第二页</body></html>",
+        url: "https://example.com/orders",
+        title: "订单",
+      });
+    });
+    expect(mock.chrome.tabs.sendMessage).toHaveBeenCalledWith(7, {
+      type: "automation.executeDomAction",
+      action: { type: "click", selector: ".next-page" },
+    });
+  });
+
+  it("自动化 DOM 动作未连接时注入 content script 后重试", async () => {
+    const mock = createChromeMock();
+    mock.chrome.tabs.sendMessage
+      .mockRejectedValueOnce(new Error("Could not establish connection. Receiving end does not exist."))
+      .mockResolvedValueOnce({
+        ok: true,
+        html: "<html><body>注入后页面</body></html>",
+        url: "https://example.com/orders",
+      });
+    vi.stubGlobal("chrome", mock.chrome);
+    await import("../../../src/background/index");
+    const sendResponse = vi.fn();
+
+    mock.messageListeners[0](
+      {
+        type: "automation.executeDomAction",
+        action: { type: "extractHtml" },
+      },
+      {} as chrome.runtime.MessageSender,
+      sendResponse,
+    );
+
+    await vi.waitFor(() => {
+      expect(sendResponse).toHaveBeenCalledWith({
+        ok: true,
+        html: "<html><body>注入后页面</body></html>",
+        url: "https://example.com/orders",
+      });
+    });
+    expect(mock.chrome.scripting.executeScript).toHaveBeenCalledWith({
+      target: { tabId: 7 },
+      files: ["content/index.js"],
+    });
+    expect(mock.chrome.tabs.sendMessage).toHaveBeenCalledTimes(2);
+  });
+
+  it("自动化跳转只通过 background 更新当前标签页 URL", async () => {
+    const mock = createChromeMock();
+    vi.stubGlobal("chrome", mock.chrome);
+    await import("../../../src/background/index");
+    const sendResponse = vi.fn();
+
+    mock.messageListeners[0](
+      {
+        type: "automation.navigateTab",
+        url: "https://example.com/next",
+      },
+      {} as chrome.runtime.MessageSender,
+      sendResponse,
+    );
+
+    await vi.waitFor(() => {
+      expect(sendResponse).toHaveBeenCalledWith({ ok: true, tabId: 7, url: "https://example.com/next" });
+    });
+    expect(mock.chrome.tabs.update).toHaveBeenCalledWith(7, { url: "https://example.com/next" });
   });
 
   it("处理 URL 正则 AI 生成请求并返回响应", async () => {

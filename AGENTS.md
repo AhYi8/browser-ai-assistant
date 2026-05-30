@@ -206,6 +206,20 @@
 * 文档或配置之外的代码改动，最小验证通常至少包括 `npm run typecheck` 和相关 `vitest` 文件；涉及构建、content script、background 或 manifest 时还必须执行 `npm run build:extension`。
 * 涉及侧边栏关键交互、响应式布局、扩展加载、页面提取或导出菜单时，除单元测试外应补充 `npm run test:e2e` 或等价 Playwright 冒烟验证。
 
+### 10.13 浏览器自动化模式
+
+* 自动化能力必须由用户通过 `/自动化` 或 `/auto` 显式进入，普通聊天不得自动升级为可执行浏览器操作。
+* Battle 结束后只能先生成内存态候选流程并用弹窗展示模拟 SOP；模拟弹窗必须列出每一步做什么以及对应动作类型、选择器、URL、输入、滚动、等待或沙盒提取脚本等关键参数，用户点击“允许并保存流程”后才允许写入 `automationFlows` 表，保存后再次确认才允许执行真实页面动作。
+* 已 Battle、模拟确认并允许保存的自动化流程持久化在 `automationFlows` 表；新增或调整字段时必须同步更新类型定义、Dexie 版本、仓库方法、同步快照、恢复兼容和相关测试。
+* 自动化执行必须逐步派发白名单动作并更新 Side Panel 状态；执行成功要切到 `completed` 并用弹窗展示“执行结果”和完整提取数据，执行失败要切到 `error` 并返回中文失败原因，不能长期停留在“自动化流程已开始执行”。
+* 自动化流程只保存 SOP、动作白名单、适用 URL 正则和运行摘要；不得保存页面原始 HTML、Cookie、API Key、验证码、密码或其它临时敏感数据。
+* 复用已保存流程时必须先展示轻量确认或明确状态提示，不得静默直接执行真实页面动作。
+* 真实网页上下文只允许执行白名单动作，例如点击、输入、滚动、等待、跳转和 HTML 抓取；模型生成的提取/清洗 JavaScript 只能在扩展 Sandbox 中处理 HTML 字符串。
+* 自动化模型响应解析必须兼容 JSON 代码围栏、`replyToUser`/`planReady`/`sopSteps` 等常见字段别名；当可执行计划完整但缺少用户说明时，应生成固定中文默认说明，不能直接丢弃计划。
+* Content Script 执行动作前必须校验选择器、URL、输入文本和等待时间；失败时返回结构化中文错误，供 Side Panel 或模型自我修正使用。
+* Background 自动化消息必须支持 content script 缺失时注入后重试；受限页面、无活动标签页和非法 URL 必须返回明确中文错误。
+* 修改自动化相关逻辑时，最小验证通常包括自动化 store、存储/同步、content/background 消息、sandbox 提取和 Side Panel 入口测试；涉及 manifest 或 sandbox 构建时必须执行 `npm run build:extension`。
+
 ## 11. 前端设计系统约束
 
 本项目的前端视觉风格采用 VoltAgent `awesome-design-md` 中的 Claude 设计规范，来源：`https://github.com/VoltAgent/awesome-design-md/blob/main/design-md/claude/DESIGN.md`。

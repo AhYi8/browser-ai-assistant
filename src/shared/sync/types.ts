@@ -1,5 +1,6 @@
 import type {
   AppSetting,
+  AutomationFlow,
   ChatFolder,
   ChatSession,
   ExtractionRule,
@@ -53,6 +54,7 @@ export interface SyncDataSnapshot {
   providerModels: ProviderModel[];
   extractionRules: ExtractionRule[];
   promptTemplates?: PromptTemplate[];
+  automationFlows?: AutomationFlow[];
   chatSessions: ChatSession[];
   chatFolders: ChatFolder[];
   appSettings: AppSetting[];

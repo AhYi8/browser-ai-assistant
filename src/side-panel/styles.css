@@ -87,6 +87,13 @@ body {
     white-space: normal;
   }
 
+  .automation-status-strip {
+    @apply flex flex-wrap items-center justify-between gap-2 rounded-md p-2 text-sm;
+    background: var(--color-surface-card);
+    border: 1px solid var(--color-hairline);
+    color: var(--color-ink);
+  }
+
   .ui-input {
     @apply rounded-md px-2 py-2 outline-none transition;
     background: var(--color-canvas);
@@ -897,6 +904,96 @@ body {
     color: var(--color-muted);
   }
 
+  .automation-status-content {
+    @apply grid min-w-0 flex-1 gap-2;
+  }
+
+  .automation-simulation-panel {
+    @apply grid gap-1 rounded-md px-3 py-2 text-sm;
+    background: var(--color-surface-soft);
+    border: 1px solid var(--color-hairline);
+    color: var(--color-body);
+  }
+
+  .automation-simulation-panel p {
+    @apply text-xs font-medium;
+    color: var(--color-muted);
+  }
+
+  .automation-simulation-panel ol {
+    @apply grid list-decimal gap-1 pl-4;
+  }
+
+  .automation-simulation-panel li {
+    @apply grid gap-2 break-words rounded-sm px-2 py-1;
+    background: color-mix(in srgb, var(--color-canvas) 72%, transparent);
+  }
+
+  .automation-action-preview {
+    @apply grid gap-1 text-xs;
+    color: var(--color-muted);
+  }
+
+  .automation-action-empty {
+    @apply text-xs;
+    color: var(--color-muted-soft);
+  }
+
+  .automation-action-detail {
+    @apply grid min-w-0 gap-1;
+  }
+
+  .automation-action-detail span {
+    color: var(--color-muted);
+  }
+
+  .automation-action-detail strong {
+    @apply break-all font-normal;
+    color: var(--color-body-strong);
+  }
+
+  .automation-action-detail pre {
+    @apply max-h-24 overflow-auto rounded-sm px-2 py-1;
+    background: var(--color-surface-dark-soft);
+    color: var(--color-on-dark);
+    font-family: var(--font-mono);
+    line-height: 1.55;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .automation-result-panel {
+    @apply grid gap-1 rounded-md px-3 py-2 text-sm;
+    background: color-mix(in srgb, var(--color-accent-teal) 12%, var(--color-canvas));
+    border: 1px solid color-mix(in srgb, var(--color-accent-teal) 34%, var(--color-hairline));
+    color: var(--color-body);
+  }
+
+  .automation-result-panel p {
+    @apply text-xs font-medium;
+    color: var(--color-muted);
+  }
+
+  .automation-result-panel ul {
+    @apply grid gap-1;
+  }
+
+  .automation-result-panel li {
+    @apply grid gap-2 break-words rounded-sm px-2 py-1;
+    background: color-mix(in srgb, var(--color-canvas) 72%, transparent);
+  }
+
+  .automation-result-panel pre {
+    @apply max-h-72 overflow-auto rounded-sm px-2 py-1;
+    background: var(--color-surface-dark-soft);
+    color: var(--color-on-dark);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
   .image-upload-button {
     @apply absolute left-2 top-2 z-10 inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-md text-sm transition;
     background: var(--color-canvas);
@@ -1116,6 +1213,25 @@ body {
     @apply fixed left-3 right-3 top-1/2 z-30 grid max-h-[78vh] -translate-y-1/2 gap-3 rounded-lg p-4 sm:left-1/2 sm:right-auto sm:w-[min(420px,calc(100vw-32px))] sm:-translate-x-1/2;
     background: var(--color-canvas);
     border: 1px solid var(--color-hairline);
+  }
+
+  .automation-dialog {
+    @apply fixed left-3 right-3 top-1/2 z-30 grid max-h-[82vh] -translate-y-1/2 gap-3 overflow-hidden rounded-lg p-4 sm:left-1/2 sm:right-auto sm:w-[min(680px,calc(100vw-32px))] sm:-translate-x-1/2;
+    background: var(--color-canvas);
+    border: 1px solid var(--color-hairline);
+  }
+
+  .automation-result-dialog {
+    @apply sm:w-[min(760px,calc(100vw-32px))];
+  }
+
+  .automation-dialog .automation-simulation-panel,
+  .automation-dialog .automation-result-panel {
+    @apply min-h-0 overflow-auto;
+  }
+
+  .automation-dialog-actions {
+    @apply flex flex-wrap justify-end gap-2;
   }
 
   .context-dialog-header {

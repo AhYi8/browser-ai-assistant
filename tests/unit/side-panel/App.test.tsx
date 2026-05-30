@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -6,7 +6,9 @@ import { App } from "../../../src/side-panel/App";
 import { useAppStore } from "../../../src/side-panel/state/appStore";
 import {
   clearDatabase,
+  getAutomationFlows,
   getProviderModels,
+  saveAutomationFlow,
   saveAppSetting,
   saveChatFolder,
   saveChatSession,
@@ -15,7 +17,17 @@ import {
   savePromptTemplate,
   saveProviderModel,
 } from "../../../src/shared/storage/repositories";
-import type { ChatFolder, ChatMessage, ChatSession, ExtractionRule, ModelProvider, PromptTemplate, ProviderModel, SendShortcut } from "../../../src/shared/types";
+import type {
+  AutomationFlow,
+  ChatFolder,
+  ChatMessage,
+  ChatSession,
+  ExtractionRule,
+  ModelProvider,
+  PromptTemplate,
+  ProviderModel,
+  SendShortcut,
+} from "../../../src/shared/types";
 
 function createChatMessage(partial: Partial<ChatMessage>): ChatMessage {
   return {
@@ -82,6 +94,21 @@ function createChatSession(partial: Partial<ChatSession>): ChatSession {
   };
 }
 
+function createAutomationFlow(partial: Partial<AutomationFlow> = {}): AutomationFlow {
+  return {
+    id: "automation-flow-1",
+    name: "导出订单",
+    description: "提取订单列表",
+    urlPattern: "https://example\\.com/orders.*",
+    sopSteps: ["确认订单范围", "提取列表"],
+    actions: [{ type: "extractHtml" }],
+    enabled: true,
+    createdAt: 1,
+    updatedAt: 1,
+    ...partial,
+  };
+}
+
 function createDataTransfer() {
   const values = new Map<string, string>();
   return {
@@ -134,6 +161,86 @@ function createShortcutRuntimeMock(options: { screenshotResponse?: unknown } = {
   });
 
   return sendMessage;
+}
+
+function createAutomationRuntimeMock() {
+  const sendMessage = vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+    if (message.type === "pageContext.extract") {
+      callback({
+        ok: true,
+        url: "https://linux.do/latest",
+        title: "LinuxDO",
+        text: "<main><a href=\"/t/topic/1\">帖子</a></main>",
+        truncated: false,
+        usedFallback: true,
+      });
+      return undefined;
+    }
+    if (message.type === "automation.executeDomAction") {
+      callback({
+        ok: true,
+        html: "<html><body><a href=\"https://linux.do/t/topic/1\">帖子</a></body></html>",
+        url: "https://linux.do/latest",
+        title: "LinuxDO",
+      });
+      return undefined;
+    }
+
+    callback({
+      ok: true,
+      content: JSON.stringify({
+        reply_to_user: "请检查模拟步骤，确认后我再保存流程。",
+        plan_ready: true,
+        sop: ["检查当前页面是否为 LinuxDO 列表页", "提取当前页所有帖子链接"],
+        actions: [
+          { type: "none" },
+          { type: "runSandboxExtraction", code: "return Array.from(document.querySelectorAll('a')).map(a => a.href);" },
+        ],
+      }),
+    });
+    return undefined;
+  });
+
+  vi.stubGlobal("chrome", {
+    runtime: {
+      sendMessage,
+      getURL: vi.fn((path: string) => `chrome-extension://test/${path}`),
+    },
+  });
+
+  return sendMessage;
+}
+
+function mockAutomationSandboxFrame(data: unknown) {
+  return vi.spyOn(document, "createElement").mockImplementation((tagName: string, options?: ElementCreationOptions) => {
+    const element = Document.prototype.createElement.call(document, tagName, options);
+    if (tagName.toLowerCase() !== "iframe") {
+      return element;
+    }
+
+    const frameWindow = {
+      postMessage: vi.fn((message: unknown) => {
+        const request = message as { requestId?: string };
+        window.setTimeout(() => {
+          window.dispatchEvent(
+            new MessageEvent("message", {
+              source: frameWindow as unknown as Window,
+              origin: "chrome-extension://test",
+              data: {
+                type: "automation.sandbox.result",
+                requestId: request.requestId,
+                ok: true,
+                data,
+              },
+            }),
+          );
+        }, 0);
+      }),
+    };
+    Object.defineProperty(element, "contentWindow", { configurable: true, value: frameWindow });
+    window.setTimeout(() => element.dispatchEvent(new Event("load")), 0);
+    return element;
+  });
 }
 
 function hasChatSendCall(sendMessage: ReturnType<typeof createShortcutRuntimeMock>): boolean {
@@ -274,6 +381,7 @@ describe("App", () => {
 
   afterEach(async () => {
     vi.useRealTimers();
+    vi.restoreAllMocks();
     await clearDatabase();
   });
 
@@ -1492,6 +1600,7 @@ describe("App", () => {
     expect(styles).toContain("overflow-auto");
     expect(screen.getByRole("tab", { name: "渠道管理" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "提取规则" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "自动化流程" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "同步设置" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "提示词" })).toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "界面偏好" })).not.toBeInTheDocument();
@@ -1514,6 +1623,10 @@ describe("App", () => {
     await user.click(screen.getByRole("tab", { name: "提示词" }));
     expect(screen.getByRole("heading", { name: "提示词" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "新增提示词" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "自动化流程" }));
+    expect(screen.getByRole("heading", { name: "自动化流程" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "新增自动化流程" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("tab", { name: "同步设置" }));
 
@@ -1593,6 +1706,108 @@ describe("App", () => {
     await user.click(screen.getByRole("button", { name: "删除提示词" }));
 
     expect(screen.queryByRole("button", { name: /第三条已编辑/ })).not.toBeInTheDocument();
+  });
+
+  it("自动化流程管理支持查看、调用和删除已保存流程", async () => {
+    const user = userEvent.setup();
+    await saveAutomationFlow(createAutomationFlow());
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("tab", { name: "自动化流程" }));
+
+    expect(await screen.findByRole("button", { name: "查看 导出订单" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "调用 导出订单" }));
+
+    expect(useAppStore.getState().automationSession).toMatchObject({
+      mode: "automation",
+      phase: "confirming",
+      flowId: "automation-flow-1",
+    });
+
+    await user.click(screen.getByRole("button", { name: "查看 导出订单" }));
+    await user.click(screen.getByRole("button", { name: "删除自动化流程" }));
+
+    await waitFor(async () => {
+      expect(await getAutomationFlows()).toEqual([]);
+    });
+  });
+
+  it("输入 /自动化 命令后切换到自动化模式且不发送普通聊天", async () => {
+    const user = userEvent.setup();
+    const sendMessage = createShortcutRuntimeMock();
+
+    render(<App />);
+
+    const input = screen.getByLabelText("对话输入");
+    await user.type(input, "/自动化{Enter}");
+
+    expect(useAppStore.getState().automationSession.mode).toBe("automation");
+    expect(await screen.findByText("自动化模式已开启，请描述要完成的浏览器任务")).toBeInTheDocument();
+    expect(sendMessage.mock.calls.some(([message]) => (message as { type: string }).type === "chat.send")).toBe(false);
+  });
+
+  it("自动化 Battle 计划需要先展示模拟步骤并由用户允许后才保存", async () => {
+    const user = userEvent.setup();
+    createAutomationRuntimeMock();
+    const sandboxFrame = mockAutomationSandboxFrame(["https://linux.do/t/topic/1"]);
+    await saveModelProvider({
+      id: "provider-auto",
+      name: "自动化渠道",
+      endpointType: "openai_chat",
+      endpointUrl: "https://api.example.com/v1/chat/completions",
+      apiKey: "sk-test",
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    await saveProviderModel({
+      id: "model-auto",
+      providerId: "provider-auto",
+      displayName: "自动化模型",
+      modelId: "gpt-test",
+      temperature: 0.7,
+      maxTokens: 1024,
+      systemPrompt: "你是网页助手",
+      isTitleModel: false,
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    });
+
+    render(<App />);
+
+    const input = screen.getByLabelText("对话输入");
+    await user.type(input, "/自动化{Enter}");
+    await user.type(input, "提取所有 LinuxDO 帖子的链接{Enter}");
+
+    expect(await screen.findByText("Battle 已完成，请检查模拟步骤并允许保存流程")).toBeInTheDocument();
+    const stepsDialog = screen.getByRole("dialog", { name: "自动化步骤确认" });
+    expect(stepsDialog).toHaveTextContent("提取当前页所有帖子链接");
+    expect(stepsDialog).toHaveTextContent("动作：沙盒提取");
+    expect(stepsDialog).toHaveTextContent("提取脚本");
+    expect(stepsDialog).toHaveTextContent("querySelectorAll('a')");
+    expect(within(stepsDialog).getByRole("button", { name: "允许并保存流程" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("自动化模拟步骤")).not.toBeInTheDocument();
+    expect(await getAutomationFlows()).toEqual([]);
+
+    await user.click(within(stepsDialog).getByRole("button", { name: "允许并保存流程" }));
+
+    expect(await screen.findByText("自动化流程已保存，请确认开始执行")).toBeInTheDocument();
+    expect(within(screen.getByRole("dialog", { name: "自动化步骤确认" })).getByRole("button", { name: "开始执行" })).toBeInTheDocument();
+    expect((await getAutomationFlows()).map((flow) => flow.name)).toEqual(["提取所有 LinuxDO 帖子的链接"]);
+
+    await user.click(within(screen.getByRole("dialog", { name: "自动化步骤确认" })).getByRole("button", { name: "开始执行" }));
+
+    expect(await screen.findByText("自动化流程执行成功，已完成 2 个动作")).toBeInTheDocument();
+    const resultDialog = screen.getByRole("dialog", { name: "自动化执行结果" });
+    expect(resultDialog).toHaveTextContent("runSandboxExtraction");
+    expect(resultDialog).toHaveTextContent("https://linux.do/t/topic/1");
+    expect(within(resultDialog).getByText(/\"data\"/)).toBeInTheDocument();
+
+    sandboxFrame.mockRestore();
   });
 
   it("同步设置输入框使用中文输入法组合输入时只保存最终文本", async () => {

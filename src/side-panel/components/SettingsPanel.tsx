@@ -1,19 +1,20 @@
 import { useMemo, useState } from "react";
 import type { DragEvent } from "react";
-import type { ChatPreferenceValues, ExtractionRule, ModelProvider, PromptTemplate, ProviderModel, SendShortcut } from "../../shared/types";
+import type { AutomationFlow, ChatPreferenceValues, ExtractionRule, ModelProvider, PromptTemplate, ProviderModel, SendShortcut } from "../../shared/types";
 import { useAppStore } from "../state/appStore";
 import { formatModelLabelWithVision, ModelVisionIcon } from "./ModelVisionIndicator";
 import { useComposedTextInput } from "./useComposedTextInput";
 
 const DEBUG_PREFIX = "[提取规则 AI 生成诊断]";
 
-type SettingsTab = "channels" | "rules" | "chat" | "prompts" | "sync";
+type SettingsTab = "channels" | "rules" | "chat" | "prompts" | "automation" | "sync";
 
 const settingsTabs: Array<{ id: SettingsTab; label: string }> = [
   { id: "channels", label: "渠道管理" },
   { id: "rules", label: "提取规则" },
   { id: "chat", label: "聊天偏好" },
   { id: "prompts", label: "提示词" },
+  { id: "automation", label: "自动化流程" },
   { id: "sync", label: "同步设置" },
 ];
 
@@ -85,6 +86,7 @@ export function SettingsPanel() {
           {activeTab === "rules" ? <ExtractionRules /> : null}
           {activeTab === "chat" ? <ChatPreferenceSettings /> : null}
           {activeTab === "prompts" ? <PromptTemplateSettings /> : null}
+          {activeTab === "automation" ? <AutomationFlowSettings /> : null}
           {activeTab === "sync" ? <SyncSettings /> : null}
         </div>
       </div>
@@ -679,6 +681,191 @@ function ExtractionRules() {
         ) : null}
       </div>
     </section>
+  );
+}
+
+function AutomationFlowSettings() {
+  const automationFlows = useAppStore((state) => state.automationFlows);
+  const saveAutomationFlowDraft = useAppStore((state) => state.saveAutomationFlowDraft);
+  const deleteAutomationFlow = useAppStore((state) => state.deleteAutomationFlow);
+  const enterAutomationMode = useAppStore((state) => state.enterAutomationMode);
+  const [expandedFlowId, setExpandedFlowId] = useState<string>();
+  const [editingFlowId, setEditingFlowId] = useState<string>();
+  const [draft, setDraft] = useState<Pick<AutomationFlow, "name" | "description" | "urlPattern" | "sopSteps" | "actions" | "enabled">>({
+    name: "",
+    description: "",
+    urlPattern: "https://.*",
+    sopSteps: [],
+    actions: [{ type: "extractHtml" }],
+    enabled: true,
+  });
+  const [validationMessage, setValidationMessage] = useState("");
+
+  const openFlow = (flow: AutomationFlow) => {
+    setExpandedFlowId(flow.id);
+    setEditingFlowId(flow.id);
+    setDraft({
+      name: flow.name,
+      description: flow.description,
+      urlPattern: flow.urlPattern,
+      sopSteps: flow.sopSteps,
+      actions: flow.actions,
+      enabled: flow.enabled,
+    });
+    setValidationMessage("");
+  };
+  const openDraft = () => {
+    setExpandedFlowId("draft-automation-flow");
+    setEditingFlowId(undefined);
+    setDraft({
+      name: "",
+      description: "",
+      urlPattern: "https://.*",
+      sopSteps: [],
+      actions: [{ type: "extractHtml" }],
+      enabled: true,
+    });
+    setValidationMessage("");
+  };
+  const handleSave = async () => {
+    const result = await saveAutomationFlowDraft(editingFlowId, draft);
+    if (!result.ok) {
+      setValidationMessage(result.message);
+      return;
+    }
+
+    setExpandedFlowId(result.flow.id);
+    setEditingFlowId(result.flow.id);
+    setDraft({
+      name: result.flow.name,
+      description: result.flow.description,
+      urlPattern: result.flow.urlPattern,
+      sopSteps: result.flow.sopSteps,
+      actions: result.flow.actions,
+      enabled: result.flow.enabled,
+    });
+    setValidationMessage("");
+  };
+  const handleDelete = async () => {
+    if (!editingFlowId) {
+      setExpandedFlowId(undefined);
+      return;
+    }
+    if (!window.confirm("确认删除这条自动化流程吗？")) {
+      return;
+    }
+
+    await deleteAutomationFlow(editingFlowId);
+    setExpandedFlowId(undefined);
+    setEditingFlowId(undefined);
+  };
+
+  return (
+    <section className="grid w-full gap-3" aria-label="自动化流程">
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="text-base font-semibold">自动化流程</h3>
+        <button className="ui-button-secondary" type="button" onClick={openDraft}>
+          新增自动化流程
+        </button>
+      </div>
+      {automationFlows.length === 0 && expandedFlowId !== "draft-automation-flow" ? (
+        <p className="ui-card ui-muted text-sm">暂无自动化流程</p>
+      ) : null}
+      <div className="grid gap-2">
+        {automationFlows.map((flow) => (
+          <article key={flow.id} className="ui-card grid gap-2">
+            <div className="flex items-start justify-between gap-3">
+              <button className="min-w-0 text-left" type="button" aria-label={`查看 ${flow.name}`} onClick={() => openFlow(flow)}>
+                <span className="block truncate text-sm font-medium">{flow.name}</span>
+                <span className="ui-muted block truncate text-xs">{flow.urlPattern}</span>
+              </button>
+              <button className="ui-button-secondary shrink-0" type="button" aria-label={`调用 ${flow.name}`} onClick={() => enterAutomationMode(flow.id)}>
+                调用
+              </button>
+            </div>
+            {flow.sopSteps.length > 0 ? <p className="ui-muted text-xs">{flow.sopSteps.join(" / ")}</p> : null}
+            {expandedFlowId === flow.id ? (
+              <AutomationFlowEditor
+                draft={draft}
+                validationMessage={validationMessage}
+                onChange={setDraft}
+                onSave={() => void handleSave()}
+                onDelete={() => void handleDelete()}
+              />
+            ) : null}
+          </article>
+        ))}
+        {expandedFlowId === "draft-automation-flow" ? (
+          <article className="ui-card">
+            <AutomationFlowEditor
+              draft={draft}
+              validationMessage={validationMessage}
+              onChange={setDraft}
+              onSave={() => void handleSave()}
+              onDelete={() => void handleDelete()}
+            />
+          </article>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+interface AutomationFlowEditorProps {
+  draft: Pick<AutomationFlow, "name" | "description" | "urlPattern" | "sopSteps" | "actions" | "enabled">;
+  validationMessage: string;
+  onChange: (draft: Pick<AutomationFlow, "name" | "description" | "urlPattern" | "sopSteps" | "actions" | "enabled">) => void;
+  onSave: () => void;
+  onDelete: () => void;
+}
+
+function AutomationFlowEditor({ draft, validationMessage, onChange, onSave, onDelete }: AutomationFlowEditorProps) {
+  return (
+    <div className="grid gap-3 border-t border-[var(--color-hairline)] pt-3">
+      <label className="grid gap-1 text-sm">
+        流程名称
+        <input className="ui-input" aria-label="流程名称" value={draft.name} onChange={(event) => onChange({ ...draft, name: event.target.value })} />
+      </label>
+      <label className="grid gap-1 text-sm">
+        流程说明
+        <textarea className="ui-input min-h-20" aria-label="流程说明" value={draft.description} onChange={(event) => onChange({ ...draft, description: event.target.value })} />
+      </label>
+      <label className="grid gap-1 text-sm">
+        适用 URL 正则
+        <input className="ui-input" aria-label="适用 URL 正则" value={draft.urlPattern} onChange={(event) => onChange({ ...draft, urlPattern: event.target.value })} />
+      </label>
+      <label className="grid gap-1 text-sm">
+        SOP 步骤
+        <textarea
+          className="ui-input min-h-24"
+          aria-label="SOP 步骤"
+          value={draft.sopSteps.join("\n")}
+          onChange={(event) => onChange({ ...draft, sopSteps: event.target.value.split(/\r?\n/) })}
+        />
+      </label>
+      <label className="chat-preference-switch">
+        <input
+          className="chat-preference-switch-input"
+          type="checkbox"
+          aria-label="启用自动化流程"
+          checked={draft.enabled}
+          onChange={(event) => onChange({ ...draft, enabled: event.target.checked })}
+        />
+        <span className="chat-preference-switch-control" aria-hidden="true">
+          <span className="chat-preference-switch-thumb" />
+        </span>
+        <span className="chat-preference-switch-label">启用自动化流程</span>
+      </label>
+      {validationMessage ? <p className="text-sm text-[var(--color-error)]">{validationMessage}</p> : null}
+      <div className="flex flex-wrap gap-2">
+        <button className="ui-button-primary" type="button" onClick={onSave}>
+          保存自动化流程
+        </button>
+        <button className="ui-button-secondary" type="button" onClick={onDelete}>
+          删除自动化流程
+        </button>
+      </div>
+    </div>
   );
 }
 function PromptTemplateSettings() {

@@ -8,14 +8,32 @@ import {
 import {
   clearDatabase,
   getAppSetting,
+  getAutomationFlows,
   getChatSessions,
   getModelProviders,
   getPromptTemplates,
+  saveAutomationFlow,
   saveAppSetting,
   saveModelProvider,
   savePromptTemplate,
 } from "../../../src/shared/storage/repositories";
-import type { ChatSession, ModelProvider, PromptTemplate } from "../../../src/shared/types";
+import type { AutomationFlow, ChatSession, ModelProvider, PromptTemplate } from "../../../src/shared/types";
+
+function createAutomationFlow(): AutomationFlow {
+  return {
+    id: "automation-flow-1",
+    name: "导出订单",
+    description: "提取订单列表",
+    urlPattern: "https://example\\.com/orders.*",
+    sopSteps: ["确认订单范围", "提取列表数据"],
+    actions: [{ type: "extractHtml" }],
+    enabled: true,
+    createdAt: 1,
+    updatedAt: 2,
+    lastRunAt: 3,
+    lastRunStatus: "success",
+  };
+}
 
 describe("同步快照", () => {
   afterEach(async () => {
@@ -43,6 +61,8 @@ describe("同步快照", () => {
       updatedAt: 1,
     };
     await savePromptTemplate(prompt);
+    const flow = createAutomationFlow();
+    await saveAutomationFlow(flow);
     await saveAppSetting({ key: "syncEncryptionSecret", value: "secret", updatedAt: 1 });
     await saveAppSetting({ key: "syncSettings", value: { syncEnabled: true }, updatedAt: 1 });
 
@@ -50,6 +70,7 @@ describe("同步快照", () => {
 
     expect(snapshot.modelProviders).toEqual([provider]);
     expect(snapshot.promptTemplates).toEqual([prompt]);
+    expect(snapshot.automationFlows).toEqual([flow]);
     expect(snapshot.appSettings).toEqual([
       { key: "syncSettings", value: { syncEnabled: true }, updatedAt: 1 },
     ]);
@@ -82,6 +103,7 @@ describe("同步快照", () => {
       modelProviders: [],
       providerModels: [],
       extractionRules: [],
+      automationFlows: [createAutomationFlow()],
       chatSessions: [session],
       chatFolders: [],
       appSettings: [{ key: "syncSettings", value: { syncEnabled: true }, updatedAt: 2 }],
@@ -89,6 +111,7 @@ describe("同步快照", () => {
 
     expect(await getModelProviders()).toEqual([]);
     expect(await getChatSessions()).toEqual([session]);
+    expect(await getAutomationFlows()).toEqual([createAutomationFlow()]);
     await expect(getAppSetting("syncSettings")).resolves.toEqual({ syncEnabled: true });
   });
 
@@ -103,6 +126,7 @@ describe("同步快照", () => {
       modelProviders: [],
       providerModels: [],
       extractionRules: [],
+      automationFlows: [],
       chatSessions: [],
       chatFolders: [],
       appSettings: [{ key: "syncSettings", value: { syncEnabled: true }, updatedAt: 2 }],
@@ -114,7 +138,7 @@ describe("同步快照", () => {
     await expect(getAppSetting("syncSettings")).resolves.toEqual({ syncEnabled: true });
   });
 
-  it("恢复旧快照时允许缺少 Prompt 模板列表", async () => {
+  it("恢复旧快照时允许缺少 Prompt 模板列表和自动化流程列表", async () => {
     await savePromptTemplate({
       id: "prompt-local",
       title: "本地提示词",
@@ -123,6 +147,7 @@ describe("同步快照", () => {
       createdAt: 1,
       updatedAt: 1,
     });
+    await saveAutomationFlow(createAutomationFlow());
 
     await restoreSyncSnapshot({
       version: 1,
@@ -136,5 +161,6 @@ describe("同步快照", () => {
     });
 
     expect(await getPromptTemplates()).toEqual([]);
+    expect(await getAutomationFlows()).toEqual([]);
   });
 });

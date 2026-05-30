@@ -1,7 +1,7 @@
 import { useEffect, useId, useState } from "react";
 import type { ChangeEvent, ClipboardEvent as ReactClipboardEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
 import { isPngDataUrl, isTabCaptureImageAttachment, TAB_CAPTURE_VISIBLE_MESSAGE_TYPE, type TabCaptureVisibleResponse } from "../../shared/tabCapture";
-import type { ChatImageAttachment, ChatPromptInvocation, PromptTemplate, SendShortcut } from "../../shared/types";
+import type { AutomationAction, AutomationFlow, ChatImageAttachment, ChatPromptInvocation, PromptTemplate, SendShortcut } from "../../shared/types";
 import { useAppStore } from "../state/appStore";
 import { PromptInlineEditor } from "./PromptInlineEditor";
 
@@ -13,6 +13,28 @@ interface ChatComposerProps {
   canSend: boolean;
   matchedRuleLabel: string;
 }
+
+type SlashCommandOption =
+  | {
+      id: string;
+      kind: "automation-start" | "automation-exit";
+      title: string;
+      description: string;
+    }
+  | {
+      id: string;
+      kind: "automation-flow";
+      title: string;
+      description: string;
+      flow: AutomationFlow;
+    }
+  | {
+      id: string;
+      kind: "prompt";
+      title: string;
+      description: string;
+      prompt: PromptTemplate;
+    };
 
 interface ComposerSwitchProps {
   ariaLabel: string;
@@ -32,6 +54,105 @@ function ComposerSwitch({ ariaLabel, checked, label, onToggle }: ComposerSwitchP
   );
 }
 
+const AUTOMATION_ACTION_LABELS: Record<AutomationAction["type"], string> = {
+  click: "点击",
+  input: "输入",
+  scroll: "滚动",
+  wait: "等待",
+  navigate: "跳转",
+  extractHtml: "抓取 HTML",
+  runSandboxExtraction: "沙盒提取",
+  none: "无真实网页动作",
+};
+
+function AutomationActionPreview({ action }: { action?: AutomationAction }) {
+  if (!action) {
+    return <span className="automation-action-empty">动作：未指定</span>;
+  }
+
+  const details = buildAutomationActionDetails(action);
+  return (
+    <div className="automation-action-preview">
+      <span>动作：{AUTOMATION_ACTION_LABELS[action.type]}</span>
+      {details.map((detail) => (
+        <div className="automation-action-detail" key={detail.label}>
+          <span>{detail.label}</span>
+          {detail.code ? <pre>{detail.value}</pre> : <strong>{detail.value}</strong>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function buildAutomationActionDetails(action: AutomationAction): Array<{ label: string; value: string; code?: boolean }> {
+  const details: Array<{ label: string; value: string; code?: boolean }> = [];
+  if (action.selector) {
+    details.push({ label: "目标选择器", value: action.selector });
+  }
+  if (action.url) {
+    details.push({ label: "目标 URL", value: action.url });
+  }
+  if (action.value) {
+    details.push({ label: "输入内容", value: action.value });
+  }
+  if (typeof action.scrollY === "number") {
+    details.push({ label: "滚动距离", value: `${action.scrollY}px` });
+  }
+  if (typeof action.timeoutMs === "number") {
+    details.push({ label: "等待时间", value: `${action.timeoutMs}ms` });
+  }
+  if (action.code) {
+    details.push({ label: action.type === "runSandboxExtraction" ? "提取脚本" : "脚本", value: action.code, code: true });
+  }
+
+  return details;
+}
+
+function formatAutomationResult(item: unknown): string {
+  if (!item || typeof item !== "object") {
+    return stringifyAutomationResult(item);
+  }
+
+  const result = item as { type?: unknown; title?: unknown; url?: unknown; htmlLength?: unknown; tabId?: unknown; data?: unknown };
+  const parts = [
+    typeof result.type === "string" ? result.type : "结果",
+    typeof result.title === "string" && result.title ? `标题：${result.title}` : undefined,
+    typeof result.url === "string" && result.url ? `URL：${result.url}` : undefined,
+    typeof result.htmlLength === "number" ? `HTML：${result.htmlLength} 字符` : undefined,
+    typeof result.tabId === "number" ? `标签页：${result.tabId}` : undefined,
+    "data" in result ? `数据：${formatAutomationResultData(result.data)}` : undefined,
+  ].filter((part): part is string => Boolean(part));
+
+  return parts.join(" · ");
+}
+
+function formatAutomationResultData(data: unknown): string {
+  if (Array.isArray(data)) {
+    const preview = data.slice(0, 3).map((item) => stringifyAutomationResult(item)).join("、");
+    return `${data.length} 条${preview ? `（${preview}${data.length > 3 ? "…" : ""}）` : ""}`;
+  }
+
+  return stringifyAutomationResult(data);
+}
+
+function formatAutomationResultJson(item: unknown): string {
+  try {
+    return JSON.stringify(item, null, 2);
+  } catch {
+    return stringifyAutomationResult(item);
+  }
+}
+
+function stringifyAutomationResult(item: unknown): string {
+  if (typeof item === "string") {
+    return item;
+  }
+  if (typeof item === "number" || typeof item === "boolean") {
+    return String(item);
+  }
+  return "已完成";
+}
+
 export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   const [input, setInput] = useState("");
   const [promptInvocations, setPromptInvocations] = useState<ChatPromptInvocation[]>([]);
@@ -42,11 +163,14 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   const [attachmentError, setAttachmentError] = useState("");
   const [previewAttachment, setPreviewAttachment] = useState<ChatImageAttachment | undefined>();
   const [contextDialogOpen, setContextDialogOpen] = useState(false);
+  const [automationDialog, setAutomationDialog] = useState<"steps" | "results" | undefined>();
   const [composing, setComposing] = useState(false);
   const imageInputId = useId();
   const currentModelSupportsVision = useAppStore((state) => Boolean(state.models.find((model) => model.id === state.selectedModelId)?.supportsVision));
   const sendShortcut = useAppStore((state) => state.chatPreferences.sendShortcut);
   const promptTemplates = useAppStore((state) => state.promptTemplates);
+  const automationFlows = useAppStore((state) => state.automationFlows);
+  const automationSession = useAppStore((state) => state.automationSession);
   const streamMode = useAppStore((state) => state.streamMode);
   const contextMode = useAppStore((state) => state.contextMode);
   const appendPageContextToSystemPrompt = useAppStore((state) => state.appendPageContextToSystemPrompt);
@@ -58,6 +182,10 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   const setAppendPageContextToSystemPrompt = useAppStore((state) => state.setAppendPageContextToSystemPrompt);
   const refreshPageContext = useAppStore((state) => state.refreshPageContext);
   const sendChatMessage = useAppStore((state) => state.sendChatMessage);
+  const enterAutomationMode = useAppStore((state) => state.enterAutomationMode);
+  const exitAutomationMode = useAppStore((state) => state.exitAutomationMode);
+  const submitAutomationBattleMessage = useAppStore((state) => state.submitAutomationBattleMessage);
+  const confirmAutomationFlow = useAppStore((state) => state.confirmAutomationFlow);
 
   useEffect(() => {
     setComposerHasDraft(input.trim().length > 0 || attachments.length > 0 || promptInvocations.length > 0);
@@ -78,6 +206,22 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
     return () => document.removeEventListener("keydown", closeOnEscape);
   }, [contextDialogOpen]);
 
+  useEffect(() => {
+    if (automationSession.phase === "confirming" && automationSession.pendingFlow) {
+      setAutomationDialog("steps");
+      return;
+    }
+
+    if ((automationSession.phase === "completed" || automationSession.phase === "error") && automationSession.collectedData.length > 0) {
+      setAutomationDialog("results");
+      return;
+    }
+
+    if (automationSession.mode !== "automation") {
+      setAutomationDialog(undefined);
+    }
+  }, [automationSession.collectedData.length, automationSession.mode, automationSession.pendingFlow, automationSession.phase]);
+
   const submit = async () => {
     const content = input.trim();
     if (!content && attachments.length === 0 && promptInvocations.length === 0) {
@@ -91,6 +235,11 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
     const sendingPromptInvocations = promptInvocations;
     setAttachments([]);
     setAttachmentError("");
+    if (automationSession.mode === "automation") {
+      await submitAutomationBattleMessage(content);
+      return;
+    }
+
     await sendChatMessage(content, sendingAttachments, sendingPromptInvocations);
   };
 
@@ -106,9 +255,9 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
         event.preventDefault();
         return;
       }
-      if (!isComposingInput && event.key === "Enter" && filteredPromptTemplates[0]) {
+      if (!isComposingInput && event.key === "Enter" && slashCommandOptions[0]) {
         event.preventDefault();
-        handleSelectPrompt(filteredPromptTemplates[0]);
+        handleSelectSlashCommand(slashCommandOptions[0]);
         return;
       }
     }
@@ -163,6 +312,35 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
     setSlashStartIndex(slashInfo.startIndex);
   };
 
+  const handleSelectSlashCommand = (option: SlashCommandOption) => {
+    if (option.kind === "automation-start") {
+      enterAutomationMode();
+      removeSlashCommandFromInput();
+      return;
+    }
+    if (option.kind === "automation-exit") {
+      exitAutomationMode();
+      removeSlashCommandFromInput();
+      return;
+    }
+    if (option.kind === "automation-flow") {
+      enterAutomationMode(option.flow.id);
+      removeSlashCommandFromInput();
+      return;
+    }
+
+    if (option.kind === "prompt") {
+      handleSelectPrompt(option.prompt);
+    }
+  };
+
+  const removeSlashCommandFromInput = () => {
+    setInput((current) => removeSlashCommandSegment(current, slashStartIndex));
+    setSlashMenuOpen(false);
+    setSlashQuery("");
+    setSlashStartIndex(undefined);
+  };
+
   const handleSelectPrompt = (prompt: PromptTemplate) => {
     setPromptInvocations((current) => [
       ...current,
@@ -172,12 +350,7 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
         contentSnapshot: prompt.content,
       },
     ]);
-    setInput((current) => {
-      return removeSlashCommandSegment(current, slashStartIndex);
-    });
-    setSlashMenuOpen(false);
-    setSlashQuery("");
-    setSlashStartIndex(undefined);
+    removeSlashCommandFromInput();
   };
 
   const handleCaptureVisibleTab = async () => {
@@ -257,7 +430,8 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   };
 
   const contextModeLabel = contextMode === "all" ? "提取所有" : "提取文本";
-  const filteredPromptTemplates = filterPromptTemplates(promptTemplates, slashQuery);
+  const slashCommandOptions = buildSlashCommandOptions(promptTemplates, automationFlows, slashQuery);
+  const automationModeActive = automationSession.mode === "automation";
   const canSubmit = canSend && !sending && (input.trim().length > 0 || attachments.length > 0 || promptInvocations.length > 0);
 
   return (
@@ -304,6 +478,26 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
       </div>
       {pageContext.truncated ? <p className="text-sm text-[var(--color-warning)]">内容已截断，请细化 CSS/XPath</p> : null}
       {pageContext.error ? <p className="text-sm text-[var(--color-error)]">{pageContext.error}</p> : null}
+      {automationModeActive ? (
+        <div className="automation-status-strip" role="status">
+          <div className="automation-status-content">
+            <span>{automationSession.statusMessage ?? "自动化模式已开启"}</span>
+          </div>
+          {automationSession.phase === "confirming" && automationSession.pendingFlow ? (
+            <button className="ui-button-primary" type="button" onClick={() => setAutomationDialog("steps")}>
+              查看步骤
+            </button>
+          ) : null}
+          {automationSession.collectedData.length > 0 ? (
+            <button className="ui-button-primary" type="button" onClick={() => setAutomationDialog("results")}>
+              查看结果
+            </button>
+          ) : null}
+          <button className="ui-button-secondary" type="button" onClick={exitAutomationMode}>
+            退出自动化
+          </button>
+        </div>
+      ) : null}
       {attachmentError ? <p className="text-sm text-[var(--color-error)]">{attachmentError}</p> : null}
       <div className="chat-input-shell">
         <input
@@ -341,19 +535,19 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
         />
         {slashMenuOpen ? (
           <div className="slash-command-menu" role="listbox" aria-label="提示词命令">
-            {filteredPromptTemplates.length > 0 ? (
-              filteredPromptTemplates.map((prompt) => (
+            {slashCommandOptions.length > 0 ? (
+              slashCommandOptions.map((option) => (
                 <button
-                  key={prompt.id}
+                  key={option.id}
                   className="slash-command-option"
                   type="button"
                   role="option"
                   aria-selected="false"
                   onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => handleSelectPrompt(prompt)}
+                  onClick={() => handleSelectSlashCommand(option)}
                 >
-                  <span className="slash-command-title">{prompt.title}</span>
-                  <span className="slash-command-content">{prompt.content}</span>
+                  <span className="slash-command-title">{option.title}</span>
+                  <span className="slash-command-content">{option.description}</span>
                 </button>
               ))
             ) : (
@@ -373,7 +567,7 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
           />
         </div>
         <button className="ui-button-primary" type="button" disabled={!canSubmit} onClick={() => void submit()}>
-          {sending ? "发送中" : "发送"}
+          {sending ? "发送中" : automationModeActive ? "自动化" : "发送"}
         </button>
       </div>
       {previewAttachment ? (
@@ -400,6 +594,66 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
               </button>
             </div>
             <p className="context-preview">{pageContext.text || "暂无上下文"}</p>
+          </section>
+        </>
+      ) : null}
+      {automationDialog === "steps" && automationSession.pendingFlow ? (
+        <>
+          <div className="dialog-overlay" aria-hidden="true" />
+          <section className="automation-dialog" role="dialog" aria-modal="true" aria-labelledby="automation-steps-dialog-title">
+            <div className="context-dialog-header">
+              <h2 className="context-dialog-title" id="automation-steps-dialog-title">
+                自动化步骤确认
+              </h2>
+              <button className="ui-button-secondary context-dialog-close" type="button" aria-label="关闭自动化步骤" onClick={() => setAutomationDialog(undefined)}>
+                关闭
+              </button>
+            </div>
+            <div className="automation-simulation-panel">
+              <p>模拟步骤</p>
+              <ol>
+                {automationSession.pendingFlow.sopSteps.map((step, index) => (
+                  <li key={`${step}-${index}`}>
+                    <span>{step}</span>
+                    <AutomationActionPreview action={automationSession.pendingFlow?.actions[index]} />
+                  </li>
+                ))}
+              </ol>
+            </div>
+            <div className="automation-dialog-actions">
+              <button className="ui-button-secondary" type="button" onClick={() => setAutomationDialog(undefined)}>
+                稍后处理
+              </button>
+              <button className="ui-button-primary" type="button" onClick={() => void confirmAutomationFlow()}>
+                {automationSession.flowId ? "开始执行" : "允许并保存流程"}
+              </button>
+            </div>
+          </section>
+        </>
+      ) : null}
+      {automationDialog === "results" && automationSession.collectedData.length > 0 ? (
+        <>
+          <div className="dialog-overlay" aria-hidden="true" />
+          <section className="automation-dialog automation-result-dialog" role="dialog" aria-modal="true" aria-labelledby="automation-results-dialog-title">
+            <div className="context-dialog-header">
+              <h2 className="context-dialog-title" id="automation-results-dialog-title">
+                自动化执行结果
+              </h2>
+              <button className="ui-button-secondary context-dialog-close" type="button" aria-label="关闭自动化结果" onClick={() => setAutomationDialog(undefined)}>
+                关闭
+              </button>
+            </div>
+            <div className="automation-result-panel">
+              <p>执行结果</p>
+              <ul>
+                {automationSession.collectedData.map((item, index) => (
+                  <li key={`automation-result-${index}`}>
+                    <span>{formatAutomationResult(item)}</span>
+                    <pre>{formatAutomationResultJson(item)}</pre>
+                  </li>
+                ))}
+              </ul>
+            </div>
           </section>
         </>
       ) : null}
@@ -473,16 +727,44 @@ export function removeSlashCommandSegment(value: string, fallbackStartIndex?: nu
   return `${before}${after}`;
 }
 
-function filterPromptTemplates(promptTemplates: PromptTemplate[], query: string): PromptTemplate[] {
+function buildSlashCommandOptions(promptTemplates: PromptTemplate[], automationFlows: AutomationFlow[], query: string): SlashCommandOption[] {
   const normalizedQuery = query.trim().toLowerCase();
+  const builtInOptions: SlashCommandOption[] = [
+    {
+      id: "automation-start",
+      kind: "automation-start",
+      title: "/自动化",
+      description: "进入自动化模式，先 Battle 再执行",
+    },
+    {
+      id: "automation-exit",
+      kind: "automation-exit",
+      title: "/退出自动化",
+      description: "退出当前自动化模式",
+    },
+    ...automationFlows
+      .filter((flow) => flow.enabled)
+      .map((flow): SlashCommandOption => ({
+        id: `automation-flow-${flow.id}`,
+        kind: "automation-flow",
+        title: flow.name,
+        description: `调用自动化流程：${flow.urlPattern}`,
+        flow,
+      })),
+  ];
+  const promptOptions = promptTemplates.map((prompt): SlashCommandOption => ({
+    id: `prompt-${prompt.id}`,
+    kind: "prompt",
+    title: prompt.title,
+    description: prompt.content,
+    prompt,
+  }));
+  const options = [...builtInOptions, ...promptOptions];
   if (!normalizedQuery) {
-    return promptTemplates;
+    return options;
   }
 
-  return promptTemplates.filter((prompt) => {
-    const searchableText = `${prompt.title}\n${prompt.content}`.toLowerCase();
-    return searchableText.includes(normalizedQuery);
-  });
+  return options.filter((option) => `${option.title}\n${option.description}`.toLowerCase().includes(normalizedQuery));
 }
 
 function sendRuntimeMessage<T>(message: { type: string }): Promise<T | undefined> {

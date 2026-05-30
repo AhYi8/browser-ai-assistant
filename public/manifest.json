@@ -15,6 +15,9 @@
   "side_panel": {
     "default_path": "index.html"
   },
+  "sandbox": {
+    "pages": ["sandbox.html"]
+  },
   "commands": {
     "open-side-panel": {
       "suggested_key": {

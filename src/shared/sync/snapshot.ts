@@ -68,4 +68,7 @@ function assertValidSnapshot(value: SyncDataSnapshot): void {
   if ("promptTemplates" in maybeSnapshot && !Array.isArray(maybeSnapshot.promptTemplates)) {
     throw new Error("备份文件格式无效，未覆盖本地数据");
   }
+  if ("automationFlows" in maybeSnapshot && !Array.isArray(maybeSnapshot.automationFlows)) {
+    throw new Error("备份文件格式无效，未覆盖本地数据");
+  }
 }

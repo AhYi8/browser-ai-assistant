@@ -6,6 +6,7 @@ import type { RemoteModelInfo } from "../../shared/models/modelCatalog";
 import { createTitleGenerationMessages, generateSessionTitle } from "../../shared/models/titleGeneration";
 import {
   deleteChatSession,
+  deleteAutomationFlow as deleteAutomationFlowRepository,
   deleteExtractionRule,
   deleteModelProvider,
   deleteProviderModel,
@@ -13,12 +14,14 @@ import {
   getAppSetting,
   getChatFolders,
   getChatSessions,
+  getAutomationFlows,
   getExtractionRules,
   getModelProviders,
   getPromptTemplates,
   getProviderModels,
   reorderPromptTemplates,
   saveAppSetting,
+  saveAutomationFlow as saveAutomationFlowRepository,
   saveChatFolder,
   saveChatSession,
   moveExtractionRule,
@@ -51,6 +54,11 @@ import type {
   ChatSessionPreferenceOverrides,
   EndpointType,
   ExtractionRule,
+  AutomationAction,
+  AutomationFlowRunStatus,
+  AutomationFlow,
+  AutomationSession,
+  AutomationAgentResponse,
   ModelProvider,
   PageContextExtractMode,
   PromptTemplate,
@@ -99,6 +107,7 @@ interface AppState {
   models: ProviderModel[];
   extractionRules: ExtractionRule[];
   promptTemplates: PromptTemplate[];
+  automationFlows: AutomationFlow[];
   chatSessions: ChatSession[];
   chatFolders: ChatFolder[];
   pageContext: PageContextState;
@@ -120,6 +129,7 @@ interface AppState {
   syncSettings: SyncSettings;
   syncSecrets: SyncSecrets;
   syncOperation: SyncOperationState;
+  automationSession: AutomationSession;
   failure?: RequestFailure;
   addExampleModel: () => void;
   addProvider: () => ModelProvider;
@@ -155,6 +165,16 @@ interface AppState {
   savePromptTemplateDraft: (promptId: string | undefined, draft: Pick<PromptTemplate, "title" | "content">) => Promise<{ ok: true; prompt: PromptTemplate } | { ok: false; message: string }>;
   deletePrompt: (promptId: string) => Promise<void>;
   reorderPromptTemplates: (orderedIds: string[]) => Promise<void>;
+  loadAutomationFlows: () => Promise<void>;
+  saveAutomationFlowDraft: (
+    flowId: string | undefined,
+    draft: Pick<AutomationFlow, "name" | "description" | "urlPattern" | "sopSteps" | "actions" | "enabled">,
+  ) => Promise<{ ok: true; flow: AutomationFlow } | { ok: false; message: string }>;
+  deleteAutomationFlow: (flowId: string) => Promise<void>;
+  enterAutomationMode: (flowId?: string) => void;
+  exitAutomationMode: () => void;
+  submitAutomationBattleMessage: (content: string) => Promise<void>;
+  confirmAutomationFlow: () => Promise<void>;
   refreshPageContext: () => Promise<void>;
   generateUrlPatterns: (modelId?: string) => Promise<{ ok: true; patterns: string[] } | { ok: false; message: string }>;
   fetchRemoteModels: (providerId: string) => Promise<void>;
@@ -210,11 +230,21 @@ const DEFAULT_CHAT_PREFERENCES: ChatPreferenceValues = {
   historyDrawerDefaultOpen: true,
 };
 
+const DEFAULT_AUTOMATION_SESSION: AutomationSession = {
+  mode: "off",
+  phase: "idle",
+  battleMessages: [],
+  currentStepIndex: 0,
+  collectedData: [],
+  errorCount: 0,
+};
+
 export const useAppStore = create<AppState>()((set, get) => ({
   providers: [],
   models: [],
   extractionRules: [],
   promptTemplates: [],
+  automationFlows: [],
   chatSessions: [],
   chatFolders: [],
   pageContext: {
@@ -243,6 +273,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   syncOperation: {
     loading: false,
   },
+  automationSession: DEFAULT_AUTOMATION_SESSION,
   addExampleModel: () =>
     set(() => {
       void saveModelProvider(exampleProvider);
@@ -829,6 +860,118 @@ export const useAppStore = create<AppState>()((set, get) => ({
     await reorderPromptTemplates(orderedIds);
     await get().loadPromptTemplates();
   },
+  loadAutomationFlows: async () => {
+    const automationFlows = await getAutomationFlows();
+    set({ automationFlows });
+  },
+  saveAutomationFlowDraft: async (flowId, draft) => {
+    const name = draft.name.trim();
+    const description = draft.description.trim();
+    const urlPattern = draft.urlPattern.trim();
+    if (!name) {
+      return { ok: false, message: "自动化流程名称不能为空" };
+    }
+    if (!urlPattern) {
+      return { ok: false, message: "适用 URL 规则不能为空" };
+    }
+    if (!isValidRegex(urlPattern)) {
+      return { ok: false, message: "适用 URL 规则不是合法正则" };
+    }
+    if (draft.sopSteps.length === 0 || draft.sopSteps.every((step) => !step.trim())) {
+      return { ok: false, message: "自动化步骤不能为空" };
+    }
+    const normalizedActions = normalizeAutomationActions(draft.actions);
+    if (!normalizedActions.ok) {
+      return { ok: false, message: normalizedActions.message };
+    }
+
+    const now = Date.now();
+    const existingFlow = flowId ? get().automationFlows.find((flow) => flow.id === flowId) : undefined;
+    const flow: AutomationFlow = {
+      id: existingFlow?.id ?? `automation-flow-${now}`,
+      name,
+      description,
+      urlPattern,
+      sopSteps: draft.sopSteps.map((step) => step.trim()).filter(Boolean),
+      actions: normalizedActions.actions,
+      enabled: draft.enabled,
+      createdAt: existingFlow?.createdAt ?? now,
+      updatedAt: now,
+      lastRunAt: existingFlow?.lastRunAt,
+      lastRunStatus: existingFlow?.lastRunStatus,
+    };
+
+    await saveAutomationFlowRepository(flow);
+    await get().loadAutomationFlows();
+    return { ok: true, flow };
+  },
+  deleteAutomationFlow: async (flowId) => {
+    await deleteAutomationFlowRepository(flowId);
+    await get().loadAutomationFlows();
+  },
+  enterAutomationMode: (flowId) => {
+    set({
+      automationSession: {
+        ...DEFAULT_AUTOMATION_SESSION,
+        mode: "automation",
+        phase: flowId ? "confirming" : "battle",
+        flowId,
+        statusMessage: flowId ? "已加载自动化流程，请确认后开始执行" : "自动化模式已开启，请描述要完成的浏览器任务",
+        pendingFlow: flowId ? get().automationFlows.find((flow) => flow.id === flowId) : undefined,
+      },
+    });
+  },
+  exitAutomationMode: () => {
+    set({ automationSession: DEFAULT_AUTOMATION_SESSION });
+  },
+  submitAutomationBattleMessage: (content) => submitAutomationBattleMessageWithState({ content, get, set }),
+  confirmAutomationFlow: async () => {
+    const state = get();
+    const pendingFlow = state.automationSession.pendingFlow;
+    if (!pendingFlow) {
+      set({ failure: { message: "没有可执行的自动化流程" } });
+      return;
+    }
+
+    if (!state.automationSession.flowId) {
+      const saveResult = await get().saveAutomationFlowDraft(undefined, {
+        name: pendingFlow.name,
+        description: pendingFlow.description,
+        urlPattern: pendingFlow.urlPattern,
+        sopSteps: pendingFlow.sopSteps,
+        actions: pendingFlow.actions,
+        enabled: pendingFlow.enabled,
+      });
+      if (!saveResult.ok) {
+        set({ failure: { message: saveResult.message } });
+        return;
+      }
+
+      set((current) => ({
+        automationSession: {
+          ...current.automationSession,
+          phase: "confirming",
+          flowId: saveResult.flow.id,
+          pendingFlow: saveResult.flow,
+          statusMessage: "自动化流程已保存，请确认开始执行",
+        },
+      }));
+      return;
+    }
+
+    set((state) => ({
+      automationSession: {
+        ...state.automationSession,
+        phase: "executing",
+        currentStepIndex: 0,
+        collectedData: [],
+        errorCount: 0,
+        statusMessage: "自动化流程已开始执行",
+      },
+    }));
+
+    await executeAutomationFlow(pendingFlow, set);
+  },
   refreshPageContext: async () => {
     const requestedContextMode = get().contextMode;
     const requestId = ++pageContextRefreshSequence;
@@ -1132,6 +1275,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       models: [],
       extractionRules: [],
       promptTemplates: [],
+      automationFlows: [],
       chatSessions: [],
       chatFolders: [],
       pageContext: {
@@ -1161,6 +1305,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       syncOperation: {
         loading: false,
       },
+      automationSession: DEFAULT_AUTOMATION_SESSION,
       failure: undefined,
     });
   },
@@ -1387,6 +1532,12 @@ type ChatSendMessage = {
   stream: boolean;
 };
 
+interface SubmitAutomationBattleMessageInput {
+  content: string;
+  get: StoreGetter;
+  set: StoreSetter;
+}
+
 interface SendChatMessageWithStateInput {
   content: string;
   attachments?: ChatImageAttachment[];
@@ -1440,6 +1591,541 @@ function hasAvailableTitleModel(state: AppState): boolean {
   const titleModel = state.models.find((model) => model.isTitleModel && model.enabled);
   const titleProvider = titleModel ? state.providers.find((provider) => provider.id === titleModel.providerId) : undefined;
   return Boolean(titleModel && titleProvider?.enabled);
+}
+
+function isValidRegex(pattern: string): boolean {
+  try {
+    new RegExp(pattern);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function normalizeAutomationActions(actions: AutomationAction[]): { ok: true; actions: AutomationAction[] } | { ok: false; message: string } {
+  if (actions.length === 0) {
+    return { ok: false, message: "自动化动作不能为空" };
+  }
+
+  const normalizedActions: AutomationAction[] = [];
+  for (const action of actions) {
+    if (!isAllowedAutomationActionType(action.type)) {
+      return { ok: false, message: "自动化动作类型不受支持" };
+    }
+    if ((action.type === "click" || action.type === "input") && !action.selector?.trim()) {
+      return { ok: false, message: "点击和输入动作必须提供选择器" };
+    }
+    if (action.type === "navigate" && !action.url?.trim()) {
+      return { ok: false, message: "跳转动作必须提供 URL" };
+    }
+    if (action.type === "runSandboxExtraction" && !action.code?.trim()) {
+      return { ok: false, message: "沙盒提取动作必须提供代码" };
+    }
+
+    normalizedActions.push({
+      ...action,
+      selector: action.selector?.trim(),
+      value: action.value,
+      url: action.url?.trim(),
+      code: action.code,
+      timeoutMs: normalizeOptionalPositiveInteger(action.timeoutMs),
+      scrollY: normalizeOptionalInteger(action.scrollY, -1_000_000, 1_000_000),
+    });
+  }
+
+  return { ok: true, actions: normalizedActions };
+}
+
+type AutomationDomActionResponse =
+  | {
+      ok: true;
+      html: string;
+      url: string;
+      title?: string;
+    }
+  | {
+      ok: false;
+      message: string;
+    };
+
+type AutomationSandboxResultMessage =
+  | {
+      type: "automation.sandbox.result";
+      requestId: string;
+      ok: true;
+      data: unknown;
+    }
+  | {
+      type: "automation.sandbox.result";
+      requestId: string;
+      ok: false;
+      message: string;
+    };
+
+async function executeAutomationFlow(flow: AutomationFlow, set: StoreSetter): Promise<void> {
+  const collectedData: unknown[] = [];
+
+  for (const [index, action] of flow.actions.entries()) {
+    set((state) => ({
+      automationSession: {
+        ...state.automationSession,
+        currentStepIndex: index,
+        statusMessage: `正在执行自动化步骤 ${index + 1}/${flow.actions.length}`,
+      },
+    }));
+
+    const result = await executeAutomationAction(action);
+    if (!result.ok) {
+      const updatedFlow = await markAutomationFlowRun(flow, "error");
+      set((state) => ({
+        automationFlows: upsertAutomationFlowInState(state.automationFlows, updatedFlow),
+        automationSession: {
+          ...state.automationSession,
+          phase: "error",
+          errorCount: state.automationSession.errorCount + 1,
+          collectedData,
+          statusMessage: `自动化流程执行失败：${result.message}`,
+        },
+        failure: { message: result.message },
+      }));
+      return;
+    }
+
+    collectedData.push(result.data);
+    set((state) => ({
+      automationSession: {
+        ...state.automationSession,
+        currentStepIndex: index + 1,
+        collectedData,
+        statusMessage: `已完成自动化步骤 ${index + 1}/${flow.actions.length}`,
+      },
+    }));
+  }
+
+  const updatedFlow = await markAutomationFlowRun(flow, "success");
+  set((state) => ({
+    automationFlows: upsertAutomationFlowInState(state.automationFlows, updatedFlow),
+    automationSession: {
+      ...state.automationSession,
+      phase: "completed",
+      collectedData,
+      statusMessage: `自动化流程执行成功，已完成 ${flow.actions.length} 个动作`,
+    },
+    failure: undefined,
+  }));
+}
+
+async function executeAutomationAction(action: AutomationAction): Promise<{ ok: true; data: unknown } | { ok: false; message: string }> {
+  try {
+    if (action.type === "navigate" && action.url) {
+      const response = await sendRuntimeMessage<{ ok: true; url: string; tabId: number } | { ok: false; message: string }>({
+        type: "automation.navigateTab",
+        url: action.url,
+      });
+      if (!response.ok) {
+        return { ok: false, message: response.message };
+      }
+
+      return { ok: true, data: { type: action.type, url: response.url, tabId: response.tabId } };
+    }
+
+    const response = await sendRuntimeMessage<AutomationDomActionResponse>({
+      type: "automation.executeDomAction",
+      action,
+    });
+    if (!response.ok) {
+      return { ok: false, message: response.message };
+    }
+
+    if (action.type === "runSandboxExtraction") {
+      const extraction = await runAutomationSandboxExtraction(response.html, action.code ?? "");
+      if (!extraction.ok) {
+        return extraction;
+      }
+
+      return {
+        ok: true,
+        data: {
+          type: action.type,
+          url: response.url,
+          title: response.title,
+          htmlLength: response.html.length,
+          data: extraction.data,
+        },
+      };
+    }
+
+    return {
+      ok: true,
+      data: {
+        type: action.type,
+        url: response.url,
+        title: response.title,
+        htmlLength: response.html.length,
+      },
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      message: error instanceof Error ? `自动化动作执行失败：${error.message}` : "自动化动作执行失败",
+    };
+  }
+}
+
+function runAutomationSandboxExtraction(html: string, code: string): Promise<{ ok: true; data: unknown } | { ok: false; message: string }> {
+  return new Promise((resolve) => {
+    const requestId = `automation-sandbox-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const iframe = document.createElement("iframe");
+    iframe.style.display = "none";
+    iframe.setAttribute("aria-hidden", "true");
+    iframe.src = chrome.runtime.getURL("sandbox.html");
+
+    const cleanup = () => {
+      window.clearTimeout(timeoutId);
+      window.removeEventListener("message", handleMessage);
+      iframe.remove();
+    };
+    const finish = (result: { ok: true; data: unknown } | { ok: false; message: string }) => {
+      cleanup();
+      resolve(result);
+    };
+    const handleMessage = (event: MessageEvent<AutomationSandboxResultMessage>) => {
+      if (event.source !== iframe.contentWindow) {
+        return;
+      }
+      const response = event.data;
+      if (!response || response.type !== "automation.sandbox.result" || response.requestId !== requestId) {
+        return;
+      }
+      if (!response.ok) {
+        finish({ ok: false, message: response.message });
+        return;
+      }
+
+      const serializedResult = safeSerializeAutomationData(response.data);
+      if (serializedResult.length > 200_000) {
+        finish({ ok: false, message: "自动化提取结果过大，请缩小提取范围" });
+        return;
+      }
+      finish({ ok: true, data: response.data });
+    };
+    const postRequest = () => {
+      iframe.contentWindow?.postMessage(
+        {
+          type: "automation.sandbox.extract",
+          requestId,
+          html,
+          code,
+        },
+        "*",
+      );
+    };
+    const timeoutId = window.setTimeout(() => finish({ ok: false, message: "自动化沙盒提取超时" }), 8_000);
+
+    window.addEventListener("message", handleMessage);
+    iframe.addEventListener("load", postRequest, { once: true });
+    document.body.appendChild(iframe);
+    window.setTimeout(postRequest, 0);
+  });
+}
+
+function safeSerializeAutomationData(data: unknown): string {
+  try {
+    return JSON.stringify(data);
+  } catch {
+    return String(data);
+  }
+}
+
+async function markAutomationFlowRun(flow: AutomationFlow, status: AutomationFlowRunStatus): Promise<AutomationFlow> {
+  const updatedFlow: AutomationFlow = {
+    ...flow,
+    lastRunAt: Date.now(),
+    lastRunStatus: status,
+    updatedAt: Date.now(),
+  };
+  await saveAutomationFlowRepository(updatedFlow);
+  return updatedFlow;
+}
+
+function upsertAutomationFlowInState(flows: AutomationFlow[], flow: AutomationFlow): AutomationFlow[] {
+  const exists = flows.some((item) => item.id === flow.id);
+  if (!exists) {
+    return [flow, ...flows];
+  }
+
+  return flows.map((item) => (item.id === flow.id ? flow : item));
+}
+
+function isAllowedAutomationActionType(type: AutomationAction["type"]): boolean {
+  return ["click", "input", "scroll", "wait", "navigate", "extractHtml", "runSandboxExtraction", "none"].includes(type);
+}
+
+function normalizeOptionalPositiveInteger(value: unknown): number | undefined {
+  return normalizeOptionalInteger(value, 1, 120_000);
+}
+
+async function submitAutomationBattleMessageWithState(input: SubmitAutomationBattleMessageInput): Promise<void> {
+  const content = input.content.trim();
+  if (!content || input.get().sending) {
+    return;
+  }
+
+  const state = input.get();
+  if (state.automationSession.mode !== "automation") {
+    input.set({ failure: { message: "请先使用 /自动化 进入自动化模式" } });
+    return;
+  }
+
+  const model = state.models.find((item) => item.id === state.selectedModelId);
+  const provider = model ? state.providers.find((item) => item.id === model.providerId) : undefined;
+  if (!model || !provider || !model.enabled || !provider.enabled) {
+    input.set({ failure: { message: "请先配置可用模型后再使用自动化" } });
+    return;
+  }
+
+  input.set((current) => ({
+    sending: true,
+    failure: undefined,
+    automationSession: {
+      ...current.automationSession,
+      phase: "battle",
+      battleMessages: [
+        ...current.automationSession.battleMessages,
+        { role: "user", content, createdAt: Date.now() },
+      ],
+      statusMessage: "正在分析当前页面并生成自动化步骤",
+    },
+  }));
+
+  try {
+    const effectiveChatPreferences = resolveEffectiveChatPreferences(state.chatPreferences);
+    const modelConfig = createModelConfig(provider, model, effectiveChatPreferences);
+    const now = Date.now();
+    const messages: ChatMessage[] = [
+      {
+        id: `automation-system-${now}`,
+        role: "system",
+        content: createAutomationSystemPrompt(state.pageContext),
+        createdAt: now,
+        modelId: model.id,
+        endpointType: provider.endpointType,
+        streamMode: false,
+        systemPrompt: effectiveChatPreferences.systemPrompt,
+        contextPrompt: state.pageContext.text,
+        contextMode: state.contextMode,
+        matchedRuleId: state.pageContext.matchedRuleId,
+      },
+      {
+        id: `automation-user-${now}`,
+        role: "user",
+        content,
+        createdAt: now,
+        modelId: model.id,
+        endpointType: provider.endpointType,
+        streamMode: false,
+        systemPrompt: effectiveChatPreferences.systemPrompt,
+        contextPrompt: state.pageContext.text,
+        contextMode: state.contextMode,
+        matchedRuleId: state.pageContext.matchedRuleId,
+      },
+    ];
+    const response = await sendRuntimeMessage<{ ok: true; content: string } | { ok: false; message: string } | undefined>({
+      type: "chat.send",
+      model: modelConfig,
+      messages,
+      stream: false,
+    });
+
+    if (!response?.ok) {
+      input.set({ failure: { message: response?.message ?? "自动化分析失败，请重试" } });
+      return;
+    }
+
+    const agentResponse = parseAutomationAgentResponse(response.content);
+    if (!agentResponse.ok) {
+      input.set({ failure: { message: agentResponse.message } });
+      return;
+    }
+
+    const assistantMessage = {
+      role: "assistant" as const,
+      content: agentResponse.response.reply_to_user,
+      createdAt: Date.now(),
+    };
+
+    if (!agentResponse.response.plan_ready) {
+      input.set((current) => ({
+        automationSession: {
+          ...current.automationSession,
+          phase: "battle",
+          battleMessages: [...current.automationSession.battleMessages, assistantMessage],
+          statusMessage: agentResponse.response.reply_to_user,
+        },
+      }));
+      return;
+    }
+
+    const pendingFlowResult = createPendingAutomationFlowDraft({
+      name: content,
+      description: agentResponse.response.reply_to_user,
+      urlPattern: createUrlPatternFromPageContext(input.get().pageContext.url),
+      sopSteps: agentResponse.response.sop,
+      actions: agentResponse.response.actions?.length ? agentResponse.response.actions : [agentResponse.response.action],
+      enabled: true,
+    });
+
+    if (!pendingFlowResult.ok) {
+      input.set({ failure: { message: pendingFlowResult.message } });
+      return;
+    }
+
+    input.set((current) => ({
+      automationSession: {
+        ...current.automationSession,
+        phase: "confirming",
+        flowId: undefined,
+        pendingFlow: pendingFlowResult.flow,
+        battleMessages: [...current.automationSession.battleMessages, assistantMessage],
+        statusMessage: "Battle 已完成，请检查模拟步骤并允许保存流程",
+      },
+    }));
+  } finally {
+    input.set({ sending: false });
+  }
+}
+
+function createPendingAutomationFlowDraft(
+  draft: Pick<AutomationFlow, "name" | "description" | "urlPattern" | "sopSteps" | "actions" | "enabled">,
+): { ok: true; flow: AutomationFlow } | { ok: false; message: string } {
+  const normalizedActions = normalizeAutomationActions(draft.actions);
+  if (!normalizedActions.ok) {
+    return { ok: false, message: normalizedActions.message };
+  }
+
+  const now = Date.now();
+  return {
+    ok: true,
+    flow: {
+      id: `automation-flow-draft-${now}`,
+      name: draft.name.trim(),
+      description: draft.description.trim(),
+      urlPattern: draft.urlPattern.trim(),
+      sopSteps: draft.sopSteps.map((step) => step.trim()).filter(Boolean),
+      actions: normalizedActions.actions,
+      enabled: draft.enabled,
+      createdAt: now,
+      updatedAt: now,
+    },
+  };
+}
+
+function createAutomationSystemPrompt(pageContext: PageContextState): string {
+  return [
+    "你是浏览器自动化编排助手。用户已经显式进入自动化模式。",
+    "你只能输出合法 JSON，不要输出 Markdown、代码围栏或额外解释。",
+    "JSON 必须包含 reply_to_user、plan_ready、sop、actions 字段；兼容旧格式时也可返回单个 action。",
+    "真实网页只允许白名单动作：click、input、scroll、wait、navigate、extractHtml、runSandboxExtraction、none。",
+    "如果需求还不清楚，返回 plan_ready=false 并在 reply_to_user 中提问。",
+    "如果可以执行，返回 plan_ready=true、sop 数组和 actions 数组；actions 应尽量与 sop 一一对应，不能确定真实动作时使用 none。",
+    '示例：{"reply_to_user":"请检查模拟步骤，确认后我再保存流程。","plan_ready":true,"sop":["提取当前页所有帖子链接"],"actions":[{"type":"runSandboxExtraction","code":"return Array.from(document.querySelectorAll(\'a\')).map(a => a.href);"}]}',
+    "当前页面：",
+    createPageContextPrompt(pageContext),
+  ].join("\n\n");
+}
+
+function parseAutomationAgentResponse(content: string): { ok: true; response: AutomationAgentResponse } | { ok: false; message: string } {
+  try {
+    const parsed = JSON.parse(extractJsonPayload(content)) as Partial<AutomationAgentResponse> & {
+      replyToUser?: unknown;
+      planReady?: unknown;
+      sopSteps?: unknown;
+      steps?: unknown;
+    };
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { ok: false, message: "自动化响应缺少计划对象" };
+    }
+
+    const planReady = typeof parsed.plan_ready === "boolean"
+      ? parsed.plan_ready
+      : typeof parsed.planReady === "boolean"
+        ? parsed.planReady
+        : undefined;
+    if (typeof planReady !== "boolean") {
+      return { ok: false, message: "自动化响应缺少计划状态" };
+    }
+    const replyToUser = resolveAutomationReplyToUser(parsed, planReady);
+    const action = parsed.action && typeof parsed.action === "object" ? parsed.action : { type: "none" as const };
+    const actions = Array.isArray(parsed.actions) ? parsed.actions : undefined;
+    const rawSop = Array.isArray(parsed.sop) ? parsed.sop : Array.isArray(parsed.sopSteps) ? parsed.sopSteps : parsed.steps;
+    const sop = Array.isArray(rawSop) ? rawSop.filter((step): step is string => typeof step === "string" && step.trim().length > 0) : [];
+    if (planReady && sop.length === 0) {
+      return { ok: false, message: "自动化响应缺少执行步骤" };
+    }
+
+    return {
+      ok: true,
+      response: {
+        reply_to_user: replyToUser,
+        plan_ready: planReady,
+        sop,
+        action,
+        actions,
+        extraction: parsed.extraction,
+        done: parsed.done,
+        error_recovery_hint: parsed.error_recovery_hint,
+      },
+    };
+  } catch {
+    return { ok: false, message: "自动化响应不是合法 JSON" };
+  }
+}
+
+function extractJsonPayload(content: string): string {
+  const trimmedContent = content.trim();
+  const fenceMatch = trimmedContent.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (fenceMatch) {
+    return fenceMatch[1].trim();
+  }
+
+  const firstObjectIndex = trimmedContent.indexOf("{");
+  const lastObjectIndex = trimmedContent.lastIndexOf("}");
+  if (firstObjectIndex >= 0 && lastObjectIndex > firstObjectIndex) {
+    return trimmedContent.slice(firstObjectIndex, lastObjectIndex + 1);
+  }
+
+  return trimmedContent;
+}
+
+function resolveAutomationReplyToUser(
+  parsed: Partial<AutomationAgentResponse> & { replyToUser?: unknown },
+  planReady: boolean,
+): string {
+  if (typeof parsed.reply_to_user === "string" && parsed.reply_to_user.trim()) {
+    return parsed.reply_to_user.trim();
+  }
+  if (typeof parsed.replyToUser === "string" && parsed.replyToUser.trim()) {
+    return parsed.replyToUser.trim();
+  }
+
+  return planReady ? "已生成自动化步骤，请确认后开始。" : "我需要继续澄清自动化需求。";
+}
+
+function createUrlPatternFromPageContext(url?: string): string {
+  if (!url) {
+    return "https://.*";
+  }
+
+  try {
+    const parsedUrl = new URL(url);
+    return `${escapeRegExp(`${parsedUrl.origin}${parsedUrl.pathname}`)}.*`;
+  } catch {
+    return "https://.*";
+  }
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 async function sendChatMessageWithState(input: SendChatMessageWithStateInput): Promise<void> {

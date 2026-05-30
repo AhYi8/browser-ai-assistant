@@ -24,9 +24,12 @@ import {
   getPromptTemplates,
   reorderPromptTemplates,
   savePromptTemplate,
+  deleteAutomationFlow,
+  getAutomationFlows,
+  saveAutomationFlow,
 } from "../../../src/shared/storage/repositories";
 import { db } from "../../../src/shared/storage/db";
-import type { ChatFolder, ChatSession, ExtractionRule, ModelProvider, PromptTemplate, ProviderModel } from "../../../src/shared/types";
+import type { AutomationFlow, ChatFolder, ChatSession, ExtractionRule, ModelProvider, PromptTemplate, ProviderModel } from "../../../src/shared/types";
 
 const LEGACY_VERSION_2_SCHEMA = {
   modelConfigs: "id, channelName, endpointType, updatedAt",
@@ -36,6 +39,11 @@ const LEGACY_VERSION_2_SCHEMA = {
   chatSessions: "id, folderId, archived, sortOrder, updatedAt",
   chatFolders: "id, sortOrder, updatedAt",
   appSettings: "key, updatedAt",
+};
+
+const LEGACY_VERSION_3_SCHEMA = {
+  ...LEGACY_VERSION_2_SCHEMA,
+  promptTemplates: "id, sortOrder, updatedAt",
 };
 
 function createProvider(): ModelProvider {
@@ -64,6 +72,26 @@ function createModel(): ProviderModel {
     enabled: true,
     createdAt: 1,
     updatedAt: 1,
+  };
+}
+
+function createAutomationFlow(overrides: Partial<AutomationFlow> = {}): AutomationFlow {
+  return {
+    id: "automation-flow-1",
+    name: "导出订单",
+    description: "提取当前订单列表前三页",
+    urlPattern: "https://example\\.com/orders.*",
+    sopSteps: ["选择本月订单", "逐页提取订单数据"],
+    actions: [
+      {
+        type: "click",
+        selector: ".next-page",
+      },
+    ],
+    enabled: true,
+    createdAt: 1,
+    updatedAt: 2,
+    ...overrides,
   };
 }
 
@@ -196,7 +224,21 @@ describe("存储仓库", () => {
     expect((await getPromptTemplates()).map((prompt) => prompt.id)).toEqual(["prompt-first"]);
   });
 
-  it("从 v2 数据库升级时保留旧数据并新增 Prompt 模板表", async () => {
+  it("保存、读取和删除自动化流程", async () => {
+    const first = createAutomationFlow({ id: "automation-flow-first", updatedAt: 1 });
+    const second = createAutomationFlow({ id: "automation-flow-second", updatedAt: 2, name: "导出商品" });
+
+    await saveAutomationFlow(first);
+    await saveAutomationFlow(second);
+
+    expect((await getAutomationFlows()).map((flow) => flow.id)).toEqual(["automation-flow-second", "automation-flow-first"]);
+
+    await deleteAutomationFlow("automation-flow-second");
+
+    expect(await getAutomationFlows()).toEqual([first]);
+  });
+
+  it("从 v2 数据库升级时保留旧数据并新增 Prompt 模板表和自动化流程表", async () => {
     const provider = createProvider();
     await deleteDatabaseByName(DATABASE_NAME);
 
@@ -221,6 +263,39 @@ describe("存储仓库", () => {
     await savePromptTemplate(prompt);
 
     expect(await getPromptTemplates()).toEqual([prompt]);
+
+    const flow = createAutomationFlow({ id: "automation-flow-after-upgrade" });
+    await saveAutomationFlow(flow);
+
+    expect(await getAutomationFlows()).toEqual([flow]);
+  });
+
+  it("从 v3 数据库升级时保留旧数据并新增自动化流程表", async () => {
+    const provider = createProvider();
+    await deleteDatabaseByName(DATABASE_NAME);
+
+    const legacyDb = new Dexie(DATABASE_NAME);
+    legacyDb.version(3).stores(LEGACY_VERSION_3_SCHEMA);
+    await legacyDb.open();
+    await legacyDb.table("modelProviders").put(provider);
+    await legacyDb.table("promptTemplates").put({
+      id: "prompt-legacy",
+      title: "旧提示词",
+      content: "旧内容",
+      sortOrder: 10,
+      createdAt: 1,
+      updatedAt: 1,
+    } satisfies PromptTemplate);
+    await legacyDb.close();
+
+    await db.open();
+
+    expect(await getModelProviders()).toEqual([provider]);
+
+    const flow = createAutomationFlow({ id: "automation-flow-after-v3-upgrade" });
+    await saveAutomationFlow(flow);
+
+    expect(await getAutomationFlows()).toEqual([flow]);
   });
 
   it("Prompt 模板排序参数无效时保留原顺序并输出告警", async () => {

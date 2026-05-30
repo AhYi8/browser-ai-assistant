@@ -1,2 +1,2 @@
 export const DATABASE_NAME = "browser-ai-assistant";
-export const DATABASE_VERSION = 3;
+export const DATABASE_VERSION = 4;

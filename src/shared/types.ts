@@ -2,6 +2,9 @@ export type EndpointType = "openai_chat" | "anthropic_messages";
 export type ChatRole = "system" | "user" | "assistant";
 export type PageContextExtractMode = "text" | "all";
 export type SendShortcut = "enter" | "shift_enter" | "ctrl_enter" | "ctrl_shift_enter" | "alt_enter";
+export type AutomationActionType = "click" | "input" | "scroll" | "wait" | "navigate" | "extractHtml" | "runSandboxExtraction" | "none";
+export type AutomationFlowRunStatus = "idle" | "success" | "error";
+export type AutomationSessionPhase = "idle" | "battle" | "confirming" | "executing" | "completed" | "error";
 
 export interface ModelProvider {
   id: string;
@@ -84,6 +87,62 @@ export interface ExtractionRule {
   sortOrder: number;
   createdAt: number;
   updatedAt: number;
+}
+
+export interface AutomationAction {
+  type: AutomationActionType;
+  selector?: string;
+  value?: string;
+  url?: string;
+  code?: string;
+  timeoutMs?: number;
+  scrollY?: number;
+}
+
+export interface AutomationFlow {
+  id: string;
+  name: string;
+  description: string;
+  urlPattern: string;
+  sopSteps: string[];
+  actions: AutomationAction[];
+  enabled: boolean;
+  createdAt: number;
+  updatedAt: number;
+  lastRunAt?: number;
+  lastRunStatus?: AutomationFlowRunStatus;
+}
+
+export interface AutomationBattleMessage {
+  role: "user" | "assistant";
+  content: string;
+  createdAt: number;
+}
+
+export interface AutomationSession {
+  mode: "off" | "automation";
+  phase: AutomationSessionPhase;
+  flowId?: string;
+  battleMessages: AutomationBattleMessage[];
+  currentStepIndex: number;
+  collectedData: unknown[];
+  errorCount: number;
+  statusMessage?: string;
+  pendingFlow?: AutomationFlow;
+}
+
+export interface AutomationAgentResponse {
+  reply_to_user: string;
+  plan_ready: boolean;
+  sop: string[];
+  action: AutomationAction;
+  actions?: AutomationAction[];
+  extraction?: {
+    need_extract: boolean;
+    code: string;
+  };
+  done?: boolean;
+  error_recovery_hint?: string;
 }
 
 export interface ChatMessage {

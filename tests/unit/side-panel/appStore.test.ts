@@ -3,9 +3,11 @@ import { useAppStore } from "../../../src/side-panel/state/appStore";
 import {
   clearDatabase,
   getAppSetting,
+  getAutomationFlows,
   getChatSession,
   getPromptTemplates,
   getProviderModels,
+  saveAutomationFlow,
   saveAppSetting,
   saveChatSession,
   saveModelProvider,
@@ -17,7 +19,7 @@ import {
   SYNC_S3_SECRET_KEY,
   SYNC_WEBDAV_PASSWORD_KEY,
 } from "../../../src/shared/sync/settings";
-import type { ChatMessage, ChatPromptInvocation, ModelProvider, PromptTemplate, ProviderModel } from "../../../src/shared/types";
+import type { AutomationFlow, ChatMessage, ChatPromptInvocation, ModelProvider, PromptTemplate, ProviderModel } from "../../../src/shared/types";
 
 const repositoryMockState = vi.hoisted(() => ({
   failSaveChatSession: false,
@@ -119,6 +121,21 @@ function createPromptTemplate(partial: Partial<PromptTemplate> = {}): PromptTemp
   };
 }
 
+function createAutomationFlow(partial: Partial<AutomationFlow> = {}): AutomationFlow {
+  return {
+    id: "automation-flow-1",
+    name: "导出订单",
+    description: "提取当前订单列表",
+    urlPattern: "https://example\\.com/orders.*",
+    sopSteps: ["确认订单范围", "提取列表"],
+    actions: [{ type: "extractHtml" }],
+    enabled: true,
+    createdAt: 1,
+    updatedAt: 1,
+    ...partial,
+  };
+}
+
 function createChatMessage(partial: Partial<ChatMessage>): ChatMessage {
   return {
     id: "message-1",
@@ -192,6 +209,156 @@ describe("appStore", () => {
 
     expect(useAppStore.getState().promptTemplates.map((prompt) => prompt.title)).toEqual(["新提示词", "已有提示词"]);
     expect((await getPromptTemplates()).map((prompt) => prompt.title)).toEqual(["新提示词", "已有提示词"]);
+  });
+
+  it("可以加载、保存和删除自动化流程", async () => {
+    await saveAutomationFlow(createAutomationFlow({ id: "automation-existing", name: "已有流程", updatedAt: 20 }));
+
+    await useAppStore.getState().loadAutomationFlows();
+
+    expect(useAppStore.getState().automationFlows.map((flow) => flow.name)).toEqual(["已有流程"]);
+
+    const invalidResult = await useAppStore.getState().saveAutomationFlowDraft(undefined, {
+      name: " ",
+      description: "说明",
+      urlPattern: "https://example\\.com/.*",
+      sopSteps: ["步骤"],
+      actions: [{ type: "extractHtml" }],
+      enabled: true,
+    });
+    expect(invalidResult).toEqual({ ok: false, message: "自动化流程名称不能为空" });
+
+    const createdResult = await useAppStore.getState().saveAutomationFlowDraft(undefined, {
+      name: " 导出商品 ",
+      description: " 提取商品列表 ",
+      urlPattern: "https://example\\.com/products.*",
+      sopSteps: ["打开商品列表", "提取数据"],
+      actions: [{ type: "extractHtml" }],
+      enabled: true,
+    });
+
+    expect(createdResult).toMatchObject({
+      ok: true,
+      flow: expect.objectContaining({
+        name: "导出商品",
+        description: "提取商品列表",
+      }),
+    });
+    expect(useAppStore.getState().automationFlows.map((flow) => flow.name)).toEqual(["导出商品", "已有流程"]);
+
+    await useAppStore.getState().deleteAutomationFlow(createdResult.ok ? createdResult.flow.id : "");
+
+    expect((await getAutomationFlows()).map((flow) => flow.name)).toEqual(["已有流程"]);
+  });
+
+  it("通过自动化模式 Battle 生成 SOP 后需要用户允许才保存流程", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const sendMessage = vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+      if (message.type === "pageContext.extract") {
+        callback({
+          ok: true,
+          url: "https://example.com/orders",
+          title: "订单",
+          text: "<main>订单列表</main>",
+          truncated: false,
+          usedFallback: true,
+        });
+        return undefined;
+      }
+      if (message.type === "automation.executeDomAction") {
+        callback({
+          ok: true,
+          html: "<html><body>订单</body></html>",
+          url: "https://example.com/orders",
+          title: "订单",
+        });
+        return undefined;
+      }
+
+      callback({
+        ok: true,
+        content: JSON.stringify({
+          reply_to_user: "已生成自动化步骤，请确认后开始。",
+          plan_ready: true,
+          sop: ["确认本月订单", "提取当前页订单"],
+          action: { type: "extractHtml" },
+        }),
+      });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().refreshPageContext();
+
+    useAppStore.getState().enterAutomationMode();
+    await useAppStore.getState().submitAutomationBattleMessage("导出本月订单");
+
+    expect(useAppStore.getState().automationSession.phase).toBe("confirming");
+    expect(useAppStore.getState().automationSession.flowId).toBeUndefined();
+    expect(useAppStore.getState().automationSession.pendingFlow).toMatchObject({
+      name: "导出本月订单",
+      sopSteps: ["确认本月订单", "提取当前页订单"],
+      actions: [{ type: "extractHtml" }],
+    });
+    expect(await getAutomationFlows()).toEqual([]);
+
+    await useAppStore.getState().confirmAutomationFlow();
+
+    expect((await getAutomationFlows()).map((flow) => flow.name)).toEqual(["导出本月订单"]);
+    expect(useAppStore.getState().automationSession).toMatchObject({
+      phase: "confirming",
+      statusMessage: "自动化流程已保存，请确认开始执行",
+    });
+
+    await useAppStore.getState().confirmAutomationFlow();
+
+    expect(useAppStore.getState().automationSession).toMatchObject({
+      phase: "completed",
+      statusMessage: "自动化流程执行成功，已完成 1 个动作",
+      collectedData: [expect.objectContaining({ type: "extractHtml", htmlLength: 28 })],
+    });
+  });
+
+  it("自动化模型返回缺少 reply_to_user 的可执行计划时使用默认说明并继续保存流程", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const sendMessage = vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+      if (message.type === "pageContext.extract") {
+        callback({
+          ok: true,
+          url: "https://linux.do/latest",
+          title: "LinuxDO",
+          text: "<main><a href=\"/t/topic/1\">帖子</a></main>",
+          truncated: false,
+          usedFallback: true,
+        });
+        return undefined;
+      }
+
+      callback({
+        ok: true,
+        content: "```json\n{\"plan_ready\":true,\"sop\":[\"提取当前页所有帖子链接\"],\"action\":{\"type\":\"runSandboxExtraction\",\"code\":\"return Array.from(document.querySelectorAll('a')).map(a => a.href);\"}}\n```",
+      });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().refreshPageContext();
+
+    useAppStore.getState().enterAutomationMode();
+    await useAppStore.getState().submitAutomationBattleMessage("提取所有 LinuxDO 帖子的链接");
+
+    expect(useAppStore.getState().failure).toBeUndefined();
+    expect(useAppStore.getState().automationSession).toMatchObject({
+      phase: "confirming",
+      statusMessage: "Battle 已完成，请检查模拟步骤并允许保存流程",
+    });
+    expect(await getAutomationFlows()).toEqual([]);
   });
 
   it("可以加载和保存同步设置，开启同步不会自动开启自动同步", async () => {

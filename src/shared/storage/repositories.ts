@@ -1,6 +1,16 @@
 import { db } from "./db";
 import type { SyncDataSnapshot } from "../sync/types";
-import type { AppSetting, ChatFolder, ChatSession, ExtractionRule, ModelConfig, ModelProvider, PromptTemplate, ProviderModel } from "../types";
+import type {
+  AppSetting,
+  AutomationFlow,
+  ChatFolder,
+  ChatSession,
+  ExtractionRule,
+  ModelConfig,
+  ModelProvider,
+  PromptTemplate,
+  ProviderModel,
+} from "../types";
 
 export async function saveModelConfig(model: ModelConfig): Promise<void> {
   await db.modelConfigs.put(model);
@@ -97,6 +107,18 @@ export async function reorderPromptTemplates(orderedIds: string[]): Promise<void
   });
 }
 
+export async function saveAutomationFlow(flow: AutomationFlow): Promise<void> {
+  await db.automationFlows.put(flow);
+}
+
+export async function getAutomationFlows(): Promise<AutomationFlow[]> {
+  return db.automationFlows.orderBy("updatedAt").reverse().toArray();
+}
+
+export async function deleteAutomationFlow(flowId: string): Promise<void> {
+  await db.automationFlows.delete(flowId);
+}
+
 export async function moveExtractionRule(ruleId: string, direction: "up" | "down"): Promise<void> {
   await db.transaction("rw", db.extractionRules, async () => {
     const rules = await getExtractionRules();
@@ -187,6 +209,7 @@ export async function clearDatabase(): Promise<void> {
       db.providerModels,
       db.extractionRules,
       db.promptTemplates,
+      db.automationFlows,
       db.chatSessions,
       db.chatFolders,
       db.appSettings,
@@ -198,6 +221,7 @@ export async function clearDatabase(): Promise<void> {
         db.providerModels.clear(),
         db.extractionRules.clear(),
         db.promptTemplates.clear(),
+        db.automationFlows.clear(),
         db.chatSessions.clear(),
         db.chatFolders.clear(),
         db.appSettings.clear(),
@@ -207,12 +231,13 @@ export async function clearDatabase(): Promise<void> {
 }
 
 export async function exportAllDataForSync(): Promise<SyncDataSnapshot> {
-  const [modelConfigs, modelProviders, providerModels, extractionRules, promptTemplates, chatSessions, chatFolders, appSettings] = await Promise.all([
+  const [modelConfigs, modelProviders, providerModels, extractionRules, promptTemplates, automationFlows, chatSessions, chatFolders, appSettings] = await Promise.all([
     db.modelConfigs.toArray(),
     db.modelProviders.toArray(),
     db.providerModels.toArray(),
     db.extractionRules.toArray(),
     db.promptTemplates.toArray(),
+    db.automationFlows.toArray(),
     db.chatSessions.toArray(),
     db.chatFolders.toArray(),
     db.appSettings.toArray(),
@@ -225,6 +250,7 @@ export async function exportAllDataForSync(): Promise<SyncDataSnapshot> {
     providerModels,
     extractionRules,
     promptTemplates,
+    automationFlows,
     chatSessions: chatSessions.map(normalizeChatSession),
     chatFolders,
     appSettings,
@@ -240,6 +266,7 @@ export async function replaceAllDataFromSync(snapshot: SyncDataSnapshot): Promis
       db.providerModels,
       db.extractionRules,
       db.promptTemplates,
+      db.automationFlows,
       db.chatSessions,
       db.chatFolders,
       db.appSettings,
@@ -251,6 +278,7 @@ export async function replaceAllDataFromSync(snapshot: SyncDataSnapshot): Promis
         db.providerModels.clear(),
         db.extractionRules.clear(),
         db.promptTemplates.clear(),
+        db.automationFlows.clear(),
         db.chatSessions.clear(),
         db.chatFolders.clear(),
         db.appSettings.clear(),
@@ -261,6 +289,7 @@ export async function replaceAllDataFromSync(snapshot: SyncDataSnapshot): Promis
         db.providerModels.bulkPut(snapshot.providerModels),
         db.extractionRules.bulkPut(snapshot.extractionRules),
         db.promptTemplates.bulkPut(snapshot.promptTemplates ?? []),
+        db.automationFlows.bulkPut(snapshot.automationFlows ?? []),
         db.chatSessions.bulkPut(snapshot.chatSessions),
         db.chatFolders.bulkPut(snapshot.chatFolders),
         db.appSettings.bulkPut(snapshot.appSettings),

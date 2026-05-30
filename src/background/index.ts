@@ -1,6 +1,11 @@
 import { handleModelCatalogMessage, type ModelCatalogMessage } from "./modelCatalogMessageHandler";
 import { handleChatSendMessage, type ChatSendMessage } from "./modelRequestHandler";
 import { handlePageContextMessage, type PageContextExtractMessage } from "./pageContextMessageHandler";
+import {
+  handleAutomationExecuteDomActionMessage,
+  handleAutomationNavigateTabMessage,
+  type AutomationMessage,
+} from "./automationMessageHandler";
 import type { TabCaptureVisibleMessage } from "../shared/tabCapture";
 import { handleSyncAlarm, handleSyncBackupMessage, restoreSyncAlarmFromSettings, type SyncBackupMessage } from "./syncBackupHandler";
 import { handleTabCaptureVisibleMessage } from "./tabCaptureMessageHandler";
@@ -67,7 +72,8 @@ type RuntimeMessage =
   | CurrentTabUrlMessage
   | ChatSendMessage
   | TabCaptureVisibleMessage
-  | SyncBackupMessage;
+  | SyncBackupMessage
+  | AutomationMessage;
 
 interface ChatStreamStartMessage {
   type: "chat.stream.start";
@@ -140,6 +146,16 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResp
 
   if (message.type === "tab.captureVisible") {
     void handleTabCaptureVisibleMessage().then(sendResponse);
+    return true;
+  }
+
+  if (message.type === "automation.executeDomAction") {
+    void handleAutomationExecuteDomActionMessage(message).then(sendResponse);
+    return true;
+  }
+
+  if (message.type === "automation.navigateTab") {
+    void handleAutomationNavigateTabMessage(message).then(sendResponse);
     return true;
   }
 
