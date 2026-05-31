@@ -6,8 +6,6 @@ Browser AI Assistant 是一个基于 Chrome Manifest V3 的浏览器侧边栏 AI
 
 ## 产品预览
 
-> 将截图粘贴到 `docs/assets/product-preview/` 目录，并使用以下固定文件名。README 已预留引用路径，文件存在后会自动显示。
-
 ### 基于网页上下文的聊天与分析
 
 ![基于网页上下文的聊天与分析](docs/assets/product-preview/chat-analysis.png)
@@ -338,6 +336,6 @@ npm run test:e2e
 
 项目处于快速迭代阶段，已具备可用的网页上下文聊天、模型渠道管理、提取规则、视觉输入、提示词模板、历史会话、隐私模式、多格式导出和数据同步能力。后续仍可继续完善更多模型协议、浏览器端兼容性验证、同步冲突策略和端到端测试覆盖。
 
-# 致谢
+## 致谢
 
 感谢 [linux.do](https://linux.do/) 社区各位佬的公益站！
