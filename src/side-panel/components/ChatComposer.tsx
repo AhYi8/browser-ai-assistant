@@ -52,11 +52,16 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   const appendPageContextToSystemPrompt = useAppStore((state) => state.appendPageContextToSystemPrompt);
   const sending = useAppStore((state) => state.sending);
   const pageContext = useAppStore((state) => state.pageContext);
+  const contextTabs = useAppStore((state) => state.contextTabs);
+  const contextTabsLoading = useAppStore((state) => state.contextTabsLoading);
+  const contextTabsError = useAppStore((state) => state.contextTabsError);
   const setStreamMode = useAppStore((state) => state.setStreamMode);
   const setContextMode = useAppStore((state) => state.setContextMode);
   const setComposerHasDraft = useAppStore((state) => state.setComposerHasDraft);
   const setAppendPageContextToSystemPrompt = useAppStore((state) => state.setAppendPageContextToSystemPrompt);
   const refreshPageContext = useAppStore((state) => state.refreshPageContext);
+  const loadContextTabs = useAppStore((state) => state.loadContextTabs);
+  const toggleContextTabSelection = useAppStore((state) => state.toggleContextTabSelection);
   const sendChatMessage = useAppStore((state) => state.sendChatMessage);
 
   useEffect(() => {
@@ -283,8 +288,15 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
         </div>
       ) : null}
       <div className="context-strip">
-        <button className="ui-button-secondary context-view-button" type="button" onClick={() => setContextDialogOpen(true)}>
-          查看上下文
+        <button
+          className="ui-button-secondary context-view-button"
+          type="button"
+          onClick={() => {
+            setContextDialogOpen(true);
+            void loadContextTabs();
+          }}
+        >
+          选择标签页
         </button>
         <span className="context-chip">{matchedRuleLabel}</span>
         <button className="ui-button-secondary" type="button" onClick={() => void refreshPageContext()}>
@@ -393,11 +405,34 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
           <section className="context-dialog" role="dialog" aria-modal="true" aria-labelledby="context-dialog-title">
             <div className="context-dialog-header">
               <h2 className="context-dialog-title" id="context-dialog-title">
-                当前页上下文
+                选择注入标签页
               </h2>
-              <button className="ui-button-secondary context-dialog-close" type="button" aria-label="关闭上下文" onClick={() => setContextDialogOpen(false)}>
+              <button className="ui-button-secondary context-dialog-close" type="button" aria-label="关闭标签页选择" onClick={() => setContextDialogOpen(false)}>
                 关闭
               </button>
+            </div>
+            <div className="context-tab-list" aria-label="可注入标签页">
+              {contextTabsLoading ? <p className="context-tab-empty">正在读取标签页...</p> : null}
+              {contextTabsError ? <p className="context-tab-error">{contextTabsError}</p> : null}
+              {!contextTabsLoading && contextTabs.length === 0 ? <p className="context-tab-empty">暂无可注入的普通网页标签页</p> : null}
+              {contextTabs.map((tab) => (
+                <button
+                  key={tab.tabId}
+                  className={`context-tab-item${tab.selected ? " context-tab-item-active" : ""}`}
+                  type="button"
+                  aria-pressed={tab.selected}
+                  aria-label={`注入 ${tab.title}`}
+                  onClick={() => toggleContextTabSelection(tab.tabId)}
+                >
+                  <span className="context-tab-title-row">
+                    <span className="context-tab-title">{tab.title}</span>
+                    {tab.active ? <span className="context-tab-active-badge">当前</span> : null}
+                    {tab.selected ? <span className="context-tab-selected-badge">注入</span> : null}
+                  </span>
+                  <span className="context-tab-url">{tab.url}</span>
+                  {tab.error ? <span className="context-tab-error">{tab.error}</span> : null}
+                </button>
+              ))}
             </div>
             <p className="context-preview">{pageContext.text || "暂无上下文"}</p>
           </section>

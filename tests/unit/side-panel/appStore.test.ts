@@ -135,6 +135,22 @@ function createChatMessage(partial: Partial<ChatMessage>): ChatMessage {
   };
 }
 
+function setStaleContextTabState(): void {
+  useAppStore.setState({
+    contextTabs: [
+      {
+        tabId: 7,
+        title: "旧标签页",
+        url: "https://example.com/old",
+        active: true,
+        selected: true,
+      },
+    ],
+    contextTabsLoading: true,
+    contextTabsError: "旧标签页列表错误",
+  });
+}
+
 describe("appStore", () => {
   afterEach(async () => {
     repositoryMockState.failSaveChatSession = false;
@@ -321,6 +337,188 @@ describe("appStore", () => {
     );
     expect(useAppStore.getState().pageContext.text).toBe("完整页面内容");
     expect(useAppStore.getState().pageContext.truncated).toBe(false);
+  });
+
+  it("选择多个标签页后批量提取并按标签页顺序合并页面上下文", async () => {
+    const sendMessage = vi.fn((message: { type: string; tabId?: number; extractMode?: string }, callback: (response: unknown) => void) => {
+      if (message.type === "pageContext.listTabs") {
+        callback({
+          ok: true,
+          tabs: [
+            { tabId: 7, title: "文章页", url: "https://example.com/article", active: true },
+            { tabId: 9, title: "资料页", url: "https://docs.example.com/guide", active: false },
+          ],
+        });
+        return undefined;
+      }
+
+      if (message.type === "pageContext.extract" && message.tabId === 7) {
+        callback({
+          ok: true,
+          url: "https://example.com/article",
+          title: "文章页",
+          text: "文章正文",
+          truncated: false,
+          usedFallback: false,
+          matchedRuleId: "rule-1",
+        });
+        return undefined;
+      }
+
+      if (message.type === "pageContext.extract" && message.tabId === 9) {
+        callback({
+          ok: false,
+          message: "当前页面无法注入内容脚本",
+        });
+        return undefined;
+      }
+
+      callback({ ok: false, message: "未知请求" });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+      },
+    });
+
+    await useAppStore.getState().loadContextTabs();
+    useAppStore.getState().toggleContextTabSelection(9);
+    await useAppStore.getState().refreshPageContext();
+
+    expect(sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "pageContext.extract", tabId: 7, extractMode: "text" }),
+      expect.any(Function),
+    );
+    expect(sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "pageContext.extract", tabId: 9, extractMode: "text" }),
+      expect.any(Function),
+    );
+    expect(useAppStore.getState().pageContext.text).toBe("Page title: 文章页\n\nCurrent URL: https://example.com/article\n\nPage content:\n文章正文");
+    expect(useAppStore.getState().contextTabs.find((tab) => tab.tabId === 9)?.error).toBe("当前页面无法注入内容脚本");
+  });
+
+  it("新会话首问注入页面上下文，后续追问不重复注入", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const sendMessage = vi.fn((message: { type: string; messages?: ChatMessage[] }, callback: (response: unknown) => void) => {
+      if (message.type === "pageContext.listTabs") {
+        callback({
+          ok: true,
+          tabs: [{ tabId: 7, title: "文章页", url: "https://example.com/article", active: true }],
+        });
+        return undefined;
+      }
+
+      if (message.type === "pageContext.extract") {
+        callback({
+          ok: true,
+          url: "https://example.com/article",
+          title: "文章页",
+          text: "页面上下文正文",
+          truncated: false,
+          usedFallback: false,
+        });
+        return undefined;
+      }
+
+      callback({
+        ok: true,
+        content: "AI 回复",
+      });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadContextTabs();
+    await useAppStore.getState().refreshPageContext();
+    await useAppStore.getState().loadChatData();
+    useAppStore.getState().setStreamMode(false);
+
+    await useAppStore.getState().sendChatMessage("第一问");
+    await useAppStore.getState().sendChatMessage("第二问");
+
+    const chatRequests = sendMessage.mock.calls
+      .map(([message]) => message as { type: string; messages?: ChatMessage[] })
+      .filter((message) => message.type === "chat.send");
+    expect(chatRequests[0]?.messages?.[0]?.content).toContain("页面上下文正文");
+    expect(chatRequests[1]?.messages?.[0]?.content).not.toContain("页面上下文正文");
+    expect(chatRequests[1]?.messages?.[0]?.contextPrompt).toBe("");
+  });
+
+  it("新建会话时清理过期的标签页选择加载和错误状态", async () => {
+    setStaleContextTabState();
+
+    await useAppStore.getState().createChatSession();
+
+    expect(useAppStore.getState().contextTabs).toEqual([]);
+    expect(useAppStore.getState().contextTabsLoading).toBe(false);
+    expect(useAppStore.getState().contextTabsError).toBeUndefined();
+  });
+
+  it("进入隐私模式时清理过期的标签页选择加载和错误状态", async () => {
+    setStaleContextTabState();
+
+    await useAppStore.getState().enterPrivateMode();
+
+    expect(useAppStore.getState().contextTabs).toEqual([]);
+    expect(useAppStore.getState().contextTabsLoading).toBe(false);
+    expect(useAppStore.getState().contextTabsError).toBeUndefined();
+  });
+
+  it("切换到空会话时清理过期的标签页选择加载和错误状态", async () => {
+    const emptySession = await useAppStore.getState().createChatSession();
+    const sessionWithMessages = {
+      id: "session-with-messages",
+      title: "已有会话",
+      archived: false,
+      sortOrder: 2,
+      createdAt: 2,
+      updatedAt: 2,
+      messages: [createChatMessage({ role: "user", content: "已有消息" })],
+    };
+    await saveChatSession(sessionWithMessages);
+    await useAppStore.getState().loadChatData();
+    useAppStore.getState().selectChatSession("session-with-messages");
+    setStaleContextTabState();
+
+    useAppStore.getState().selectChatSession(emptySession.id);
+
+    expect(useAppStore.getState().activeSessionId).toBe(emptySession.id);
+    expect(useAppStore.getState().contextTabs).toEqual([]);
+    expect(useAppStore.getState().contextTabsLoading).toBe(false);
+    expect(useAppStore.getState().contextTabsError).toBeUndefined();
+  });
+
+  it("删除会话后落到空会话时清理过期的标签页选择加载和错误状态", async () => {
+    const emptySession = await useAppStore.getState().createChatSession();
+    const sessionWithMessages = {
+      id: "session-with-messages",
+      title: "已有会话",
+      archived: false,
+      sortOrder: 2,
+      createdAt: 2,
+      updatedAt: 2,
+      messages: [createChatMessage({ role: "user", content: "已有消息" })],
+    };
+    await saveChatSession(sessionWithMessages);
+    await useAppStore.getState().loadChatData();
+    useAppStore.getState().selectChatSession("session-with-messages");
+    setStaleContextTabState();
+
+    await useAppStore.getState().confirmDeleteChatSession("session-with-messages");
+
+    expect(useAppStore.getState().activeSessionId).toBe(emptySession.id);
+    expect(useAppStore.getState().contextTabs).toEqual([]);
+    expect(useAppStore.getState().contextTabsLoading).toBe(false);
+    expect(useAppStore.getState().contextTabsError).toBeUndefined();
   });
 
   it("使用用户指定的模型请求 AI 生成 URL 正则候选", async () => {
@@ -1834,7 +2032,7 @@ describe("appStore", () => {
       .filter((message) => message.type === "chat.send")
       .at(-1);
 
-    expect(chatRequest?.messages?.map((message) => `${message.role}:${message.content}`)).toEqual(["system:你是网页助手\n\n当前页面上下文：\nPage content:\n页面上下文", "user:第一问"]);
+    expect(chatRequest?.messages?.map((message) => `${message.role}:${message.content}`)).toEqual(["system:你是网页助手", "user:第一问"]);
     expect(activeSession?.messages.map((message) => message.content)).toEqual(["第一问", "重新生成回复"]);
   });
 

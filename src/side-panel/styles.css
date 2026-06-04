@@ -822,6 +822,65 @@ body {
     color: var(--color-body);
   }
 
+  .context-tab-list {
+    @apply grid max-h-56 gap-2 overflow-auto;
+  }
+
+  .context-tab-item {
+    @apply grid gap-1 rounded-md p-3 text-left text-sm;
+    background: var(--color-canvas);
+    border: 1px solid var(--color-hairline);
+    color: var(--color-body);
+  }
+
+  .context-tab-item:hover {
+    border-color: var(--color-primary);
+  }
+
+  .context-tab-item-active {
+    background: var(--color-surface-card);
+    border-color: var(--color-primary);
+  }
+
+  .context-tab-title-row {
+    @apply flex min-w-0 flex-wrap items-center gap-2;
+  }
+
+  .context-tab-title {
+    @apply min-w-0 flex-1 truncate font-medium;
+    color: var(--color-ink);
+  }
+
+  .context-tab-url {
+    @apply truncate text-xs;
+    color: var(--color-muted);
+  }
+
+  .context-tab-active-badge,
+  .context-tab-selected-badge {
+    @apply rounded-full px-2 py-0.5 text-xs font-medium;
+  }
+
+  .context-tab-active-badge {
+    background: var(--color-surface-cream-strong);
+    color: var(--color-body-strong);
+  }
+
+  .context-tab-selected-badge {
+    background: var(--color-primary);
+    color: var(--color-on-primary);
+  }
+
+  .context-tab-empty,
+  .context-tab-error {
+    @apply text-sm;
+    color: var(--color-muted);
+  }
+
+  .context-tab-error {
+    color: var(--color-error);
+  }
+
   .context-chip {
     @apply max-w-full rounded-full px-3 py-1 text-xs font-medium;
     background: var(--color-surface-cream-strong);

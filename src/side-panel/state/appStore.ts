@@ -86,6 +86,29 @@ interface PageContextState {
   truncated: boolean;
   usedFallback: boolean;
   matchedRuleId?: string;
+  formatted?: boolean;
+  error?: string;
+}
+
+type ExtractPageContextSuccessResponse = {
+  ok: true;
+  url?: string;
+  title?: string;
+  text: string;
+  truncated: boolean;
+  usedFallback: boolean;
+  matchedRuleId?: string;
+};
+
+type ExtractPageContextFailureResponse = { ok: false; message?: string };
+
+export interface ContextTabCandidate {
+  tabId: number;
+  title: string;
+  url: string;
+  active: boolean;
+  selected: boolean;
+  loading?: boolean;
   error?: string;
 }
 
@@ -103,6 +126,9 @@ interface AppState {
   chatSessions: ChatSession[];
   chatFolders: ChatFolder[];
   pageContext: PageContextState;
+  contextTabs: ContextTabCandidate[];
+  contextTabsLoading: boolean;
+  contextTabsError?: string;
   remoteModels: Record<string, RemoteModelInfo[]>;
   channelOperations: Record<string, ChannelOperationState>;
   modelConnectivity: Record<string, ModelConnectivityState>;
@@ -158,6 +184,8 @@ interface AppState {
   deletePrompt: (promptId: string) => Promise<void>;
   reorderPromptTemplates: (orderedIds: string[]) => Promise<void>;
   refreshPageContext: () => Promise<void>;
+  loadContextTabs: () => Promise<void>;
+  toggleContextTabSelection: (tabId: number) => void;
   generateUrlPatterns: (modelId?: string) => Promise<{ ok: true; patterns: string[] } | { ok: false; message: string }>;
   fetchRemoteModels: (providerId: string) => Promise<void>;
   testModel: (providerId: string, modelId: string) => Promise<void>;
@@ -227,6 +255,9 @@ export const useAppStore = create<AppState>()((set, get) => ({
     truncated: false,
     usedFallback: true,
   },
+  contextTabs: [],
+  contextTabsLoading: false,
+  contextTabsError: undefined,
   remoteModels: {},
   channelOperations: {},
   modelConnectivity: {},
@@ -540,6 +571,9 @@ export const useAppStore = create<AppState>()((set, get) => ({
       privateModeActive: false,
       privateChatSession: undefined,
       pendingDeleteSessionId: undefined,
+      contextTabs: [],
+      contextTabsLoading: false,
+      contextTabsError: undefined,
     }));
     return session;
   },
@@ -582,6 +616,9 @@ export const useAppStore = create<AppState>()((set, get) => ({
       selectedModelId,
       pendingDeleteSessionId: undefined,
       chatSessions: activeSession ? current.chatSessions.filter((session) => session.id !== activeSession.id) : current.chatSessions,
+      contextTabs: [],
+      contextTabsLoading: false,
+      contextTabsError: undefined,
     }));
   },
   savePrivateChatSession: async () => {
@@ -612,7 +649,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       set,
     });
   },
-  selectChatSession: (sessionId, options) =>
+  selectChatSession: (sessionId, options) => {
     set((state) => {
       const session = state.chatSessions.find((item) => item.id === sessionId);
       if (!session) {
@@ -628,8 +665,16 @@ export const useAppStore = create<AppState>()((set, get) => ({
         privateChatSession: undefined,
         pendingDeleteSessionId: undefined,
         selectedModelId: resolveSessionModelId(session, state),
+        ...(session.messages.length === 0
+          ? {
+              contextTabs: [],
+              contextTabsLoading: false,
+              contextTabsError: undefined,
+            }
+          : {}),
       };
-    }),
+    });
+  },
   renameChatSession: async (sessionId, title) => {
     const trimmedTitle = title.trim();
     if (!trimmedTitle) {
@@ -665,10 +710,19 @@ export const useAppStore = create<AppState>()((set, get) => ({
     await deleteChatSession(sessionId);
     set((state) => {
       const chatSessions = state.chatSessions.filter((session) => session.id !== sessionId);
+      const selection = resolveActiveChatSessionSelection(state, chatSessions);
+      const activeSession = chatSessions.find((session) => session.id === selection.activeSessionId);
       return {
         chatSessions,
-        ...resolveActiveChatSessionSelection(state, chatSessions),
+        ...selection,
         pendingDeleteSessionId: undefined,
+        ...(!activeSession || activeSession.messages.length === 0
+          ? {
+              contextTabs: [],
+              contextTabsLoading: false,
+              contextTabsError: undefined,
+            }
+          : {}),
       };
     });
   },
@@ -833,9 +887,51 @@ export const useAppStore = create<AppState>()((set, get) => ({
     await reorderPromptTemplates(orderedIds);
     await get().loadPromptTemplates();
   },
+  loadContextTabs: async () => {
+    set({ contextTabsLoading: true, contextTabsError: undefined });
+    const response = await sendRuntimeMessage<
+      | {
+          ok: true;
+          tabs: Array<{ tabId: number; title: string; url: string; active: boolean }>;
+        }
+      | { ok: false; message?: string }
+    >({ type: "pageContext.listTabs" });
+
+    if (!response?.ok || !("tabs" in response) || !Array.isArray(response.tabs)) {
+      const message = response && "message" in response ? response.message : undefined;
+      set({
+        contextTabsLoading: false,
+        contextTabsError: message ?? "获取标签页列表失败",
+      });
+      return;
+    }
+
+    set((state) => {
+      const previousSelectedIds = new Set(state.contextTabs.filter((tab) => tab.selected).map((tab) => tab.tabId));
+      const hasPreviousSelection = previousSelectedIds.size > 0;
+      const nextTabs = response.tabs.map((tab) => ({
+        ...tab,
+        selected: hasPreviousSelection ? previousSelectedIds.has(tab.tabId) : tab.active,
+      }));
+      const hasSelection = nextTabs.some((tab) => tab.selected);
+
+      return {
+        contextTabs: hasSelection ? nextTabs : nextTabs.map((tab, index) => ({ ...tab, selected: index === 0 })),
+        contextTabsLoading: false,
+        contextTabsError: undefined,
+      };
+    });
+  },
+  toggleContextTabSelection: (tabId) => {
+    set((state) => ({
+      contextTabs: state.contextTabs.map((tab) => (tab.tabId === tabId ? { ...tab, selected: !tab.selected, error: undefined } : tab)),
+    }));
+    void get().refreshPageContext();
+  },
   refreshPageContext: async () => {
     const requestedContextMode = get().contextMode;
     const requestId = ++pageContextRefreshSequence;
+    const selectedTabs = get().contextTabs.filter((tab) => tab.selected);
     set((state) => ({
       pageContext: {
         ...state.pageContext,
@@ -843,63 +939,68 @@ export const useAppStore = create<AppState>()((set, get) => ({
         loading: true,
         error: undefined,
       },
+      contextTabs: state.contextTabs.map((tab) => (tab.selected ? { ...tab, loading: true, error: undefined } : { ...tab, loading: false })),
     }));
 
-    const response = await sendRuntimeMessage<
-      | {
-          ok: true;
-          url?: string;
-          title?: string;
-          text: string;
-          truncated: boolean;
-          usedFallback: boolean;
-          matchedRuleId?: string;
-        }
-      | { ok: false; message?: string }
-    >({
-      type: "pageContext.extract",
-      rules: get().extractionRules,
-      maxLength: undefined,
-      extractMode: requestedContextMode,
-    });
+    const extractContext = (tabId?: number) =>
+      sendRuntimeMessage<ExtractPageContextSuccessResponse | ExtractPageContextFailureResponse | undefined>({
+        type: "pageContext.extract",
+        tabId,
+        rules: get().extractionRules,
+        maxLength: undefined,
+        extractMode: requestedContextMode,
+      });
+
+    const responses = selectedTabs.length > 0
+      ? await Promise.all(selectedTabs.map(async (tab) => ({ tab, response: await extractContext(tab.tabId) })))
+      : [{ tab: undefined, response: await extractContext() }];
 
     if (requestId !== pageContextRefreshSequence) {
       return;
     }
 
-    if (!response) {
+    const successfulResponses = responses.filter((item): item is { tab?: ContextTabCandidate; response: ExtractPageContextSuccessResponse } =>
+      Boolean(item.response?.ok),
+    );
+    const failedResponses = responses.filter((item) => !item.response?.ok);
+
+    if (successfulResponses.length === 0) {
+      const firstFailedResponse = failedResponses[0]?.response;
       set((state) => ({
         pageContext: {
           ...state.pageContext,
+          text: "",
+          truncated: false,
+          usedFallback: true,
           loading: false,
-          error: "提取当前页面失败",
+          error: firstFailedResponse && "message" in firstFailedResponse ? firstFailedResponse.message ?? "提取当前页面失败" : "提取当前页面失败",
         },
+        contextTabs: mergeContextTabErrors(state.contextTabs, failedResponses),
       }));
       return;
     }
 
-    if (response.ok) {
-      set({
+    const shouldUseFormattedContext = selectedTabs.length > 1 || successfulResponses.length > 1;
+    const mergedText = shouldUseFormattedContext
+      ? successfulResponses.map(({ response }) => createPageContextPrompt(response)).filter(Boolean).join("\n\n---\n\n")
+      : successfulResponses[0]?.response.text ?? "";
+    const firstSuccess = successfulResponses[0]?.response;
+    set((state) => ({
         pageContext: {
           loading: false,
-          url: response.url,
-          title: response.title,
-          text: response.text,
+          url: successfulResponses.length === 1 ? firstSuccess.url : undefined,
+          title: successfulResponses.length === 1 ? firstSuccess.title : `${successfulResponses.length} 个标签页`,
+          text: mergedText,
+          formatted: shouldUseFormattedContext,
           extractMode: requestedContextMode,
-          truncated: response.truncated,
-          usedFallback: response.usedFallback,
-          matchedRuleId: response.matchedRuleId,
+          truncated: successfulResponses.some(({ response }) => response.truncated),
+          usedFallback: successfulResponses.some(({ response }) => response.usedFallback),
+          matchedRuleId: successfulResponses.length === 1 ? firstSuccess.matchedRuleId : undefined,
+          error: failedResponses.length > 0 ? "部分标签页提取失败，已跳过失败项" : undefined,
         },
-      });
-      return;
-    }
-
-    set((state) => ({
-      pageContext: {
-        ...state.pageContext,
-        loading: false,
-        error: response.message ?? "提取当前页面失败",
-      },
+        contextTabs: mergeContextTabErrors(state.contextTabs, failedResponses).map((tab) =>
+          successfulResponses.some((item) => item.tab?.tabId === tab.tabId) ? { ...tab, loading: false, error: undefined } : tab,
+        ),
     }));
   },
   generateUrlPatterns: async (modelId) => {
@@ -1155,6 +1256,9 @@ export const useAppStore = create<AppState>()((set, get) => ({
         truncated: false,
         usedFallback: true,
       },
+      contextTabs: [],
+      contextTabsLoading: false,
+      contextTabsError: undefined,
       remoteModels: {},
       channelOperations: {},
       modelConnectivity: {},
@@ -1182,6 +1286,24 @@ export const useAppStore = create<AppState>()((set, get) => ({
 }));
 
 let pageContextRefreshSequence = 0;
+
+function mergeContextTabErrors(
+  tabs: ContextTabCandidate[],
+  failedResponses: Array<{ tab?: ContextTabCandidate; response?: ExtractPageContextSuccessResponse | ExtractPageContextFailureResponse }>,
+): ContextTabCandidate[] {
+  const errorByTabId = new Map<number, string>();
+  for (const item of failedResponses) {
+    if (item.tab) {
+      errorByTabId.set(item.tab.tabId, item.response && "message" in item.response ? item.response.message ?? "提取失败" : "提取失败");
+    }
+  }
+
+  return tabs.map((tab) => ({
+    ...tab,
+    loading: false,
+    error: errorByTabId.get(tab.tabId),
+  }));
+}
 
 function resolveAvailableModelId(modelId: string, models: ProviderModel[], providers: ModelProvider[]): string {
   const availableModels = models.filter((model) => {
@@ -1482,7 +1604,6 @@ async function sendChatMessageWithState(input: SendChatMessageWithStateInput): P
     ? state.privateChatSession
     : state.chatSessions.find((session) => session.id === state.activeSessionId);
   const effectiveChatPreferences = resolveEffectiveChatPreferences(state.chatPreferences, baseSession?.chatPreferenceOverrides);
-  const requestPageContextPrompt = createPageContextPrompt(state.pageContext);
   const session =
     baseSession ??
     {
@@ -1495,6 +1616,12 @@ async function sendChatMessageWithState(input: SendChatMessageWithStateInput): P
       selectedModelId: model.id,
       messages: [],
     };
+  const shouldInjectPageContext = session.messages.length === 0 && state.appendPageContextToSystemPrompt;
+  const requestPageContextPrompt = shouldInjectPageContext
+    ? state.pageContext.formatted
+      ? state.pageContext.text
+      : createPageContextPrompt(state.pageContext)
+    : "";
   const userMessage: ChatMessage = {
     id: `message-${now}-user`,
     role: "user",
@@ -1504,7 +1631,7 @@ async function sendChatMessageWithState(input: SendChatMessageWithStateInput): P
     endpointType: provider.endpointType,
     streamMode: state.streamMode,
     systemPrompt: effectiveChatPreferences.systemPrompt,
-    contextPrompt: state.pageContext.text,
+    contextPrompt: requestPageContextPrompt,
     contextMode: state.contextMode,
     matchedRuleId: state.pageContext.matchedRuleId,
     attachments: imageAttachments.length > 0 ? imageAttachments : undefined,
@@ -1571,7 +1698,7 @@ async function regenerateChatMessage(input: RegenerateChatMessageInput): Promise
   await runChatRequest({
     state,
     privateMode: state.privateModeActive,
-    pageContextPrompt: createPageContextPrompt(state.pageContext),
+    pageContextPrompt: "",
     session,
     userMessage,
     existingMessages,
@@ -1629,7 +1756,7 @@ async function editAndRegenerateUserMessage(input: EditAndRegenerateUserMessageI
   await runChatRequest({
     state,
     privateMode: state.privateModeActive,
-    pageContextPrompt: createPageContextPrompt(state.pageContext),
+    pageContextPrompt: "",
     session,
     userMessage: editedUserMessage,
     existingMessages,
@@ -1712,7 +1839,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
         modelId: input.model.id,
         endpointType: input.provider.endpointType,
         systemPrompt: effectiveChatPreferences.systemPrompt,
-        contextPrompt: input.state.pageContext.text,
+        contextPrompt: input.pageContextPrompt,
         contextMode: input.state.contextMode,
         matchedRuleId: input.state.pageContext.matchedRuleId,
         privateMode: input.privateMode,
@@ -1750,7 +1877,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
       endpointType: input.provider.endpointType,
       streamMode: input.state.streamMode,
       systemPrompt: effectiveChatPreferences.systemPrompt,
-      contextPrompt: input.state.pageContext.text,
+      contextPrompt: input.pageContextPrompt,
       contextMode: input.state.contextMode,
       matchedRuleId: input.state.pageContext.matchedRuleId,
     };

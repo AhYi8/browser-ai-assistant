@@ -416,6 +416,65 @@ describe("background 入口", () => {
     });
   });
 
+  it("列出当前窗口可注入的普通网页标签页", async () => {
+    const mock = createChromeMock();
+    mock.chrome.tabs.query.mockResolvedValueOnce([
+      { id: 7, title: "文章页", url: "https://example.com/article", active: true },
+      { id: 8, title: "设置页", url: "chrome://settings", active: false },
+      { id: 9, title: "资料页", url: "https://docs.example.com/guide", active: false },
+      { title: "无 ID 页面", url: "https://example.com/no-id", active: false },
+    ]);
+    vi.stubGlobal("chrome", mock.chrome);
+    await import("../../../src/background/index");
+    const sendResponse = vi.fn();
+
+    const keepChannelOpen = mock.messageListeners[0](
+      { type: "pageContext.listTabs" },
+      {} as chrome.runtime.MessageSender,
+      sendResponse,
+    );
+
+    expect(keepChannelOpen).toBe(true);
+    await vi.waitFor(() => {
+      expect(sendResponse).toHaveBeenCalledWith({
+        ok: true,
+        tabs: [
+          { tabId: 7, title: "文章页", url: "https://example.com/article", active: true },
+          { tabId: 9, title: "资料页", url: "https://docs.example.com/guide", active: false },
+        ],
+      });
+    });
+    expect(mock.chrome.tabs.query).toHaveBeenCalledWith({ currentWindow: true });
+  });
+
+  it("指定 tabId 时转发提取请求到对应标签页", async () => {
+    const mock = createChromeMock();
+    vi.stubGlobal("chrome", mock.chrome);
+    await import("../../../src/background/index");
+    const sendResponse = vi.fn();
+
+    mock.messageListeners[0](
+      {
+        type: "pageContext.extract",
+        tabId: 9,
+        rules: [],
+        extractMode: "text",
+      },
+      {} as chrome.runtime.MessageSender,
+      sendResponse,
+    );
+
+    await vi.waitFor(() => {
+      expect(mock.chrome.tabs.sendMessage).toHaveBeenCalledWith(9, {
+        type: "pageContext.extract",
+        rules: [],
+        maxLength: undefined,
+        extractMode: "text",
+      });
+    });
+    expect(mock.chrome.tabs.query).not.toHaveBeenCalledWith({ active: true, currentWindow: true });
+  });
+
   it("没有活动标签页时返回中文错误", async () => {
     const mock = createChromeMock();
     mock.chrome.tabs.query.mockResolvedValueOnce([]);

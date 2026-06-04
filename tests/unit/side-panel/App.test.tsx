@@ -2658,17 +2658,37 @@ describe("App", () => {
     expect(screen.getByLabelText("URL 正则")).toHaveDisplayValue("https://example\\.com/news/\\d+");
   });
 
-  it("点击查看上下文打开弹窗并可关闭", async () => {
+  it("点击选择标签页打开上下文弹窗并可切换注入标签页", async () => {
     const user = userEvent.setup();
     vi.stubGlobal("chrome", {
       runtime: {
-        sendMessage: vi.fn().mockResolvedValue({
-          ok: true,
-          url: "https://example.com/article",
-          text: "这是一段提取后的页面正文",
-          truncated: true,
-          usedFallback: false,
-          matchedRuleId: "rule-1",
+        sendMessage: vi.fn((message: { type: string; tabId?: number }, callback: (response: unknown) => void) => {
+          if (message.type === "pageContext.listTabs") {
+            callback({
+              ok: true,
+              tabs: [
+                { tabId: 7, title: "文章页", url: "https://example.com/article", active: true },
+                { tabId: 9, title: "资料页", url: "https://docs.example.com/guide", active: false },
+              ],
+            });
+            return undefined;
+          }
+
+          if (message.type === "pageContext.extract") {
+            callback({
+              ok: true,
+              url: message.tabId === 9 ? "https://docs.example.com/guide" : "https://example.com/article",
+              title: message.tabId === 9 ? "资料页" : "文章页",
+              text: message.tabId === 9 ? "资料正文" : "这是一段提取后的页面正文",
+              truncated: true,
+              usedFallback: false,
+              matchedRuleId: "rule-1",
+            });
+            return undefined;
+          }
+
+          callback({ ok: true, content: "AI 回复" });
+          return undefined;
         }),
       },
     });
@@ -2678,22 +2698,31 @@ describe("App", () => {
 
     expect(await screen.findByText("已匹配规则：正文规则")).toBeInTheDocument();
     expect(screen.getByText("内容已截断，请细化 CSS/XPath")).toBeInTheDocument();
-    expect(screen.queryByRole("dialog", { name: "当前页上下文" })).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "查看上下文" }));
+    expect(screen.queryByRole("dialog", { name: "选择注入标签页" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "选择标签页" }));
 
-    const dialog = screen.getByRole("dialog", { name: "当前页上下文" });
+    const dialog = screen.getByRole("dialog", { name: "选择注入标签页" });
     expect(dialog).toBeInTheDocument();
     expect(dialog).toHaveTextContent("这是一段提取后的页面正文");
+    expect(screen.getByRole("button", { name: /注入 文章页/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /注入 资料页/ })).toHaveAttribute("aria-pressed", "false");
+
+    await user.click(screen.getByRole("button", { name: /注入 资料页/ }));
+    expect(screen.getByRole("button", { name: /注入 资料页/ })).toHaveAttribute("aria-pressed", "true");
+    expect(await screen.findByText((content) => content.includes("资料正文"))).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /注入 资料页/ }));
+    expect(screen.getByRole("button", { name: /注入 资料页/ })).toHaveAttribute("aria-pressed", "false");
 
     await user.keyboard("{Escape}");
 
-    expect(screen.queryByRole("dialog", { name: "当前页上下文" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "选择注入标签页" })).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "查看上下文" }));
-    expect(screen.getByRole("dialog", { name: "当前页上下文" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "关闭上下文" }));
+    await user.click(screen.getByRole("button", { name: "选择标签页" }));
+    expect(screen.getByRole("dialog", { name: "选择注入标签页" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "关闭标签页选择" }));
 
-    expect(screen.queryByRole("dialog", { name: "当前页上下文" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "选择注入标签页" })).not.toBeInTheDocument();
   });
 
   it("聊天输入区的流式响应和提取模式使用 switch 控件切换", async () => {
