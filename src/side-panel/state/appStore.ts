@@ -239,6 +239,8 @@ const DEFAULT_CHAT_PREFERENCES: ChatPreferenceValues = {
   topK: undefined,
   sendShortcut: "enter",
   historyDrawerDefaultOpen: true,
+  injectPageContextByDefault: true,
+  extractHtmlByDefault: false,
 };
 
 export const useAppStore = create<AppState>()((set, get) => ({
@@ -396,7 +398,32 @@ export const useAppStore = create<AppState>()((set, get) => ({
       updatedAt: Date.now(),
     });
 
-    set({ chatPreferences: preferences });
+    const activeSession = get().privateModeActive
+      ? get().privateChatSession
+      : get().chatSessions.find((session) => session.id === get().activeSessionId);
+    const shouldApplyContextDefaultToCurrentChat =
+      updates.injectPageContextByDefault !== undefined && (!activeSession || activeSession.messages.length === 0);
+    const shouldApplyExtractDefaultToCurrentChat =
+      updates.extractHtmlByDefault !== undefined && (!activeSession || activeSession.messages.length === 0);
+    const defaultContextMode = resolveDefaultContextMode(preferences);
+
+    set({
+      chatPreferences: preferences,
+      // 全局默认值只初始化空白新对话，避免改动已有消息对话中用户手动切换过的注入状态。
+      ...(shouldApplyContextDefaultToCurrentChat ? { appendPageContextToSystemPrompt: preferences.injectPageContextByDefault } : {}),
+      ...(shouldApplyExtractDefaultToCurrentChat
+        ? {
+            contextMode: defaultContextMode,
+            pageContext: {
+              ...get().pageContext,
+              extractMode: defaultContextMode,
+            },
+          }
+        : {}),
+    });
+    if (shouldApplyExtractDefaultToCurrentChat) {
+      void get().refreshPageContext();
+    }
   },
   updateActiveSessionChatPreferences: async (updates) => {
     const state = get();
@@ -528,12 +555,19 @@ export const useAppStore = create<AppState>()((set, get) => ({
     const activeSessionModelId = activeSession?.selectedModelId
       ? resolveAvailableModelId(activeSession.selectedModelId, models, providers)
       : "";
+    const chatPreferences = normalizeChatPreferences(savedChatPreferences);
 
     set({
       providers,
       models,
       defaultChatModelId,
-      chatPreferences: normalizeChatPreferences(savedChatPreferences),
+      chatPreferences,
+      appendPageContextToSystemPrompt: chatPreferences.injectPageContextByDefault,
+      contextMode: resolveDefaultContextMode(chatPreferences),
+      pageContext: {
+        ...get().pageContext,
+        extractMode: resolveDefaultContextMode(chatPreferences),
+      },
       selectedModelId:
         activeSessionModelId || (selectedModelStillExists ? currentSelectedModelId : (defaultChatModelId || resolveAvailableModelId("", models, providers))),
     });
@@ -564,6 +598,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
     };
 
     await saveChatSession(session);
+    const defaultContextMode = resolveDefaultContextMode(currentState.chatPreferences);
     set((state) => ({
       chatSessions: [session, ...state.chatSessions],
       activeSessionId: session.id,
@@ -571,10 +606,19 @@ export const useAppStore = create<AppState>()((set, get) => ({
       privateModeActive: false,
       privateChatSession: undefined,
       pendingDeleteSessionId: undefined,
+      appendPageContextToSystemPrompt: currentState.chatPreferences.injectPageContextByDefault,
+      contextMode: defaultContextMode,
+      pageContext: {
+        ...state.pageContext,
+        extractMode: defaultContextMode,
+      },
       contextTabs: [],
       contextTabsLoading: false,
       contextTabsError: undefined,
     }));
+    if (currentState.chatPreferences.extractHtmlByDefault) {
+      void get().refreshPageContext();
+    }
     return session;
   },
   enterPrivateMode: async () => {
@@ -608,6 +652,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       selectedModelId,
       messages: [],
     };
+    const defaultContextMode = resolveDefaultContextMode(state.chatPreferences);
 
     set((current) => ({
       privateModeActive: true,
@@ -616,10 +661,19 @@ export const useAppStore = create<AppState>()((set, get) => ({
       selectedModelId,
       pendingDeleteSessionId: undefined,
       chatSessions: activeSession ? current.chatSessions.filter((session) => session.id !== activeSession.id) : current.chatSessions,
+      appendPageContextToSystemPrompt: state.chatPreferences.injectPageContextByDefault,
+      contextMode: defaultContextMode,
+      pageContext: {
+        ...current.pageContext,
+        extractMode: defaultContextMode,
+      },
       contextTabs: [],
       contextTabsLoading: false,
       contextTabsError: undefined,
     }));
+    if (state.chatPreferences.extractHtmlByDefault) {
+      void get().refreshPageContext();
+    }
   },
   savePrivateChatSession: async () => {
     const state = get();
@@ -1406,8 +1460,14 @@ function normalizeChatPreferences(value?: Partial<ChatPreferenceValues>): ChatPr
     maxTokens: Math.round(normalizeNumber(value?.maxTokens, DEFAULT_CHAT_PREFERENCES.maxTokens, 1, 200_000)),
     topK: normalizeOptionalInteger(value?.topK, 1, 1_000),
     sendShortcut: normalizeSendShortcut(value?.sendShortcut),
-    historyDrawerDefaultOpen: value?.historyDrawerDefaultOpen ?? DEFAULT_CHAT_PREFERENCES.historyDrawerDefaultOpen,
+    historyDrawerDefaultOpen: normalizeBoolean(value?.historyDrawerDefaultOpen, DEFAULT_CHAT_PREFERENCES.historyDrawerDefaultOpen),
+    injectPageContextByDefault: normalizeBoolean(value?.injectPageContextByDefault, DEFAULT_CHAT_PREFERENCES.injectPageContextByDefault),
+    extractHtmlByDefault: normalizeBoolean(value?.extractHtmlByDefault, DEFAULT_CHAT_PREFERENCES.extractHtmlByDefault),
   };
+}
+
+function resolveDefaultContextMode(preferences: ChatPreferenceValues): PageContextExtractMode {
+  return preferences.extractHtmlByDefault ? "all" : "text";
 }
 
 function normalizeSendShortcut(value: unknown): SendShortcut {
@@ -1473,6 +1533,10 @@ function normalizeOptionalInteger(value: unknown, min: number, max: number): num
   }
 
   return Math.round(normalizeNumber(value, min, min, max));
+}
+
+function normalizeBoolean(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback;
 }
 
 function upsertSession(sessions: ChatSession[], session: ChatSession): ChatSession[] {

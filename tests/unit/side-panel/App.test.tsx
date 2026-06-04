@@ -744,6 +744,8 @@ describe("App", () => {
         maxTokens: 1024,
         sendShortcut: "enter",
         historyDrawerDefaultOpen: true,
+        injectPageContextByDefault: true,
+        extractHtmlByDefault: false,
       },
       updateChatPreferences,
     });
@@ -755,6 +757,59 @@ describe("App", () => {
     await user.selectOptions(screen.getByRole("combobox", { name: "发送快捷键" }), "ctrl_enter");
 
     expect(updateChatPreferences).toHaveBeenCalledWith({ sendShortcut: "ctrl_enter" });
+  });
+
+  it("聊天偏好可以保存新对话默认注入页面上下文", async () => {
+    const user = userEvent.setup();
+    const updateChatPreferences = vi.fn(async () => undefined);
+    useAppStore.setState({
+      chatPreferences: {
+        systemPrompt: "你是网页助手",
+        temperature: 0.7,
+        maxTokens: 1024,
+        sendShortcut: "enter",
+        historyDrawerDefaultOpen: true,
+        injectPageContextByDefault: true,
+        extractHtmlByDefault: false,
+      },
+      updateChatPreferences,
+    });
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("tab", { name: "聊天偏好" }));
+    await user.click(screen.getByRole("checkbox", { name: "新对话默认注入当前页面上下文" }));
+
+    expect(updateChatPreferences).toHaveBeenCalledWith({ injectPageContextByDefault: false });
+  });
+
+  it("聊天偏好可以保存新对话默认提取 HTML 源码", async () => {
+    const user = userEvent.setup();
+    const updateChatPreferences = vi.fn(async () => undefined);
+    useAppStore.setState({
+      chatPreferences: {
+        systemPrompt: "你是网页助手",
+        temperature: 0.7,
+        maxTokens: 1024,
+        sendShortcut: "enter",
+        historyDrawerDefaultOpen: true,
+        injectPageContextByDefault: true,
+        extractHtmlByDefault: false,
+      },
+      updateChatPreferences,
+    });
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("tab", { name: "聊天偏好" }));
+    const extractHtmlSwitch = screen.getByRole("checkbox", { name: "新对话默认提取 HTML 源码" });
+    expect(extractHtmlSwitch).not.toBeChecked();
+
+    await user.click(extractHtmlSwitch);
+
+    expect(updateChatPreferences).toHaveBeenCalledWith({ extractHtmlByDefault: true });
   });
 
   it("历史展开按钮位于模型选择器左侧，折叠时左侧面板不占宽", async () => {

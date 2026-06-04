@@ -137,6 +137,8 @@
 * 页面上下文刷新存在竞态风险；切换提取模式或连续刷新时，较早的慢速响应不能覆盖较新的状态，相关改动必须覆盖回归测试。
 * AI 生成 URL 正则只允许返回可被 `new RegExp(pattern)` 接受的候选；解析逻辑必须兼容 JSON 数组、`{ patterns: [] }` 和编号列表，但最终必须去重、过滤非法项并限制候选数量。
 * 需要当前标签页 URL 的长任务应让 background 快速返回 URL，再由 Side Panel 继续后续模型请求，避免把长耗时流程挂在 runtime message port 上。
+* 新对话是否默认注入当前页面上下文属于全局聊天偏好；实现时应初始化现有 `appendPageContextToSystemPrompt` 状态，复用标签页选择弹窗里的激活/取消注入能力，不新增平行注入逻辑。
+* 新对话是否默认提取 HTML 源码属于全局聊天偏好；实现时应初始化现有 `contextMode` 和 `pageContext.extractMode`，复用 `text/all` 提取模式，不新增第三种页面上下文模式。
 
 ### 10.6 模型请求、流式响应与思考过程
 
@@ -211,6 +213,7 @@
 * Store 中的异步动作必须在失败时恢复 `sending`、`loading` 等等待态并写入中文错误；不能让 UI 永久卡在处理中。
 * 新增 background message type 时必须同步更新 `RuntimeMessage` 联合类型、入口分发、单元测试和必要的中文错误处理。
 * 修改 `src/shared/types.ts` 中的持久化类型时，必须同步检查：默认值、旧数据 normalize、存储测试、同步快照、导出、UI 展示和模型请求构造。
+* 持久化设置中的 boolean 字段不能直接用 `??` 接收旧数据或同步快照；必须通过 `typeof value === "boolean"` 归一化，非 boolean 值回退默认值。
 * 文档或配置之外的代码改动，最小验证通常至少包括 `npm run typecheck` 和相关 `vitest` 文件；涉及构建、content script、background 或 manifest 时还必须执行 `npm run build:extension`。
 * 涉及侧边栏关键交互、响应式布局、扩展加载、页面提取或导出菜单时，除单元测试外应补充 `npm run test:e2e` 或等价 Playwright 冒烟验证。
 

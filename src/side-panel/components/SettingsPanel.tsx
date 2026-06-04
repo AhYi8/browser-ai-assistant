@@ -925,6 +925,30 @@ function ChatPreferenceSettings() {
         </span>
         <span className="chat-preference-switch-label">默认展开左侧历史面板</span>
       </label>
+      <label className="chat-preference-switch">
+        <input
+          className="chat-preference-switch-input"
+          type="checkbox"
+          checked={chatPreferences.injectPageContextByDefault}
+          onChange={(event) => void updateChatPreferences({ injectPageContextByDefault: event.target.checked })}
+        />
+        <span className="chat-preference-switch-control" aria-hidden="true">
+          <span className="chat-preference-switch-thumb" />
+        </span>
+        <span className="chat-preference-switch-label">新对话默认注入当前页面上下文</span>
+      </label>
+      <label className="chat-preference-switch">
+        <input
+          className="chat-preference-switch-input"
+          type="checkbox"
+          checked={chatPreferences.extractHtmlByDefault}
+          onChange={(event) => void updateChatPreferences({ extractHtmlByDefault: event.target.checked })}
+        />
+        <span className="chat-preference-switch-control" aria-hidden="true">
+          <span className="chat-preference-switch-thumb" />
+        </span>
+        <span className="chat-preference-switch-label">新对话默认提取 HTML 源码</span>
+      </label>
     </section>
   );
 }

@@ -1112,6 +1112,7 @@ describe("appStore", () => {
         maxTokens: 2048,
         topK: 20,
         historyDrawerDefaultOpen: true,
+        injectPageContextByDefault: false,
       },
       updatedAt: 2,
     });
@@ -1136,6 +1137,204 @@ describe("appStore", () => {
       content: "全局系统提示",
       systemPrompt: "全局系统提示",
     });
+    expect(chatRequest?.messages?.[0].content).not.toContain("页面上下文正文");
+    expect(useAppStore.getState().appendPageContextToSystemPrompt).toBe(false);
+  });
+
+  it("未保存新对话页面上下文偏好时默认注入当前页面上下文", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const sendMessage = vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+      if (message.type === "pageContext.extract") {
+        callback({
+          ok: true,
+          text: "页面上下文正文",
+          truncated: false,
+          usedFallback: false,
+        });
+        return undefined;
+      }
+
+      callback({
+        ok: true,
+        content: "AI 回复",
+      });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await saveAppSetting({
+      key: "chatPreferences",
+      value: {
+        systemPrompt: "全局系统提示",
+        temperature: 0.4,
+        maxTokens: 2048,
+        historyDrawerDefaultOpen: true,
+      },
+      updatedAt: 2,
+    });
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    await useAppStore.getState().refreshPageContext();
+    useAppStore.getState().setStreamMode(false);
+
+    await useAppStore.getState().sendChatMessage("第一问");
+
+    const chatRequest = sendMessage.mock.calls
+      .map(([message]) => message as { type: string; messages?: ChatMessage[] })
+      .find((message) => message.type === "chat.send");
+    expect(chatRequest?.messages?.[0].content).toContain("页面上下文正文");
+    expect(useAppStore.getState().chatPreferences.injectPageContextByDefault).toBe(true);
+    expect(useAppStore.getState().appendPageContextToSystemPrompt).toBe(true);
+  });
+
+  it("未保存新对话 HTML 提取偏好时默认使用可见文本", async () => {
+    await saveAppSetting({
+      key: "chatPreferences",
+      value: {
+        systemPrompt: "全局系统提示",
+        temperature: 0.4,
+        maxTokens: 2048,
+        historyDrawerDefaultOpen: true,
+      },
+      updatedAt: 2,
+    });
+
+    await useAppStore.getState().loadChannelConfig();
+
+    expect(useAppStore.getState().chatPreferences.extractHtmlByDefault).toBe(false);
+    expect(useAppStore.getState().contextMode).toBe("text");
+    expect(useAppStore.getState().pageContext.extractMode).toBe("text");
+  });
+
+  it("聊天偏好旧数据中的非布尔值会回退到默认值", async () => {
+    await saveAppSetting({
+      key: "chatPreferences",
+      value: {
+        systemPrompt: "全局系统提示",
+        temperature: 0.4,
+        maxTokens: 2048,
+        historyDrawerDefaultOpen: "false",
+        injectPageContextByDefault: "false",
+        extractHtmlByDefault: "true",
+      },
+      updatedAt: 2,
+    });
+
+    await useAppStore.getState().loadChannelConfig();
+
+    expect(useAppStore.getState().chatPreferences.historyDrawerDefaultOpen).toBe(true);
+    expect(useAppStore.getState().chatPreferences.injectPageContextByDefault).toBe(true);
+    expect(useAppStore.getState().chatPreferences.extractHtmlByDefault).toBe(false);
+    expect(useAppStore.getState().appendPageContextToSystemPrompt).toBe(true);
+    expect(useAppStore.getState().contextMode).toBe("text");
+  });
+
+  it("保存新对话默认提取 HTML 后直接发送首问使用 all 模式", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const sendMessage = vi.fn((message: { type: string; extractMode?: string }, callback: (response: unknown) => void) => {
+      if (message.type === "pageContext.extract") {
+        callback({
+          ok: true,
+          text: message.extractMode === "all" ? "<html><body>页面</body></html>" : "页面",
+          truncated: false,
+          usedFallback: false,
+        });
+        return undefined;
+      }
+
+      callback({
+        ok: true,
+        content: "AI 回复",
+      });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await saveAppSetting({
+      key: "chatPreferences",
+      value: {
+        systemPrompt: "全局系统提示",
+        temperature: 0.4,
+        maxTokens: 2048,
+        historyDrawerDefaultOpen: true,
+        extractHtmlByDefault: true,
+      },
+      updatedAt: 2,
+    });
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    await useAppStore.getState().refreshPageContext();
+    useAppStore.getState().setStreamMode(false);
+
+    await useAppStore.getState().sendChatMessage("第一问");
+
+    expect(sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "pageContext.extract", extractMode: "all" }),
+      expect.any(Function),
+    );
+    const chatRequest = sendMessage.mock.calls
+      .map(([message]) => message as { type: string; messages?: ChatMessage[] })
+      .find((message) => message.type === "chat.send");
+    expect(chatRequest?.messages?.at(-1)?.contextMode).toBe("all");
+  });
+
+  it("更新新对话页面上下文偏好后直接发送首问不注入页面上下文", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const sendMessage = vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+      if (message.type === "pageContext.extract") {
+        callback({
+          ok: true,
+          text: "页面上下文正文",
+          truncated: false,
+          usedFallback: false,
+        });
+        return undefined;
+      }
+
+      callback({
+        ok: true,
+        content: "AI 回复",
+      });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    await useAppStore.getState().refreshPageContext();
+    await useAppStore.getState().updateChatPreferences({ injectPageContextByDefault: false });
+    useAppStore.getState().setStreamMode(false);
+
+    expect(useAppStore.getState().appendPageContextToSystemPrompt).toBe(false);
+
+    await useAppStore.getState().sendChatMessage("第一问");
+
+    const chatRequest = sendMessage.mock.calls
+      .map(([message]) => message as { type: string; messages?: ChatMessage[] })
+      .find((message) => message.type === "chat.send");
+    expect(chatRequest?.messages?.[0].content).not.toContain("页面上下文正文");
+    expect(chatRequest?.messages?.[0].contextPrompt).toBe("");
   });
 
   it("当前会话聊天偏好优先于全局聊天偏好", async () => {

@@ -45,6 +45,8 @@ export interface ChatPreferenceValues {
   topK?: number;
   sendShortcut: SendShortcut;
   historyDrawerDefaultOpen: boolean;
+  injectPageContextByDefault: boolean;
+  extractHtmlByDefault: boolean;
 }
 
 export interface ChatSessionPreferenceOverrides {
