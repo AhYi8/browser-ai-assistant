@@ -250,6 +250,8 @@
 * Side Panel 开启 Network 上下文后必须立即检测并定时刷新当前标签页 DevTools Network 连接状态；检测只读取请求元数据快照，不触发 AI 请求、不写入聊天历史。
 * 未检测到当前标签页 DevTools Network 连接时，输入区必须提前显示“关闭 DevTools 后重新打开，再刷新页面”的中文处理建议，不能等用户发送消息后才提示。
 * Network 连接状态检测必须静默执行，不要在输入区展示“正在检测”这类短暂中间态；UI 只展示最近一次稳定检测结果，例如未连接提示、已连接但无请求、已采集请求数量。
+* Network 默认采集类型集属于全局聊天偏好；默认必须为 `All` 以兼容旧行为，发送分析前必须按所选类型过滤请求元数据，过滤后为空时返回明确中文提示且不得发起相关性筛选。
+* Network 请求类型映射必须兼容 Chrome DevTools `_resourceType`，其中 `Fetch/XHR` 合并 `fetch` 与 `xhr`，`Doc/CSS/JS/Img/WS` 分别对应 `document/stylesheet/script/image/websocket`，截图未单列或缺失的类型归入 `Other`。
 
 ## 11. 前端设计系统约束
 

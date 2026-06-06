@@ -1,4 +1,4 @@
-import type { NetworkHeader, NetworkRequestDetail, NetworkRequestMeta } from "./types";
+import type { NetworkHeader, NetworkRequestDetail, NetworkRequestMeta, NetworkRequestTypeFilter } from "./types";
 import { truncateText } from "./utils/text";
 
 const REDACTED_VALUE = "[已脱敏]";
@@ -15,6 +15,21 @@ export const DEFAULT_NETWORK_RELEVANCE_PROMPT = [
   "Network 请求元数据：",
   "{{networkRequests}}",
 ].join("\n");
+export const DEFAULT_NETWORK_REQUEST_TYPE_FILTERS: NetworkRequestTypeFilter[] = ["all"];
+export const NETWORK_REQUEST_TYPE_FILTER_OPTIONS: Array<{ value: NetworkRequestTypeFilter; label: string; ariaLabel: string }> = [
+  { value: "all", label: "All", ariaLabel: "采集全部 Network 请求类型" },
+  { value: "fetch_xhr", label: "Fetch/XHR", ariaLabel: "采集 Fetch/XHR 请求" },
+  { value: "doc", label: "Doc", ariaLabel: "采集 Doc 请求" },
+  { value: "css", label: "CSS", ariaLabel: "采集 CSS 请求" },
+  { value: "js", label: "JS", ariaLabel: "采集 JS 请求" },
+  { value: "font", label: "Font", ariaLabel: "采集 Font 请求" },
+  { value: "img", label: "Img", ariaLabel: "采集 Img 请求" },
+  { value: "media", label: "Media", ariaLabel: "采集 Media 请求" },
+  { value: "manifest", label: "Manifest", ariaLabel: "采集 Manifest 请求" },
+  { value: "ws", label: "WS", ariaLabel: "采集 WS 请求" },
+  { value: "wasm", label: "Wasm", ariaLabel: "采集 Wasm 请求" },
+  { value: "other", label: "Other", ariaLabel: "采集 Other 请求" },
+];
 
 export function redactNetworkRequestDetail(detail: NetworkRequestDetail): NetworkRequestDetail {
   return {
@@ -36,6 +51,14 @@ export function redactNetworkRequestMeta(meta: NetworkRequestMeta): NetworkReque
     responseHeaders: redactHeaders(meta.responseHeaders),
     requestBody: redactBody(meta.requestBody),
   };
+}
+
+export function filterNetworkRequestsByType<T extends NetworkRequestMeta>(requests: T[], filters: NetworkRequestTypeFilter[]): T[] {
+  if (filters.includes("all")) {
+    return requests;
+  }
+
+  return requests.filter((request) => filters.includes(resolveNetworkRequestTypeFilter(request.resourceType)));
 }
 
 export function parseRelevantNetworkRequestIds(content: string, availableRequests: string[] | NetworkRequestMeta[]): string[] {
@@ -155,6 +178,34 @@ function parseRequestIdCandidates(content: string): string[] {
   }
 
   return Array.from(trimmed.matchAll(/req-[\w.-]+/g)).map((match) => match[0]);
+}
+
+function resolveNetworkRequestTypeFilter(resourceType: string | undefined): NetworkRequestTypeFilter {
+  switch (resourceType?.toLowerCase()) {
+    case "fetch":
+    case "xhr":
+      return "fetch_xhr";
+    case "document":
+      return "doc";
+    case "stylesheet":
+      return "css";
+    case "script":
+      return "js";
+    case "font":
+      return "font";
+    case "image":
+      return "img";
+    case "media":
+      return "media";
+    case "manifest":
+      return "manifest";
+    case "websocket":
+      return "ws";
+    case "wasm":
+      return "wasm";
+    default:
+      return "other";
+  }
 }
 
 function resolveRequestIdCandidate(candidate: string, availableIds: string[], availableIdSet: Set<string>): string | undefined {

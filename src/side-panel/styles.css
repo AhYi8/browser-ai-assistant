@@ -1164,6 +1164,39 @@ body {
     @apply w-full min-w-0;
   }
 
+  .chat-preference-network-types {
+    @apply grid gap-2 rounded-lg px-3 py-2;
+    background: var(--color-surface-soft);
+    border: 1px solid var(--color-hairline);
+    color: var(--color-body);
+  }
+
+  .chat-preference-network-type-list {
+    @apply flex flex-wrap gap-2;
+  }
+
+  .chat-preference-network-type-chip {
+    @apply inline-flex min-h-8 cursor-pointer items-center gap-2 rounded-md px-2.5 py-1 text-xs transition;
+    background: var(--color-canvas);
+    border: 1px solid var(--color-hairline);
+    color: var(--color-body);
+  }
+
+  .chat-preference-network-type-chip:hover {
+    border-color: var(--color-primary);
+  }
+
+  .chat-preference-network-type-chip input {
+    @apply h-4 w-4 shrink-0;
+    accent-color: var(--color-primary);
+  }
+
+  .chat-preference-network-type-chip:has(input:checked) {
+    background: color-mix(in srgb, var(--color-primary) 13%, var(--color-canvas));
+    border-color: var(--color-primary);
+    color: var(--color-body-strong);
+  }
+
   .chat-preference-switch {
     @apply relative flex min-h-12 cursor-pointer items-center gap-3 rounded-lg px-3 py-2 text-sm transition;
     background: var(--color-surface-soft);

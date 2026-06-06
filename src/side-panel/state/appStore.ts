@@ -7,8 +7,11 @@ import type { OpenAIStructuredOutputFormat } from "../../shared/models/types";
 import {
   createNetworkContextPrompt,
   createNetworkMetadataPrompt,
+  DEFAULT_NETWORK_REQUEST_TYPE_FILTERS,
   DEFAULT_NETWORK_RELEVANCE_PROMPT,
+  filterNetworkRequestsByType,
   formatNetworkAttachmentSummary,
+  NETWORK_REQUEST_TYPE_FILTER_OPTIONS,
   parseRelevantNetworkRequestIds,
   redactNetworkRequestDetail,
   redactNetworkRequestMeta,
@@ -66,6 +69,7 @@ import type {
   ModelProvider,
   NetworkRequestDetail,
   NetworkRequestMeta,
+  NetworkRequestTypeFilter,
   PageContextExtractMode,
   PromptTemplate,
   ProviderModel,
@@ -257,6 +261,7 @@ const DEFAULT_CHAT_PREFERENCES: ChatPreferenceValues = {
   systemPrompt: "你是网页助手",
   networkRelevancePrompt: DEFAULT_NETWORK_RELEVANCE_PROMPT,
   networkRelevanceBatchSize: 50,
+  networkRequestTypeFilters: DEFAULT_NETWORK_REQUEST_TYPE_FILTERS,
   temperature: 0.7,
   maxTokens: 1024,
   topK: undefined,
@@ -1533,6 +1538,7 @@ function normalizeChatPreferences(value?: Partial<ChatPreferenceValues>): ChatPr
         ? value.networkRelevancePrompt.trim()
         : DEFAULT_CHAT_PREFERENCES.networkRelevancePrompt,
     networkRelevanceBatchSize: Math.round(normalizeNumber(value?.networkRelevanceBatchSize, DEFAULT_CHAT_PREFERENCES.networkRelevanceBatchSize, 1, 10_000)),
+    networkRequestTypeFilters: normalizeNetworkRequestTypeFilters(value?.networkRequestTypeFilters),
     temperature: normalizeNumber(value?.temperature, DEFAULT_CHAT_PREFERENCES.temperature, 0, 2),
     maxTokens: Math.round(normalizeNumber(value?.maxTokens, DEFAULT_CHAT_PREFERENCES.maxTokens, 1, 200_000)),
     topK: normalizeOptionalInteger(value?.topK, 1, 1_000),
@@ -1549,6 +1555,20 @@ function resolveDefaultContextMode(preferences: ChatPreferenceValues): PageConte
 
 function normalizeSendShortcut(value: unknown): SendShortcut {
   return isSendShortcutValue(value) ? value : DEFAULT_CHAT_PREFERENCES.sendShortcut;
+}
+
+function normalizeNetworkRequestTypeFilters(value: unknown): NetworkRequestTypeFilter[] {
+  if (!Array.isArray(value)) {
+    return DEFAULT_NETWORK_REQUEST_TYPE_FILTERS;
+  }
+
+  const validValues = new Set(NETWORK_REQUEST_TYPE_FILTER_OPTIONS.map((option) => option.value));
+  const filters = value.filter((item): item is NetworkRequestTypeFilter => typeof item === "string" && validValues.has(item as NetworkRequestTypeFilter));
+  if (filters.length === 0 || filters.includes("all")) {
+    return DEFAULT_NETWORK_REQUEST_TYPE_FILTERS;
+  }
+
+  return Array.from(new Set(filters));
 }
 
 function isSendShortcutValue(value: unknown): value is SendShortcut {
@@ -1982,6 +2002,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
             endpointType: input.provider.endpointType,
             networkRelevancePrompt: input.state.chatPreferences.networkRelevancePrompt,
             networkRelevanceBatchSize: input.state.chatPreferences.networkRelevanceBatchSize,
+            networkRequestTypeFilters: input.state.chatPreferences.networkRequestTypeFilters,
             set: input.set,
           })
         : ({ ok: true, userMessage: input.userMessage } satisfies PreparedNetworkContext);
@@ -2155,6 +2176,7 @@ async function prepareNetworkContextForRequest(input: {
   endpointType: EndpointType;
   networkRelevancePrompt: string;
   networkRelevanceBatchSize: number;
+  networkRequestTypeFilters: NetworkRequestTypeFilter[];
   set: StoreSetter;
 }): Promise<PreparedNetworkContext> {
   input.set({ networkContextStatus: "正在读取 DevTools Network 请求" });
@@ -2165,9 +2187,11 @@ async function prepareNetworkContextForRequest(input: {
     return { ok: false, message: snapshot?.message ?? "获取 Network 请求失败，请确认 DevTools 已打开" };
   }
 
-  const requests = snapshot.requests.map(redactNetworkRequestMeta);
+  const requests = filterNetworkRequestsByType(snapshot.requests.map(redactNetworkRequestMeta), input.networkRequestTypeFilters);
   if (requests.length === 0) {
-    return { ok: false, message: "未采集到可用于分析的 Network 请求，请先打开 DevTools Network 并刷新页面" };
+    return snapshot.requests.length === 0
+      ? { ok: false, message: "未采集到可用于分析的 Network 请求，请先打开 DevTools Network 并刷新页面" }
+      : { ok: false, message: "未采集到符合当前类型过滤条件的 Network 请求，请在聊天偏好中调整默认采集类型" };
   }
 
   input.set({ networkContextStatus: "正在筛选相关 Network 请求" });

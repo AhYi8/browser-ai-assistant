@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import type { DragEvent } from "react";
-import type { ChatPreferenceValues, ExtractionRule, ModelProvider, PromptTemplate, ProviderModel, SendShortcut } from "../../shared/types";
+import { NETWORK_REQUEST_TYPE_FILTER_OPTIONS } from "../../shared/networkContext";
+import type { ChatPreferenceValues, ExtractionRule, ModelProvider, NetworkRequestTypeFilter, PromptTemplate, ProviderModel, SendShortcut } from "../../shared/types";
 import { useAppStore } from "../state/appStore";
 import { formatModelLabelWithVision, ModelVisionIcon } from "./ModelVisionIndicator";
 import { useComposedTextInput } from "./useComposedTextInput";
@@ -865,6 +866,14 @@ function ChatPreferenceSettings() {
   const networkRelevancePromptInput = useComposedTextInput(chatPreferences.networkRelevancePrompt, (networkRelevancePrompt) => {
     void updateChatPreferences({ networkRelevancePrompt });
   });
+  const handleNetworkTypeFilterChange = (filter: NetworkRequestTypeFilter, checked: boolean) => {
+    const nextFilters = resolveNetworkTypeFilterSelection(chatPreferences.networkRequestTypeFilters, filter, checked);
+    if (!nextFilters) {
+      return;
+    }
+
+    void updateChatPreferences({ networkRequestTypeFilters: nextFilters });
+  };
 
   return (
     <section className="grid w-full gap-3" aria-label="聊天偏好">
@@ -918,6 +927,22 @@ function ChatPreferenceSettings() {
           onChange={(value) => void updateChatPreferences({ topK: value })}
         />
       </div>
+      <fieldset className="chat-preference-network-types">
+        <legend className="text-sm">默认采集 Network 请求类型</legend>
+        <div className="chat-preference-network-type-list">
+          {NETWORK_REQUEST_TYPE_FILTER_OPTIONS.map((option) => (
+            <label key={option.value} className="chat-preference-network-type-chip">
+              <input
+                type="checkbox"
+                aria-label={option.ariaLabel}
+                checked={chatPreferences.networkRequestTypeFilters.includes(option.value)}
+                onChange={(event) => handleNetworkTypeFilterChange(option.value, event.target.checked)}
+              />
+              <span>{option.label}</span>
+            </label>
+          ))}
+        </div>
+      </fieldset>
       <label className="chat-preference-field">
         发送快捷键
         <select
@@ -971,6 +996,21 @@ function ChatPreferenceSettings() {
       </label>
     </section>
   );
+}
+
+function resolveNetworkTypeFilterSelection(currentFilters: NetworkRequestTypeFilter[], filter: NetworkRequestTypeFilter, checked: boolean): NetworkRequestTypeFilter[] | undefined {
+  if (filter === "all") {
+    if (!checked) {
+      return undefined;
+    }
+
+    return ["all"];
+  }
+
+  // 类型集不能为空；取消最后一个具体类型时回退到 All，保持与旧版“采集全部”语义一致。
+  const withoutAll = currentFilters.filter((item) => item !== "all");
+  const nextFilters = checked ? [...withoutAll, filter] : withoutAll.filter((item) => item !== filter);
+  return nextFilters.length > 0 ? Array.from(new Set(nextFilters)) : ["all"];
 }
 
 interface GlobalPreferenceNumberInputProps {

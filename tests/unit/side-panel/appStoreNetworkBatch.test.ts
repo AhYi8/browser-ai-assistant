@@ -148,6 +148,34 @@ describe("appStore Network 分组筛选", () => {
     expect(useAppStore.getState().chatSessions[0].messages[1].content).toBe("AI 分组接口分析");
   });
 
+  it("聊天偏好会归一化 Network 默认采集类型", async () => {
+    await saveAppSetting({
+      key: "chatPreferences",
+      value: {
+        networkRequestTypeFilters: ["fetch_xhr", "invalid", "img", "fetch_xhr"],
+      },
+      updatedAt: 2,
+    });
+
+    await setupNetworkChat();
+
+    expect(useAppStore.getState().chatPreferences.networkRequestTypeFilters).toEqual(["fetch_xhr", "img"]);
+  });
+
+  it("旧聊天偏好缺少 Network 默认采集类型时保持采集全部", async () => {
+    await saveAppSetting({
+      key: "chatPreferences",
+      value: {
+        networkRelevanceBatchSize: 40,
+      },
+      updatedAt: 2,
+    });
+
+    await setupNetworkChat();
+
+    expect(useAppStore.getState().chatPreferences.networkRequestTypeFilters).toEqual(["all"]);
+  });
+
   it("使用聊天偏好中的 Network 筛选分组大小", async () => {
     const requests = Array.from({ length: 120 }, (_, index) => createRequest(index + 1));
     const details = requests.map(createDetail);
@@ -224,6 +252,104 @@ describe("appStore Network 分组筛选", () => {
       requestIds: ["req-1", "req-41", "req-81"],
     });
     expect(useAppStore.getState().chatSessions[0].messages[1].content).toBe("AI 自定义分组接口分析");
+  });
+
+  it("发送 Network 上下文前只筛选聊天偏好选中的请求类型", async () => {
+    const requests: NetworkRequestMeta[] = [
+      { id: "req-fetch", url: "https://api.example.com/data", method: "GET", status: 200, resourceType: "fetch" },
+      { id: "req-xhr", url: "https://api.example.com/login", method: "POST", status: 500, resourceType: "xhr" },
+      { id: "req-doc", url: "https://example.com", method: "GET", status: 200, resourceType: "document" },
+      { id: "req-img", url: "https://example.com/logo.png", method: "GET", status: 200, resourceType: "image" },
+    ];
+    const details = requests.map(createDetail);
+    const relevancePrompts: string[] = [];
+    const sendMessage = vi.fn((message: { type: string; messages?: ChatMessage[]; requestIds?: string[]; tabId?: number }, callback: (response: unknown) => void) => {
+      if (message.type === "networkContext.getSnapshot") {
+        callback({ ok: true, tabId: 7, requests });
+        return undefined;
+      }
+
+      if (message.type === "networkContext.getDetails") {
+        callback({
+          ok: true,
+          details: details.filter((detail) => message.requestIds?.includes(detail.id)),
+        });
+        return undefined;
+      }
+
+      if (message.type === "chat.send") {
+        const content = message.messages?.at(-1)?.content ?? "";
+        if (content.includes("Network context:")) {
+          callback({ ok: true, content: "AI 类型过滤接口分析" });
+          return undefined;
+        }
+
+        relevancePrompts.push(content);
+        callback({ ok: true, content: '{"requestIds":["req-fetch","req-xhr"]}' });
+        return undefined;
+      }
+
+      callback({ ok: true });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+      },
+    });
+    await saveAppSetting({
+      key: "chatPreferences",
+      value: {
+        networkRequestTypeFilters: ["fetch_xhr"],
+      },
+      updatedAt: 2,
+    });
+    await setupNetworkChat();
+
+    await useAppStore.getState().sendChatMessage("分析接口");
+
+    expect(relevancePrompts).toHaveLength(1);
+    expect(relevancePrompts[0]).toContain("id=req-fetch");
+    expect(relevancePrompts[0]).toContain("id=req-xhr");
+    expect(relevancePrompts[0]).not.toContain("id=req-doc");
+    expect(relevancePrompts[0]).not.toContain("id=req-img");
+    const detailRequest = sendMessage.mock.calls
+      .map(([message]) => message as { type: string; requestIds?: string[] })
+      .find((message) => message.type === "networkContext.getDetails");
+    expect(detailRequest?.requestIds).toEqual(["req-fetch", "req-xhr"]);
+  });
+
+  it("Network 请求类型过滤后为空时返回中文提示且不发起 AI 筛选", async () => {
+    const requests: NetworkRequestMeta[] = [
+      { id: "req-doc", url: "https://example.com", method: "GET", status: 200, resourceType: "document" },
+    ];
+    const sendMessage = vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+      if (message.type === "networkContext.getSnapshot") {
+        callback({ ok: true, tabId: 7, requests });
+        return undefined;
+      }
+
+      callback({ ok: true });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+      },
+    });
+    await saveAppSetting({
+      key: "chatPreferences",
+      value: {
+        networkRequestTypeFilters: ["fetch_xhr"],
+      },
+      updatedAt: 2,
+    });
+    await setupNetworkChat();
+
+    await useAppStore.getState().sendChatMessage("分析接口");
+
+    expect(sendMessage.mock.calls.some(([message]) => (message as { type: string }).type === "chat.send")).toBe(false);
+    expect(useAppStore.getState().failure?.message).toBe("未采集到符合当前类型过滤条件的 Network 请求，请在聊天偏好中调整默认采集类型");
   });
 
   it("某一组筛选失败时最多重试 3 次并将整体视为失败", async () => {

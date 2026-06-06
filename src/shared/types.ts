@@ -2,6 +2,7 @@ export type EndpointType = "openai_chat" | "anthropic_messages";
 export type ChatRole = "system" | "user" | "assistant";
 export type PageContextExtractMode = "text" | "all";
 export type SendShortcut = "enter" | "shift_enter" | "ctrl_enter" | "ctrl_shift_enter" | "alt_enter";
+export type NetworkRequestTypeFilter = "all" | "fetch_xhr" | "doc" | "css" | "js" | "font" | "img" | "media" | "manifest" | "ws" | "wasm" | "other";
 
 export interface ModelProvider {
   id: string;
@@ -42,6 +43,7 @@ export interface ChatPreferenceValues {
   systemPrompt: string;
   networkRelevancePrompt: string;
   networkRelevanceBatchSize: number;
+  networkRequestTypeFilters: NetworkRequestTypeFilter[];
   temperature: number;
   maxTokens: number;
   topK?: number;
