@@ -41,6 +41,7 @@ export interface ModelConfig extends ProviderModel {
 export interface ChatPreferenceValues {
   systemPrompt: string;
   networkRelevancePrompt: string;
+  networkRelevanceBatchSize: number;
   temperature: number;
   maxTokens: number;
   topK?: number;

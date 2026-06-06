@@ -888,6 +888,14 @@ function ChatPreferenceSettings() {
       </label>
       <div className="chat-preference-grid">
         <GlobalPreferenceNumberInput
+          label="Network 筛选每组请求数"
+          value={chatPreferences.networkRelevanceBatchSize}
+          min={1}
+          max={10_000}
+          step={1}
+          onChange={(value) => void updateChatPreferences({ networkRelevanceBatchSize: value })}
+        />
+        <GlobalPreferenceNumberInput
           label="temperature"
           value={chatPreferences.temperature}
           min={0}

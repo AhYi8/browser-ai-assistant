@@ -256,6 +256,7 @@ const exampleModel: ProviderModel = {
 const DEFAULT_CHAT_PREFERENCES: ChatPreferenceValues = {
   systemPrompt: "你是网页助手",
   networkRelevancePrompt: DEFAULT_NETWORK_RELEVANCE_PROMPT,
+  networkRelevanceBatchSize: 50,
   temperature: 0.7,
   maxTokens: 1024,
   topK: undefined,
@@ -1531,6 +1532,7 @@ function normalizeChatPreferences(value?: Partial<ChatPreferenceValues>): ChatPr
       typeof value?.networkRelevancePrompt === "string" && value.networkRelevancePrompt.trim()
         ? value.networkRelevancePrompt.trim()
         : DEFAULT_CHAT_PREFERENCES.networkRelevancePrompt,
+    networkRelevanceBatchSize: Math.round(normalizeNumber(value?.networkRelevanceBatchSize, DEFAULT_CHAT_PREFERENCES.networkRelevanceBatchSize, 1, 10_000)),
     temperature: normalizeNumber(value?.temperature, DEFAULT_CHAT_PREFERENCES.temperature, 0, 2),
     maxTokens: Math.round(normalizeNumber(value?.maxTokens, DEFAULT_CHAT_PREFERENCES.maxTokens, 1, 200_000)),
     topK: normalizeOptionalInteger(value?.topK, 1, 1_000),
@@ -1979,6 +1981,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
             modelConfig,
             endpointType: input.provider.endpointType,
             networkRelevancePrompt: input.state.chatPreferences.networkRelevancePrompt,
+            networkRelevanceBatchSize: input.state.chatPreferences.networkRelevanceBatchSize,
             set: input.set,
           })
         : ({ ok: true, userMessage: input.userMessage } satisfies PreparedNetworkContext);
@@ -2117,8 +2120,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
   }
 }
 
-const MAX_NETWORK_METADATA_REQUESTS = 80;
-const MAX_RELEVANT_NETWORK_REQUESTS = 10;
+const NETWORK_RELEVANCE_MAX_RETRIES = 3;
 const NETWORK_RELEVANCE_SCHEMA = {
   type: "object",
   properties: {
@@ -2152,6 +2154,7 @@ async function prepareNetworkContextForRequest(input: {
   modelConfig: ChatSendMessage["model"];
   endpointType: EndpointType;
   networkRelevancePrompt: string;
+  networkRelevanceBatchSize: number;
   set: StoreSetter;
 }): Promise<PreparedNetworkContext> {
   input.set({ networkContextStatus: "正在读取 DevTools Network 请求" });
@@ -2162,30 +2165,25 @@ async function prepareNetworkContextForRequest(input: {
     return { ok: false, message: snapshot?.message ?? "获取 Network 请求失败，请确认 DevTools 已打开" };
   }
 
-  const requests = snapshot.requests.slice(-MAX_NETWORK_METADATA_REQUESTS).map(redactNetworkRequestMeta);
+  const requests = snapshot.requests.map(redactNetworkRequestMeta);
   if (requests.length === 0) {
     return { ok: false, message: "未采集到可用于分析的 Network 请求，请先打开 DevTools Network 并刷新页面" };
   }
 
   input.set({ networkContextStatus: "正在筛选相关 Network 请求" });
-  const relevanceResponse = await selectRelevantNetworkRequests({
+  const relevanceResponse = await selectRelevantNetworkRequestBatches({
     modelConfig: input.modelConfig,
-    messages: createNetworkRelevanceMessages({
-      model: input.modelConfig,
-      endpointType: input.endpointType,
-      userDemand: input.userMessage.content,
-      requests,
-      promptTemplate: input.networkRelevancePrompt,
-    }),
+    endpointType: input.endpointType,
+    userDemand: input.userMessage.content,
+    requests,
+    promptTemplate: input.networkRelevancePrompt,
+    batchSize: input.networkRelevanceBatchSize,
   });
   if (!relevanceResponse?.ok) {
     return { ok: false, message: relevanceResponse?.message ?? "Network 请求相关性筛选失败" };
   }
 
-  const requestIds = parseRelevantNetworkRequestIds(
-    relevanceResponse.content,
-    requests,
-  ).slice(0, MAX_RELEVANT_NETWORK_REQUESTS);
+  const requestIds = relevanceResponse.requestIds;
   if (requestIds.length === 0) {
     return { ok: false, message: "未筛选到与本次需求相关的 Network 请求" };
   }
@@ -2229,6 +2227,75 @@ async function prepareNetworkContextForRequest(input: {
   };
 }
 
+async function selectRelevantNetworkRequestBatches(input: {
+  modelConfig: ChatSendMessage["model"];
+  endpointType: EndpointType;
+  userDemand: string;
+  requests: NetworkRequestMeta[];
+  promptTemplate: string;
+  batchSize: number;
+}): Promise<{ ok: true; requestIds: string[] } | Extract<NetworkRelevanceResponse, { ok: false }>> {
+  const batches = chunkArray(input.requests, input.batchSize);
+  const results = await Promise.all(
+    batches.map((batch) =>
+      selectRelevantNetworkRequestBatchWithRetry({
+        modelConfig: input.modelConfig,
+        messages: createNetworkRelevanceMessages({
+          model: input.modelConfig,
+          endpointType: input.endpointType,
+          userDemand: input.userDemand,
+          requests: batch,
+          promptTemplate: input.promptTemplate,
+        }),
+        requests: batch,
+      }),
+    ),
+  );
+  const failedResult = results.find((result): result is Extract<NetworkRelevanceResponse, { ok: false }> => !result.ok);
+  if (failedResult) {
+    return failedResult;
+  }
+
+  const successResults = results.filter((result): result is { ok: true; requestIds: string[] } => result.ok);
+  const seen = new Set<string>();
+  const requestIds = successResults.flatMap((result) =>
+    result.requestIds.filter((requestId) => {
+      if (seen.has(requestId)) {
+        return false;
+      }
+
+      seen.add(requestId);
+      return true;
+    }),
+  );
+
+  return { ok: true, requestIds };
+}
+
+async function selectRelevantNetworkRequestBatchWithRetry(input: {
+  modelConfig: ChatSendMessage["model"];
+  messages: ChatMessage[];
+  requests: NetworkRequestMeta[];
+}): Promise<{ ok: true; requestIds: string[] } | Extract<NetworkRelevanceResponse, { ok: false }>> {
+  let lastFailure: Extract<NetworkRelevanceResponse, { ok: false }> | undefined;
+  for (let retryIndex = 0; retryIndex < NETWORK_RELEVANCE_MAX_RETRIES; retryIndex += 1) {
+    const response = await selectRelevantNetworkRequests({
+      modelConfig: input.modelConfig,
+      messages: input.messages,
+    });
+    if (response?.ok) {
+      return {
+        ok: true,
+        requestIds: parseRelevantNetworkRequestIds(response.content, input.requests),
+      };
+    }
+
+    lastFailure = response ?? { ok: false, message: "Network 请求相关性筛选失败" };
+  }
+
+  return lastFailure ?? { ok: false, message: "Network 请求相关性筛选失败" };
+}
+
 async function selectRelevantNetworkRequests(input: {
   modelConfig: ChatSendMessage["model"];
   messages: ChatMessage[];
@@ -2261,6 +2328,19 @@ async function selectRelevantNetworkRequests(input: {
   }
 
   return lastFailure;
+}
+
+function chunkArray<T>(items: T[], size: number): T[][] {
+  if (size <= 0) {
+    return items.length ? [items] : [];
+  }
+
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+
+  return chunks;
 }
 
 function isStructuredOutputUnsupported(response: NetworkRelevanceResponse | undefined): boolean {

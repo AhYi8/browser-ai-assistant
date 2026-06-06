@@ -235,8 +235,14 @@
 * Network 快照成功后必须返回并固定使用该 DevTools 连接的 `tabId`；后续筛选模型调用可能改变浏览器 active tab，读取详情时不得再次依赖当前 active tab 推断连接。
 * Network 相关性筛选结果解析必须兼容模型只返回 JSON、返回编号文本，以及误传完整 OpenAI 兼容响应对象的情况；完整响应对象应递归读取 `choices[].message.content` 后再解析 `requestIds`。
 * Network 相关性筛选解析必须兼容模型把元数据列表序号误当作 `req-N` ID 返回的情况；当真实请求 ID 不存在该 `req-N` 时，应按元数据顺序映射到第 N 条请求，避免误判筛选为空。
+* Chrome HAR 的真实请求 ID 可能是裸数字；Network 相关性筛选解析遇到模型返回 `req-N` 时，必须先检查裸数字 `N` 是否为真实请求 ID，再按元数据序号兜底映射。
 * Network 相关性筛选内部模型请求必须优先使用 OpenAI Chat Completions 兼容的 `response_format: { type: "json_schema", ... }` 约束结构化输出，只允许返回 `requestIds` 数组。
 * 如果模型明确不支持 `json_schema`，Network 相关性筛选应降级到 Tool Calling / Function Calling；如果工具调用也明确不支持，最后才降级到提示词 JSON 约束。
+* Network 相关性筛选请求较多时必须按聊天偏好中的分组大小并发筛选，默认每组 50 条元数据；每组最多重试 3 次，任一组最终失败时必须把本轮 Network 上下文视为失败，不得继续读取部分详情并发送正式分析请求。
+* Network 相关性筛选分组大小属于全局聊天偏好；实现时必须同步更新默认值、旧数据归一化、设置面板、存储相关测试和分组筛选回归测试，不能在筛选逻辑中重新硬编码固定分组数。
+* DevTools Network 已采集请求、相关性筛选输入请求和筛选后详情注入请求都不设置数量上限；分组筛选数量必须按实际请求数和当前分组大小向上取整，不能先截断再分组。
+* Network 相关性筛选构造消息和实际模型请求必须共用同一个模型配置参数，避免筛选 Prompt 中的模型元数据与发送请求的模型配置不一致。
+* Network 分组工具必须防御非法分组大小，避免 `0`、负数或脏数据造成死循环；用户可见的筛选失败兜底提示必须使用中文。
 * Network 请求相关性筛选 Prompt 属于全局聊天偏好；默认值必须等同当前硬编码筛选 Prompt，并支持 `{{userDemand}}`、`{{networkRequests}}` 占位符，缺失占位符时运行时必须补齐必要上下文。
 * 修改 Network 请求相关性筛选 Prompt 设置时，必须复用组合输入安全封装，避免中文输入法中间态落库。
 * Network 结构化输出约束只应用于筛选调用；正式聊天分析请求不得携带筛选专用 `structuredOutput`，Anthropic Messages 分支也不得盲目透传 OpenAI 专用 `response_format`、`tools` 或 `tool_choice` 字段。

@@ -167,7 +167,13 @@ function resolveRequestIdCandidate(candidate: string, availableIds: string[], av
     return undefined;
   }
 
-  const ordinal = Number(ordinalMatch[1]);
+  const numericId = ordinalMatch[1];
+  // Chrome HAR 的 _requestId 常见为裸数字；模型可能按提示格式误补成 req-N，因此先兼容真实裸编号。
+  if (availableIdSet.has(numericId)) {
+    return numericId;
+  }
+
+  const ordinal = Number(numericId);
   if (!Number.isInteger(ordinal) || ordinal < 1 || ordinal > availableIds.length) {
     return undefined;
   }

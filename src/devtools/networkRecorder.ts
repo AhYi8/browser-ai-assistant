@@ -35,7 +35,6 @@ interface CachedRequest {
   request?: DevtoolsNetworkRequest;
 }
 
-const MAX_CACHED_REQUESTS = 200;
 const MAX_FIELD_LENGTH = 12000;
 const RECONNECT_DELAY_MS = 1000;
 const inspectedTabId = chrome.devtools.inspectedWindow.tabId;
@@ -121,7 +120,6 @@ function cacheRequest(entry: DevtoolsHarEntry, request?: DevtoolsNetworkRequest)
     meta: createMeta(id, entry),
     request,
   });
-  trimCache();
 }
 
 function createRequestId(entry: DevtoolsHarEntry): string {
@@ -229,15 +227,5 @@ function postToBroker(message: unknown): void {
   } catch {
     port = undefined;
     scheduleReconnect();
-  }
-}
-
-function trimCache(): void {
-  while (requestsById.size > MAX_CACHED_REQUESTS) {
-    const firstKey = requestsById.keys().next().value;
-    if (!firstKey) {
-      return;
-    }
-    requestsById.delete(firstKey);
   }
 }

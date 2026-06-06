@@ -773,6 +773,7 @@ describe("App", () => {
       chatPreferences: {
         systemPrompt: "你是网页助手",
         networkRelevancePrompt: DEFAULT_NETWORK_RELEVANCE_PROMPT,
+        networkRelevanceBatchSize: 50,
         temperature: 0.7,
         maxTokens: 1024,
         sendShortcut: "enter",
@@ -799,6 +800,7 @@ describe("App", () => {
       chatPreferences: {
         systemPrompt: "你是网页助手",
         networkRelevancePrompt: DEFAULT_NETWORK_RELEVANCE_PROMPT,
+        networkRelevanceBatchSize: 50,
         temperature: 0.7,
         maxTokens: 1024,
         sendShortcut: "enter",
@@ -825,6 +827,7 @@ describe("App", () => {
       chatPreferences: {
         systemPrompt: "你是网页助手",
         networkRelevancePrompt: DEFAULT_NETWORK_RELEVANCE_PROMPT,
+        networkRelevanceBatchSize: 50,
         temperature: 0.7,
         maxTokens: 1024,
         sendShortcut: "enter",
