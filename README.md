@@ -6,25 +6,13 @@ Browser AI Assistant 是一个基于 Chrome Manifest V3 的浏览器侧边栏 AI
 
 ## 产品预览
 
-### 基于网页上下文的聊天与分析
+### AI 多标签页对话
 
-![基于网页上下文的聊天与分析](docs/assets/product-preview/chat-analysis.png)
+![AI 多标签页对话](https://images.21zys.qzz.io/LinuxDO/AI%E5%A4%9A%E6%A0%87%E7%AD%BE%E9%A1%B5%E5%AF%B9%E8%AF%9D.gif)
 
-### 模型渠道与默认模型配置
+### AI Network 请求自动化分析
 
-![模型渠道与默认模型配置](docs/assets/product-preview/settings-channel.png)
-
-### 提示词模板管理
-
-![提示词模板管理](docs/assets/product-preview/prompt-templates.png)
-
-### 远程同步与 S3 兼容备份
-
-![远程同步与 S3 兼容备份](docs/assets/product-preview/sync-backup.png)
-
-### 提示词快捷调用与聊天导出
-
-![提示词快捷调用与聊天导出](docs/assets/product-preview/export-prompt.png)
+![AI Network 请求自动化分析](https://images.21zys.qzz.io/LinuxDO/Network-%E6%8E%A5%E5%8F%A3%E5%88%86%E6%9E%90.gif)
 
 ## 核心能力
 
