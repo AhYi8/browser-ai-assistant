@@ -8,11 +8,11 @@ Browser AI Assistant 是一个基于 Chrome Manifest V3 的浏览器侧边栏 AI
 
 ### AI 多标签页对话
 
-![AI 多标签页对话](https://images.21zys.qzz.io/LinuxDO/AI%E5%A4%9A%E6%A0%87%E7%AD%BE%E9%A1%B5%E5%AF%B9%E8%AF%9D.gif)
+![AI 多标签页对话](./docs/assets/product-preview/AI多标签页对话.gif)
 
 ### AI Network 请求自动化分析
 
-![AI Network 请求自动化分析](https://images.21zys.qzz.io/LinuxDO/Network-%E6%8E%A5%E5%8F%A3%E5%88%86%E6%9E%90.gif)
+![AI Network 请求自动化分析](./docs/assets/product-preview/Network-接口分析.gif)
 
 ## 核心能力
 
