@@ -218,6 +218,133 @@ describe("聊天请求消息构造", () => {
     expect(result[0].contextPrompt).toBe("");
   });
 
+  it("后续请求会携带历史 AI 消息中的 Network 附件详情且不修改原消息", () => {
+    const model = createModelConfig(createProvider(), createModel());
+    const assistantMessage = {
+      ...createMessage("message-1", "assistant", "登录接口返回 500。", 1),
+      networkContextAttachment: {
+        id: "network-1",
+        title: "Network 请求详情",
+        summary: "已注入 1 个 Network 请求：POST 500 https://api.example.com/login",
+        createdAt: 2,
+        redacted: true,
+        truncated: false,
+        requests: [
+          {
+            id: "req-1",
+            url: "https://api.example.com/login?token=[已脱敏]&safe=1",
+            method: "POST",
+            status: 500,
+            requestHeaders: [{ name: "Authorization", value: "[已脱敏]" }],
+            responseBody: "{\"error\":\"failed\"}",
+            redacted: true,
+            truncated: false,
+          },
+        ],
+      },
+    } satisfies ChatMessage;
+    const userMessage = createMessage("message-2", "user", "继续分析", 2);
+
+    const result = buildChatRequestMessages({
+      model,
+      pageContext: "",
+      existingMessages: [assistantMessage],
+      userMessage,
+    });
+
+    expect(result[1].content).toContain("后续追问需要继续参考");
+    expect(result[1].content).toContain("Network context:");
+    expect(result[1].content).toContain("POST https://api.example.com/login?token=[已脱敏]&safe=1");
+    expect(result[1].content).toContain("Authorization: [已脱敏]");
+    expect(assistantMessage.content).toBe("登录接口返回 500。");
+  });
+
+  it("后续请求展开历史 Network 附件前会重新脱敏脏数据", () => {
+    const model = createModelConfig(createProvider(), createModel());
+    const assistantMessage = {
+      ...createMessage("message-1", "assistant", "旧版本保存的接口分析。", 1),
+      networkContextAttachment: {
+        id: "network-1",
+        title: "Network 请求详情",
+        summary: "旧附件",
+        createdAt: 2,
+        redacted: false,
+        truncated: false,
+        requests: [
+          {
+            id: "req-unsafe",
+            url: "https://api.example.com/login?token=secret-token&safe=1",
+            method: "POST",
+            status: 500,
+            requestHeaders: [
+              { name: "Authorization", value: "Bearer secret-token" },
+              { name: "Cookie", value: "sid=secret-cookie" },
+            ],
+            requestBody: "{\"password\":\"123456\",\"name\":\"张三\"}",
+            responseBody: "{\"access_token\":\"secret-token\",\"message\":\"failed\"}",
+            redacted: false,
+            truncated: false,
+          },
+        ],
+      },
+    } satisfies ChatMessage;
+    const userMessage = createMessage("message-2", "user", "继续分析", 2);
+
+    const result = buildChatRequestMessages({
+      model,
+      pageContext: "",
+      existingMessages: [assistantMessage],
+      userMessage,
+    });
+    const expandedContent = result[1].content;
+
+    expect(expandedContent).toContain("token=[已脱敏]");
+    expect(expandedContent).toContain("Authorization: [已脱敏]");
+    expect(expandedContent).toContain("Cookie: [已脱敏]");
+    expect(expandedContent).toContain("\"password\":\"[已脱敏]\"");
+    expect(expandedContent).toContain("\"access_token\":\"[已脱敏]\"");
+    expect(expandedContent).not.toContain("secret-token");
+    expect(expandedContent).not.toContain("secret-cookie");
+    expect(expandedContent).not.toContain("123456");
+  });
+
+  it("历史 Network 附件详情参与页面上下文预算计算", () => {
+    const model = createModelConfig(createProvider(), { ...createModel(), maxTokens: 60 });
+    const assistantMessage = {
+      ...createMessage("message-1", "assistant", "已分析接口。", 1),
+      networkContextAttachment: {
+        id: "network-1",
+        title: "Network 请求详情",
+        summary: "已注入 1 个 Network 请求",
+        createdAt: 2,
+        redacted: false,
+        truncated: false,
+        requests: [
+          {
+            id: "req-1",
+            url: `https://api.example.com/login?trace=${"x".repeat(160)}`,
+            method: "POST",
+            status: 500,
+            responseBody: "接口响应".repeat(40),
+            redacted: false,
+            truncated: false,
+          },
+        ],
+      },
+    } satisfies ChatMessage;
+    const userMessage = createMessage("message-2", "user", "继续分析", 2);
+
+    const result = buildChatRequestMessages({
+      model,
+      pageContext: "需要被裁剪的页面上下文".repeat(20),
+      existingMessages: [assistantMessage],
+      userMessage,
+    });
+
+    expect(result[0].contextPrompt).toBe("");
+    expect(result[1].content).toContain("Network context:");
+  });
+
   it("max_token 足够时发送请求保留完整页面上下文", () => {
     const model = createModelConfig(createProvider(), { ...createModel(), maxTokens: 2048 });
     const userMessage = createMessage("message-1", "user", "请总结", 1);

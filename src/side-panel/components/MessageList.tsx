@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { formatNetworkAttachmentSummary, redactNetworkRequestDetail } from "../../shared/networkContext";
 import type { ChatImageAttachment, ChatMessage, ChatPromptInvocation } from "../../shared/types";
 import { PromptInlineEditor, PromptTokenContent } from "./PromptInlineEditor";
 
@@ -201,25 +202,31 @@ function NetworkContextAttachmentView({ message }: { message: ChatMessage }) {
   if (!attachment) {
     return null;
   }
+  const requests = attachment.requests.map(redactNetworkRequestDetail);
+  const summary = formatNetworkAttachmentSummary(requests);
 
   return (
     <details className="message-network-attachment">
       <summary>
-        <span>{attachment.title}</span>
-        <span className="message-network-count">{attachment.requests.length}</span>
+        <span>Network 请求详情</span>
+        <span className="message-network-count">{requests.length}</span>
       </summary>
-      <p className="message-network-summary">{attachment.summary}</p>
+      <p className="message-network-summary">{summary}</p>
       <ul className="message-network-request-list">
-        {attachment.requests.map((request) => (
+        {requests.map((request) => (
           <li key={request.id} className="message-network-request-item">
-            <span className="message-network-request-line">
-              {request.method || "UNKNOWN"} {request.status ?? "unknown"} {request.url}
-            </span>
-            <span className="message-network-flags">
-              {request.redacted ? "已脱敏" : "原文"}
-              {request.truncated ? " · 已截断" : ""}
-            </span>
-            <pre>{JSON.stringify(request, null, 2)}</pre>
+            <details>
+              <summary>
+                <span className="message-network-request-line">
+                  {request.method || "UNKNOWN"} {request.status ?? "unknown"} {request.url}
+                </span>
+                <span className="message-network-flags">
+                  {request.redacted ? "已脱敏" : "原文"}
+                  {request.truncated ? " · 已截断" : ""}
+                </span>
+              </summary>
+              <pre>{JSON.stringify(request, null, 2)}</pre>
+            </details>
           </li>
         ))}
       </ul>

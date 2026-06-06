@@ -1,4 +1,4 @@
-import { formatNetworkAttachmentForExport } from "../../shared/networkContext";
+import { formatNetworkAttachmentForExport, formatNetworkAttachmentSummary, redactNetworkRequestDetail } from "../../shared/networkContext";
 import type { ChatMessage, ChatSession } from "../../shared/types";
 
 const roleLabels: Record<ChatMessage["role"], string> = {
@@ -130,13 +130,14 @@ function formatMessageExportContent(message: ChatMessage): string {
   const contentSections = [message.content];
 
   if (message.networkContextAttachment) {
+    const networkRequests = message.networkContextAttachment.requests.map(redactNetworkRequestDetail);
     contentSections.push(
       [
         "# Network 请求详情附件",
         "",
-        message.networkContextAttachment.summary,
+        formatNetworkAttachmentSummary(networkRequests),
         "",
-        formatNetworkAttachmentForExport(message.networkContextAttachment.requests),
+        formatNetworkAttachmentForExport(networkRequests),
       ].join("\n"),
     );
   }

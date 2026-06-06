@@ -946,6 +946,7 @@ describe("App", () => {
   });
 
   it("助手消息旁展示可展开的 Network 请求详情附件", async () => {
+    const user = userEvent.setup();
     await saveChatSession(
       createChatSession({
         id: "session-network-attachment",
@@ -957,7 +958,7 @@ describe("App", () => {
             content: "登录接口返回 500。",
             networkContextAttachment: {
               id: "network-1",
-              title: "Network 请求详情",
+              title: "Network 请求详情 token=secret-token",
               summary: "已注入 1 个 Network 请求：POST 500 https://api.example.com/login",
               createdAt: 2,
               redacted: true,
@@ -974,6 +975,15 @@ describe("App", () => {
                   redacted: true,
                   truncated: false,
                 },
+                {
+                  id: "req-2",
+                  url: "https://api.example.com/profile",
+                  method: "GET",
+                  status: 200,
+                  responseBody: '{"name":"zhangsan"}',
+                  redacted: false,
+                  truncated: false,
+                },
               ],
             },
           }),
@@ -985,9 +995,70 @@ describe("App", () => {
 
     const attachment = await screen.findByText("Network 请求详情");
     expect(attachment.closest(".message-network-attachment")).toBeInTheDocument();
-    expect(screen.getByText("已注入 1 个 Network 请求：POST 500 https://api.example.com/login")).toBeInTheDocument();
+    await user.click(attachment);
+    expect(screen.getByText("已注入 2 个 Network 请求：POST 500 https://api.example.com/login")).toBeInTheDocument();
+    expect(screen.getByText(/Authorization/)).not.toBeVisible();
+    expect(screen.getByText(/zhangsan/)).not.toBeVisible();
+    await user.click(screen.getByText("POST 500 https://api.example.com/login"));
     expect(screen.getByText(/Authorization/)).toBeInTheDocument();
+    expect(screen.getByText(/Authorization/)).toBeVisible();
+    expect(screen.getByText(/zhangsan/)).not.toBeVisible();
+    await user.click(screen.getByText("GET 200 https://api.example.com/profile"));
+    expect(screen.getByText(/zhangsan/)).toBeVisible();
     expect(readFileSync(resolve(process.cwd(), "src/side-panel/styles.css"), "utf8")).toContain(".message-network-attachment");
+    expect(readFileSync(resolve(process.cwd(), "src/side-panel/styles.css"), "utf8")).toContain(".message-network-request-item summary");
+    expect(readFileSync(resolve(process.cwd(), "src/side-panel/styles.css"), "utf8")).toContain("overflow-wrap: anywhere;");
+  });
+
+  it("助手消息旁 Network 历史脏附件展示前会重新脱敏", async () => {
+    const user = userEvent.setup();
+    await saveChatSession(
+      createChatSession({
+        id: "session-network-unsafe-attachment",
+        title: "Network 脏附件",
+        messages: [
+          createChatMessage({
+            id: "message-network-unsafe",
+            role: "assistant",
+            content: "旧版本保存的 Network 附件。",
+            networkContextAttachment: {
+              id: "network-unsafe",
+              title: "Network 请求详情 token=secret-token",
+              summary: "旧版本保存的 Network 请求：POST 500 https://api.example.com/login?token=secret-token&safe=1",
+              createdAt: 2,
+              redacted: false,
+              truncated: false,
+              requests: [
+                {
+                  id: "req-unsafe",
+                  url: "https://api.example.com/login?token=secret-token&safe=1",
+                  method: "POST",
+                  status: 500,
+                  requestHeaders: [
+                    { name: "Authorization", value: "Bearer secret-token" },
+                    { name: "Cookie", value: "sid=secret-cookie" },
+                  ],
+                  requestBody: '{"password":"123456","name":"zhangsan"}',
+                  responseBody: '{"access_token":"secret-token"}',
+                  redacted: false,
+                  truncated: false,
+                },
+              ],
+            },
+          }),
+        ],
+      }),
+    );
+
+    render(<App />);
+
+    await user.click(await screen.findByText("Network 请求详情"));
+    await user.click(screen.getByText("POST 500 https://api.example.com/login?token=[已脱敏]&safe=1"));
+
+    expect(screen.getAllByText(/\[已脱敏\]/).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/secret-token/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/secret-cookie/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/123456/)).not.toBeInTheDocument();
   });
 
   it("用户和 AI 消息下方提供重新生成按钮，并在确认后重新请求", async () => {

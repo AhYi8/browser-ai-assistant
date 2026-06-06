@@ -1941,6 +1941,406 @@ describe("appStore", () => {
     expect(useAppStore.getState().chatSessions[0].messages[1].content).toBe("AI 全部接口分析");
   });
 
+  it("后续筛选前会跳过历史 Network 上下文中已分析过的完整 URL", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const historyUrl = "https://api.example.com/login?token=[已脱敏]&safe=1";
+    const newUrl = "https://api.example.com/profile?safe=1";
+    await saveChatSession({
+      id: "session-network-history",
+      title: "Network 历史",
+      archived: false,
+      sortOrder: 1,
+      createdAt: 1,
+      updatedAt: 2,
+      messages: [
+        createChatMessage({ id: "message-user-1", role: "user", content: "第一问", createdAt: 1 }),
+        createChatMessage({
+          id: "message-ai-1",
+          role: "assistant",
+          content: "已分析登录接口",
+          createdAt: 2,
+          networkContextAttachment: {
+            id: "network-1",
+            title: "Network 请求详情",
+            summary: "已注入 1 个 Network 请求",
+            requests: [createNetworkDetail({ id: "old-1", url: historyUrl })],
+            createdAt: 2,
+            redacted: true,
+            truncated: false,
+          },
+        }),
+      ],
+    });
+    const newDetail = createNetworkDetail({ id: "new-1", url: newUrl, method: "GET", status: 200 });
+    const sendMessage = vi.fn((message: { type: string; messages?: ChatMessage[]; requestIds?: string[] }, callback: (response: unknown) => void) => {
+      if (message.type === "networkContext.getSnapshot") {
+        callback({
+          ok: true,
+          requests: [
+            { id: "old-1", url: historyUrl, method: "POST", status: 500, resourceType: "xhr" },
+            { id: "new-1", url: newUrl, method: "GET", status: 200, resourceType: "fetch" },
+          ],
+        });
+        return undefined;
+      }
+
+      if (message.type === "networkContext.getDetails") {
+        callback({ ok: true, details: message.requestIds?.includes("new-1") ? [newDetail] : [] });
+        return undefined;
+      }
+
+      if (message.type === "chat.send") {
+        const userContent = message.messages?.at(-1)?.content ?? "";
+        callback({ ok: true, content: userContent.includes("Network 请求元数据") ? "{\"requestIds\":[\"new-1\"]}" : "AI 继续分析" });
+        return undefined;
+      }
+
+      callback({ ok: true });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    useAppStore.getState().selectChatSession("session-network-history");
+    useAppStore.getState().setStreamMode(false);
+    useAppStore.getState().setNetworkContextEnabled(true);
+
+    await useAppStore.getState().sendChatMessage("继续分析新接口");
+
+    const relevanceRequest = sendMessage.mock.calls
+      .map(([message]) => message as { type: string; messages?: ChatMessage[] })
+      .find((message) => message.type === "chat.send" && message.messages?.at(-1)?.content.includes("Network 请求元数据"));
+    expect(relevanceRequest?.messages?.at(-1)?.content).not.toContain(historyUrl);
+    expect(relevanceRequest?.messages?.at(-1)?.content).toContain(newUrl);
+    const detailRequest = sendMessage.mock.calls
+      .map(([message]) => message as { type: string; requestIds?: string[] })
+      .find((message) => message.type === "networkContext.getDetails");
+    expect(detailRequest?.requestIds).toEqual(["new-1"]);
+  });
+
+  it("历史附件 URL 未脱敏时仍会按脱敏后 URL 口径识别为重复", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const rawHistoryUrl = "https://api.example.com/login?token=secret-token&safe=1";
+    const redactedSnapshotUrl = "https://api.example.com/login?token=[已脱敏]&safe=1";
+    await saveChatSession({
+      id: "session-network-raw-history-url",
+      title: "Network 原始 URL 历史",
+      archived: false,
+      sortOrder: 1,
+      createdAt: 1,
+      updatedAt: 2,
+      messages: [
+        createChatMessage({ id: "message-user-1", role: "user", content: "第一问", createdAt: 1 }),
+        createChatMessage({
+          id: "message-ai-1",
+          role: "assistant",
+          content: "已分析登录接口",
+          createdAt: 2,
+          networkContextAttachment: {
+            id: "network-1",
+            title: "Network 请求详情",
+            summary: "旧版本保存的原始 URL",
+            requests: [createNetworkDetail({ id: "old-1", url: rawHistoryUrl })],
+            createdAt: 2,
+            redacted: false,
+            truncated: false,
+          },
+        }),
+      ],
+    });
+    const sendMessage = vi.fn((message: { type: string; messages?: ChatMessage[] }, callback: (response: unknown) => void) => {
+      if (message.type === "networkContext.getSnapshot") {
+        callback({ ok: true, requests: [{ id: "new-duplicate", url: rawHistoryUrl, method: "POST", status: 500, resourceType: "xhr" }] });
+        return undefined;
+      }
+
+      if (message.type === "networkContext.getDetails") {
+        callback({ ok: true, details: [] });
+        return undefined;
+      }
+
+      if (message.type === "chat.send") {
+        callback({ ok: true, content: "AI 继续分析" });
+        return undefined;
+      }
+
+      callback({ ok: true });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    useAppStore.getState().selectChatSession("session-network-raw-history-url");
+    useAppStore.getState().setStreamMode(false);
+    useAppStore.getState().setNetworkContextEnabled(true);
+
+    await useAppStore.getState().sendChatMessage("继续分析");
+
+    expect(sendMessage.mock.calls.filter(([message]) => (message as { type: string }).type === "networkContext.getDetails")).toHaveLength(0);
+    const chatRequests = sendMessage.mock.calls
+      .map(([message]) => message as { type: string; messages?: ChatMessage[] })
+      .filter((message) => message.type === "chat.send");
+    expect(chatRequests).toHaveLength(1);
+    expect(chatRequests[0].messages?.at(-1)?.content).not.toContain("Network 请求元数据");
+    expect(chatRequests[0].messages?.some((message) => message.content.includes("Network context:"))).toBe(true);
+    expect(chatRequests[0].messages?.some((message) => message.content.includes(redactedSnapshotUrl))).toBe(true);
+    expect(chatRequests[0].messages?.some((message) => message.content.includes("secret-token"))).toBe(false);
+  });
+
+  it("用户消息上的异常 Network 附件不参与历史 URL 去重", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const duplicateUrl = "https://api.example.com/login?token=[已脱敏]&safe=1";
+    const detail = createNetworkDetail({ id: "req-from-snapshot", url: duplicateUrl, method: "POST", status: 500 });
+    await saveChatSession({
+      id: "session-network-user-attachment",
+      title: "Network 用户脏附件",
+      archived: false,
+      sortOrder: 1,
+      createdAt: 1,
+      updatedAt: 2,
+      messages: [
+        createChatMessage({
+          id: "message-user-with-attachment",
+          role: "user",
+          content: "旧版本异常用户消息",
+          createdAt: 1,
+          networkContextAttachment: {
+            id: "network-user-dirty",
+            title: "Network 请求详情",
+            summary: "异常挂载到用户消息的 Network 附件",
+            requests: [createNetworkDetail({ id: "dirty-user-request", url: duplicateUrl })],
+            createdAt: 1,
+            redacted: true,
+            truncated: false,
+          },
+        }),
+      ],
+    });
+    const sendMessage = vi.fn((message: { type: string; messages?: ChatMessage[]; requestIds?: string[] }, callback: (response: unknown) => void) => {
+      if (message.type === "networkContext.getSnapshot") {
+        callback({ ok: true, requests: [{ id: "req-from-snapshot", url: duplicateUrl, method: "POST", status: 500, resourceType: "xhr" }] });
+        return undefined;
+      }
+
+      if (message.type === "networkContext.getDetails") {
+        callback({ ok: true, details: message.requestIds?.includes("req-from-snapshot") ? [detail] : [] });
+        return undefined;
+      }
+
+      if (message.type === "chat.send") {
+        const userContent = message.messages?.at(-1)?.content ?? "";
+        callback({ ok: true, content: userContent.includes("id=req-from-snapshot") ? "{\"requestIds\":[\"req-from-snapshot\"]}" : "AI 继续分析" });
+        return undefined;
+      }
+
+      callback({ ok: true });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    useAppStore.getState().selectChatSession("session-network-user-attachment");
+    useAppStore.getState().setStreamMode(false);
+    useAppStore.getState().setNetworkContextEnabled(true);
+
+    await useAppStore.getState().sendChatMessage("继续分析");
+
+    const detailRequest = sendMessage.mock.calls
+      .map(([message]) => message as { type: string; requestIds?: string[] })
+      .find((message) => message.type === "networkContext.getDetails");
+    expect(detailRequest?.requestIds).toEqual(["req-from-snapshot"]);
+  });
+
+  it("后续快照全部是历史 URL 时跳过筛选但正式请求仍携带历史 Network 上下文", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const historyUrl = "https://api.example.com/login?token=[已脱敏]&safe=1";
+    await saveChatSession({
+      id: "session-network-duplicated",
+      title: "Network 重复",
+      archived: false,
+      sortOrder: 1,
+      createdAt: 1,
+      updatedAt: 2,
+      messages: [
+        createChatMessage({ id: "message-user-1", role: "user", content: "第一问", createdAt: 1 }),
+        createChatMessage({
+          id: "message-ai-1",
+          role: "assistant",
+          content: "已分析登录接口",
+          createdAt: 2,
+          networkContextAttachment: {
+            id: "network-1",
+            title: "Network 请求详情",
+            summary: "已注入 1 个 Network 请求",
+            requests: [createNetworkDetail({ id: "old-1", url: historyUrl })],
+            createdAt: 2,
+            redacted: true,
+            truncated: false,
+          },
+        }),
+      ],
+    });
+    const sendMessage = vi.fn((message: { type: string; messages?: ChatMessage[] }, callback: (response: unknown) => void) => {
+      if (message.type === "networkContext.getSnapshot") {
+        callback({ ok: true, requests: [{ id: "old-1", url: historyUrl, method: "POST", status: 500, resourceType: "xhr" }] });
+        return undefined;
+      }
+
+      if (message.type === "networkContext.getDetails") {
+        callback({ ok: true, details: [] });
+        return undefined;
+      }
+
+      if (message.type === "chat.send") {
+        callback({ ok: true, content: "AI 继续分析" });
+        return undefined;
+      }
+
+      callback({ ok: true });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    useAppStore.getState().selectChatSession("session-network-duplicated");
+    useAppStore.getState().setStreamMode(false);
+    useAppStore.getState().setNetworkContextEnabled(true);
+
+    await useAppStore.getState().sendChatMessage("继续分析");
+
+    expect(sendMessage.mock.calls.filter(([message]) => (message as { type: string }).type === "networkContext.getDetails")).toHaveLength(0);
+    const chatRequests = sendMessage.mock.calls
+      .map(([message]) => message as { type: string; messages?: ChatMessage[] })
+      .filter((message) => message.type === "chat.send");
+    expect(chatRequests).toHaveLength(1);
+    expect(chatRequests[0].messages?.some((message) => message.content.includes("Network context:"))).toBe(true);
+    expect(chatRequests[0].messages?.some((message) => message.content.includes(historyUrl))).toBe(true);
+  });
+
+  it("后续快照只有空 URL 请求时不会误判为历史重复并发送旧上下文", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    await saveChatSession({
+      id: "session-network-empty-url",
+      title: "Network 空 URL",
+      archived: false,
+      sortOrder: 1,
+      createdAt: 1,
+      updatedAt: 2,
+      messages: [
+        createChatMessage({ id: "message-user-1", role: "user", content: "第一问", createdAt: 1 }),
+        createChatMessage({
+          id: "message-ai-1",
+          role: "assistant",
+          content: "已分析登录接口",
+          createdAt: 2,
+          networkContextAttachment: {
+            id: "network-1",
+            title: "Network 请求详情",
+            summary: "已注入 1 个 Network 请求",
+            requests: [createNetworkDetail({ id: "old-1", url: "https://api.example.com/login?safe=1" })],
+            createdAt: 2,
+            redacted: true,
+            truncated: false,
+          },
+        }),
+      ],
+    });
+    const sendMessage = vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+      if (message.type === "networkContext.getSnapshot") {
+        callback({ ok: true, requests: [{ id: "empty-url", url: "", method: "GET", status: 200, resourceType: "fetch" }] });
+        return undefined;
+      }
+
+      callback({ ok: true, content: "不应发送" });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    useAppStore.getState().selectChatSession("session-network-empty-url");
+    useAppStore.getState().setStreamMode(false);
+    useAppStore.getState().setNetworkContextEnabled(true);
+
+    await useAppStore.getState().sendChatMessage("继续分析");
+
+    expect(sendMessage.mock.calls.filter(([message]) => (message as { type: string }).type === "chat.send")).toHaveLength(0);
+    expect(sendMessage.mock.calls.filter(([message]) => (message as { type: string }).type === "networkContext.getDetails")).toHaveLength(0);
+    expect(useAppStore.getState().failure?.message).toBe("未采集到可用于筛选的新 Network 请求");
+  });
+
+  it("同一快照内完整 URL 重复时只保留第一条进入相关性筛选", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const duplicatedUrl = "https://api.example.com/orders?safe=1";
+    const firstDetail = createNetworkDetail({ id: "req-first", url: duplicatedUrl, method: "GET", status: 200 });
+    const sendMessage = vi.fn((message: { type: string; messages?: ChatMessage[]; requestIds?: string[] }, callback: (response: unknown) => void) => {
+      if (message.type === "networkContext.getSnapshot") {
+        callback({
+          ok: true,
+          requests: [
+            { id: "req-first", url: duplicatedUrl, method: "GET", status: 200, resourceType: "fetch" },
+            { id: "req-second", url: duplicatedUrl, method: "POST", status: 500, resourceType: "xhr" },
+          ],
+        });
+        return undefined;
+      }
+
+      if (message.type === "networkContext.getDetails") {
+        callback({ ok: true, details: message.requestIds?.includes("req-first") ? [firstDetail] : [] });
+        return undefined;
+      }
+
+      if (message.type === "chat.send") {
+        const userContent = message.messages?.at(-1)?.content ?? "";
+        callback({ ok: true, content: userContent.includes("Network 请求元数据") ? "{\"requestIds\":[\"req-first\"]}" : "AI 订单接口分析" });
+        return undefined;
+      }
+
+      callback({ ok: true });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    useAppStore.getState().setStreamMode(false);
+    useAppStore.getState().setNetworkContextEnabled(true);
+
+    await useAppStore.getState().sendChatMessage("分析订单接口");
+
+    const relevanceRequest = sendMessage.mock.calls
+      .map(([message]) => message as { type: string; messages?: ChatMessage[] })
+      .find((message) => message.type === "chat.send" && message.messages?.at(-1)?.content.includes("Network 请求元数据"));
+    expect(relevanceRequest?.messages?.at(-1)?.content).toContain("id=req-first");
+    expect(relevanceRequest?.messages?.at(-1)?.content).not.toContain("id=req-second");
+    const detailRequest = sendMessage.mock.calls
+      .map(([message]) => message as { type: string; requestIds?: string[] })
+      .find((message) => message.type === "networkContext.getDetails");
+    expect(detailRequest?.requestIds).toEqual(["req-first"]);
+  });
+
   it("开启 Network 上下文但 DevTools 未连接时不发送空详情分析请求", async () => {
     const provider = createProvider();
     const model = createModel();

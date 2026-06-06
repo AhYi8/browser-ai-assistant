@@ -2003,6 +2003,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
             networkRelevancePrompt: input.state.chatPreferences.networkRelevancePrompt,
             networkRelevanceBatchSize: input.state.chatPreferences.networkRelevanceBatchSize,
             networkRequestTypeFilters: input.state.chatPreferences.networkRequestTypeFilters,
+            existingMessages: input.existingMessages,
             set: input.set,
           })
         : ({ ok: true, userMessage: input.userMessage } satisfies PreparedNetworkContext);
@@ -2177,6 +2178,7 @@ async function prepareNetworkContextForRequest(input: {
   networkRelevancePrompt: string;
   networkRelevanceBatchSize: number;
   networkRequestTypeFilters: NetworkRequestTypeFilter[];
+  existingMessages: ChatMessage[];
   set: StoreSetter;
 }): Promise<PreparedNetworkContext> {
   input.set({ networkContextStatus: "正在读取 DevTools Network 请求" });
@@ -2187,11 +2189,19 @@ async function prepareNetworkContextForRequest(input: {
     return { ok: false, message: snapshot?.message ?? "获取 Network 请求失败，请确认 DevTools 已打开" };
   }
 
-  const requests = filterNetworkRequestsByType(snapshot.requests.map(redactNetworkRequestMeta), input.networkRequestTypeFilters);
+  const filteredRequests = filterNetworkRequestsByType(snapshot.requests.map(redactNetworkRequestMeta), input.networkRequestTypeFilters);
+  const dedupedRequests = filterNewNetworkRequestsByUrl(filteredRequests, input.existingMessages);
+  const requests = dedupedRequests.requests;
   if (requests.length === 0) {
+    if (filteredRequests.length > 0 && dedupedRequests.skippedMissingUrlCount === 0 && dedupedRequests.skippedDuplicateUrlCount > 0) {
+      return { ok: true, userMessage: input.userMessage };
+    }
+
     return snapshot.requests.length === 0
       ? { ok: false, message: "未采集到可用于分析的 Network 请求，请先打开 DevTools Network 并刷新页面" }
-      : { ok: false, message: "未采集到符合当前类型过滤条件的 Network 请求，请在聊天偏好中调整默认采集类型" };
+      : filteredRequests.length === 0
+        ? { ok: false, message: "未采集到符合当前类型过滤条件的 Network 请求，请在聊天偏好中调整默认采集类型" }
+        : { ok: false, message: "未采集到可用于筛选的新 Network 请求" };
   }
 
   input.set({ networkContextStatus: "正在筛选相关 Network 请求" });
@@ -2249,6 +2259,51 @@ async function prepareNetworkContextForRequest(input: {
     },
     attachment,
   };
+}
+
+function filterNewNetworkRequestsByUrl(
+  requests: NetworkRequestMeta[],
+  existingMessages: ChatMessage[],
+): { requests: NetworkRequestMeta[]; skippedDuplicateUrlCount: number; skippedMissingUrlCount: number } {
+  const seenUrls = collectHistoricalNetworkRequestUrls(existingMessages);
+  const result: NetworkRequestMeta[] = [];
+  let skippedDuplicateUrlCount = 0;
+  let skippedMissingUrlCount = 0;
+
+  for (const request of requests) {
+    if (!request.url) {
+      skippedMissingUrlCount += 1;
+      continue;
+    }
+
+    if (seenUrls.has(request.url)) {
+      skippedDuplicateUrlCount += 1;
+      continue;
+    }
+
+    seenUrls.add(request.url);
+    result.push(request);
+  }
+
+  return { requests: result, skippedDuplicateUrlCount, skippedMissingUrlCount };
+}
+
+function collectHistoricalNetworkRequestUrls(messages: ChatMessage[]): Set<string> {
+  const urls = new Set<string>();
+  for (const message of messages) {
+    if (message.role !== "assistant") {
+      continue;
+    }
+
+    for (const request of message.networkContextAttachment?.requests ?? []) {
+      const redactedUrl = redactNetworkRequestDetail(request).url;
+      if (redactedUrl) {
+        urls.add(redactedUrl);
+      }
+    }
+  }
+
+  return urls;
 }
 
 async function selectRelevantNetworkRequestBatches(input: {

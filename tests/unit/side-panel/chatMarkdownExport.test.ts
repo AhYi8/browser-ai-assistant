@@ -204,6 +204,55 @@ Prompt2 的内容
     expect(createChatSessionPrintHtml(session, 1700000200000)).toContain("Network 请求详情附件");
   });
 
+  it("导出历史 Network 脏附件前会重新脱敏", () => {
+    const session = createSession({
+      title: "Network 脏附件",
+      messages: [
+        createMessage({
+          id: "message-assistant-network-unsafe",
+          role: "assistant",
+          content: "旧版本保存的 Network 附件。",
+          networkContextAttachment: {
+            id: "network-unsafe",
+            title: "Network 请求详情",
+            summary: "旧版本保存的 Network 请求：POST 500 https://api.example.com/login?token=secret-token&safe=1",
+            createdAt: 1700000100000,
+            redacted: false,
+            truncated: false,
+            requests: [
+              {
+                id: "req-unsafe",
+                url: "https://api.example.com/login?token=secret-token&safe=1",
+                method: "POST",
+                status: 500,
+                requestHeaders: [
+                  { name: "Authorization", value: "Bearer secret-token" },
+                  { name: "Cookie", value: "sid=secret-cookie" },
+                ],
+                requestBody: '{"password":"123456","name":"zhangsan"}',
+                responseBody: '{"access_token":"secret-token"}',
+                redacted: false,
+                truncated: false,
+              },
+            ],
+          },
+          createdAt: 1700000000000,
+        }),
+      ],
+    });
+
+    const markdown = createChatSessionMarkdown(session, 1700000200000);
+
+    expect(markdown).toContain("token=[已脱敏]");
+    expect(markdown).toContain("Authorization: [已脱敏]");
+    expect(markdown).toContain("Cookie: [已脱敏]");
+    expect(markdown).toContain('"password":"[已脱敏]"');
+    expect(markdown).not.toContain("secret-token");
+    expect(markdown).not.toContain("secret-cookie");
+    expect(markdown).not.toContain("123456");
+    expect(createChatSessionPrintHtml(session, 1700000200000)).not.toContain("secret-token");
+  });
+
   it("生成适合下载的 Markdown 文件名", () => {
     const session = createSession({ title: "资料/会话:*?" });
 

@@ -1,4 +1,5 @@
 import type { ChatMessage, ModelConfig } from "../types";
+import { formatNetworkAttachmentForExport, redactNetworkRequestDetail } from "../networkContext";
 import { truncateText } from "../utils/text";
 
 interface BuildChatRequestMessagesInput {
@@ -13,11 +14,12 @@ interface BuildChatRequestMessagesInput {
 export function buildChatRequestMessages(input: BuildChatRequestMessagesInput): ChatMessage[] {
   const effectiveSystemPrompt = input.systemPrompt ?? input.model.systemPrompt;
   const shouldAppendPageContext = input.appendPageContextToSystemPrompt ?? true;
+  const existingMessages = input.existingMessages.map(expandAssistantNetworkContextAttachment);
   const pageContext = shouldAppendPageContext
     ? fitPageContextToModelBudget({
     systemPrompt: effectiveSystemPrompt,
     pageContext: input.pageContext,
-    existingMessages: input.existingMessages,
+    existingMessages,
     userMessage: input.userMessage,
     maxTokens: input.model.maxTokens,
   })
@@ -38,7 +40,23 @@ export function buildChatRequestMessages(input: BuildChatRequestMessagesInput): 
     matchedRuleId: input.userMessage.matchedRuleId,
   };
 
-  return [systemMessage, ...input.existingMessages, expandUserMessagePromptInvocations(input.userMessage)];
+  return [systemMessage, ...existingMessages, expandUserMessagePromptInvocations(input.userMessage)];
+}
+
+function expandAssistantNetworkContextAttachment(message: ChatMessage): ChatMessage {
+  if (message.role !== "assistant" || !message.networkContextAttachment?.requests.length) {
+    return message;
+  }
+
+  return {
+    ...message,
+    content: [
+      message.content,
+      "",
+      "后续追问需要继续参考以下历史 DevTools Network 请求详情：",
+      formatNetworkAttachmentForExport(message.networkContextAttachment.requests.map(redactNetworkRequestDetail)),
+    ].join("\n").trim(),
+  };
 }
 
 function expandUserMessagePromptInvocations(message: ChatMessage): ChatMessage {
