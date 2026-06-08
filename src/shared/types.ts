@@ -55,6 +55,8 @@ export interface ChatPreferenceValues {
 
 export interface ChatSessionPreferenceOverrides {
   systemPrompt?: string;
+  networkRelevanceBatchSize?: number;
+  networkRequestTypeFilters?: NetworkRequestTypeFilter[];
   temperature?: number;
   maxTokens?: number;
   topK?: number;

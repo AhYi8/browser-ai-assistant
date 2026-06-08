@@ -38,6 +38,7 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   const [slashMenuOpen, setSlashMenuOpen] = useState(false);
   const [slashQuery, setSlashQuery] = useState("");
   const [slashStartIndex, setSlashStartIndex] = useState<number | undefined>();
+  const [slashActiveIndex, setSlashActiveIndex] = useState(0);
   const [attachments, setAttachments] = useState<ChatImageAttachment[]>([]);
   const [attachmentError, setAttachmentError] = useState("");
   const [previewAttachment, setPreviewAttachment] = useState<ChatImageAttachment | undefined>();
@@ -86,6 +87,10 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   }, [checkNetworkContextConnection, networkContextEnabled]);
 
   useEffect(() => {
+    setSlashActiveIndex(0);
+  }, [slashQuery, slashMenuOpen]);
+
+  useEffect(() => {
     if (!contextDialogOpen) {
       return undefined;
     }
@@ -124,13 +129,22 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
         setSlashMenuOpen(false);
         return;
       }
-      if (isComposingInput && event.key === "Enter") {
+      if (!isComposingInput && (event.key === "ArrowDown" || event.key === "ArrowUp") && filteredPromptTemplates.length > 0) {
         event.preventDefault();
+        setSlashActiveIndex((current) =>
+          event.key === "ArrowDown"
+            ? (current + 1) % filteredPromptTemplates.length
+            : (current - 1 + filteredPromptTemplates.length) % filteredPromptTemplates.length,
+        );
         return;
       }
-      if (!isComposingInput && event.key === "Enter" && filteredPromptTemplates[0]) {
+      if (!isComposingInput && (event.key === "Enter" || event.key === "Tab") && filteredPromptTemplates[slashActiveIndex]) {
         event.preventDefault();
-        handleSelectPrompt(filteredPromptTemplates[0]);
+        handleSelectPrompt(filteredPromptTemplates[slashActiveIndex]);
+        return;
+      }
+      if (isComposingInput && event.key === "Enter") {
+        event.preventDefault();
         return;
       }
     }
@@ -200,6 +214,7 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
     setSlashMenuOpen(false);
     setSlashQuery("");
     setSlashStartIndex(undefined);
+    setSlashActiveIndex(0);
   };
 
   const handleCaptureVisibleTab = async () => {
@@ -372,13 +387,13 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
         {slashMenuOpen ? (
           <div className="slash-command-menu" role="listbox" aria-label="提示词命令">
             {filteredPromptTemplates.length > 0 ? (
-              filteredPromptTemplates.map((prompt) => (
+              filteredPromptTemplates.map((prompt, index) => (
                 <button
                   key={prompt.id}
-                  className="slash-command-option"
+                  className={index === slashActiveIndex ? "slash-command-option slash-command-option-active" : "slash-command-option"}
                   type="button"
                   role="option"
-                  aria-selected="false"
+                  aria-selected={index === slashActiveIndex}
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={() => handleSelectPrompt(prompt)}
                 >

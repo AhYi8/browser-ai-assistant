@@ -271,6 +271,8 @@ const DEFAULT_CHAT_PREFERENCES: ChatPreferenceValues = {
   extractHtmlByDefault: false,
 };
 
+const STREAM_FAILURE_MESSAGE = "流式响应异常中断，请重新生成后重试";
+
 export const useAppStore = create<AppState>()((set, get) => ({
   providers: [],
   models: [],
@@ -1581,6 +1583,14 @@ function normalizeChatPreferenceOverrides(value?: ChatSessionPreferenceOverrides
   if (typeof value?.systemPrompt === "string" && value.systemPrompt.trim()) {
     overrides.systemPrompt = value.systemPrompt.trim();
   }
+  if (value?.networkRelevanceBatchSize !== undefined) {
+    overrides.networkRelevanceBatchSize = Math.round(
+      normalizeNumber(value.networkRelevanceBatchSize, DEFAULT_CHAT_PREFERENCES.networkRelevanceBatchSize, 1, 10_000),
+    );
+  }
+  if (value?.networkRequestTypeFilters !== undefined) {
+    overrides.networkRequestTypeFilters = normalizeNetworkRequestTypeFilters(value.networkRequestTypeFilters);
+  }
   if (value?.temperature !== undefined) {
     overrides.temperature = normalizeNumber(value.temperature, DEFAULT_CHAT_PREFERENCES.temperature, 0, 2);
   }
@@ -1597,10 +1607,11 @@ function normalizeChatPreferenceOverrides(value?: ChatSessionPreferenceOverrides
 function resolveEffectiveChatPreferences(
   preferences: ChatPreferenceValues,
   overrides?: ChatSessionPreferenceOverrides,
-): Required<Pick<ChatSessionPreferenceOverrides, "systemPrompt" | "temperature" | "maxTokens">> &
-  Pick<ChatSessionPreferenceOverrides, "topK"> {
+): EffectiveChatPreferences {
   const normalizedOverrides = normalizeChatPreferenceOverrides({
     systemPrompt: overrides?.systemPrompt ?? preferences.systemPrompt,
+    networkRelevanceBatchSize: overrides?.networkRelevanceBatchSize ?? preferences.networkRelevanceBatchSize,
+    networkRequestTypeFilters: overrides?.networkRequestTypeFilters ?? preferences.networkRequestTypeFilters,
     temperature: overrides?.temperature ?? preferences.temperature,
     maxTokens: overrides?.maxTokens ?? preferences.maxTokens,
     topK: overrides?.topK ?? preferences.topK,
@@ -1608,6 +1619,8 @@ function resolveEffectiveChatPreferences(
 
   return {
     systemPrompt: normalizedOverrides.systemPrompt ?? preferences.systemPrompt,
+    networkRelevanceBatchSize: normalizedOverrides.networkRelevanceBatchSize ?? preferences.networkRelevanceBatchSize,
+    networkRequestTypeFilters: normalizedOverrides.networkRequestTypeFilters ?? preferences.networkRequestTypeFilters,
     temperature: normalizedOverrides.temperature ?? preferences.temperature,
     maxTokens: normalizedOverrides.maxTokens ?? preferences.maxTokens,
     topK: normalizedOverrides.topK,
@@ -1748,6 +1761,11 @@ interface RunChatRequestInput {
   get: StoreGetter;
   set: StoreSetter;
 }
+
+type EffectiveChatPreferences = Required<
+  Pick<ChatSessionPreferenceOverrides, "systemPrompt" | "networkRelevanceBatchSize" | "networkRequestTypeFilters" | "temperature" | "maxTokens">
+> &
+  Pick<ChatSessionPreferenceOverrides, "topK">;
 
 interface GenerateTitleForSessionInput {
   sessionId: string;
@@ -1895,6 +1913,7 @@ async function regenerateChatMessage(input: RegenerateChatMessageInput): Promise
     fallbackTitle: session.title,
     model,
     provider,
+    allowNetworkContext: true,
     get: input.get,
     set: input.set,
   });
@@ -1953,6 +1972,7 @@ async function editAndRegenerateUserMessage(input: EditAndRegenerateUserMessageI
     fallbackTitle: session.title,
     model,
     provider,
+    allowNetworkContext: true,
     get: input.get,
     set: input.set,
   });
@@ -2001,8 +2021,8 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
             modelConfig,
             endpointType: input.provider.endpointType,
             networkRelevancePrompt: input.state.chatPreferences.networkRelevancePrompt,
-            networkRelevanceBatchSize: input.state.chatPreferences.networkRelevanceBatchSize,
-            networkRequestTypeFilters: input.state.chatPreferences.networkRequestTypeFilters,
+            networkRelevanceBatchSize: effectiveChatPreferences.networkRelevanceBatchSize,
+            networkRequestTypeFilters: effectiveChatPreferences.networkRequestTypeFilters,
             existingMessages: input.existingMessages,
             set: input.set,
           })
@@ -2764,15 +2784,18 @@ async function sendStreamingChatMessage(input: StreamingChatInput): Promise<Stre
         return;
       }
 
-      input.set({ failure: { message: message.message ?? "模型请求失败，请重试" } });
-      finish({ completed: true });
+      input.set({ failure: { message: STREAM_FAILURE_MESSAGE } });
+      void enqueueWrite(() => failAssistantMessage(input.sessionId, assistantMessage.id, STREAM_FAILURE_MESSAGE, input.set, input.privateMode)).then(() =>
+        finish({ completed: true }),
+      );
     });
 
     port.onDisconnect.addListener(() => {
       if (!receivedStreamResponse) {
-        void removeAssistantMessage(input.sessionId, assistantMessage.id, input.set, input.privateMode).then(() => {
-          finish({ completed: false }, { disconnect: false });
-        });
+        input.set({ failure: { message: STREAM_FAILURE_MESSAGE } });
+        void enqueueWrite(() => failAssistantMessage(input.sessionId, assistantMessage.id, STREAM_FAILURE_MESSAGE, input.set, input.privateMode)).then(() =>
+          finish({ completed: true }, { disconnect: false }),
+        );
         return;
       }
 
@@ -2784,6 +2807,36 @@ async function sendStreamingChatMessage(input: StreamingChatInput): Promise<Stre
       payload: input.request,
     });
   });
+}
+
+async function failAssistantMessage(
+  sessionId: string,
+  messageId: string,
+  failureMessage: string,
+  set: StoreSetter,
+  privateMode = false,
+): Promise<void> {
+  const applyFailure = (message: ChatMessage): ChatMessage => {
+    const content = message.content.trim() ? `${message.content}\n\n${failureMessage}` : failureMessage;
+    return {
+      ...message,
+      content,
+      streaming: false,
+    };
+  };
+
+  if (privateMode) {
+    set((current) => updatePrivateAssistantMessageInState(current, sessionId, messageId, applyFailure));
+    return;
+  }
+
+  await updateChatSession(sessionId, (latestSession) => ({
+    ...latestSession,
+    updatedAt: Date.now(),
+    messages: latestSession.messages.map((message) => (message.id === messageId ? applyFailure(message) : message)),
+  }));
+
+  set((current) => updateAssistantMessageInState(current, sessionId, messageId, applyFailure));
 }
 
 async function removeAssistantMessage(sessionId: string, messageId: string, set: StoreSetter, privateMode = false): Promise<void> {

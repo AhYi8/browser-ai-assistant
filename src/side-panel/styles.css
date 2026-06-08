@@ -323,6 +323,7 @@ body {
 
   .session-item-row {
     @apply flex min-w-0 items-center gap-2;
+    cursor: pointer;
   }
 
   .session-item-menu-wrap {
@@ -1007,8 +1008,13 @@ body {
     background: var(--color-surface-soft);
   }
 
-  .slash-command-option:hover {
+  .slash-command-option:hover,
+  .slash-command-option-active {
     background: var(--color-surface-card);
+  }
+
+  .slash-command-option-active {
+    box-shadow: inset 3px 0 0 var(--color-primary);
   }
 
   .slash-command-title {

@@ -2958,7 +2958,7 @@ describe("appStore", () => {
     });
   });
 
-  it("流式连接断开且没有收到任何响应时自动回退到非流式请求", async () => {
+  it("流式连接断开且没有收到任何响应时保留失败气泡且不回退非流式请求", async () => {
     const provider = createProvider();
     const model = createModel();
     let disconnectListener: (() => void) | undefined;
@@ -2990,14 +2990,6 @@ describe("appStore", () => {
             });
           }
 
-          if (message.type === "chat.send") {
-            callback({
-              ok: true,
-              content: "回退回复",
-              thinking: "回退思考",
-            });
-          }
-
           return undefined;
         }),
       },
@@ -3013,9 +3005,9 @@ describe("appStore", () => {
 
     const state = useAppStore.getState();
     const activeSession = state.chatSessions.find((session) => session.id === state.activeSessionId);
-    expect(state.failure).toBeUndefined();
-    expect(activeSession?.messages.map((message) => message.content)).toEqual(["第一问", "回退回复"]);
-    expect(activeSession?.messages[1].thinking).toBe("回退思考");
+    expect(state.failure?.message).toBe("流式响应异常中断，请重新生成后重试");
+    expect(activeSession?.messages.map((message) => message.content)).toEqual(["第一问", "流式响应异常中断，请重新生成后重试"]);
+    expect(activeSession?.messages[1].streaming).toBe(false);
   });
 
   it("提取模式切换后刷新页面上下文时传递 all 模式", async () => {
@@ -4040,6 +4032,115 @@ describe("appStore", () => {
     expect(useAppStore.getState().selectedModelId).toBe("model-second");
     await expect(getChatSession(firstSession.id)).resolves.toMatchObject({ selectedModelId: "model-second" });
     await expect(getChatSession(secondSession.id)).resolves.toMatchObject({ selectedModelId: "model-1" });
+  });
+
+  it("流式连接未返回内容就断开时保留 AI 气泡且不回退非流式", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    let portDisconnectListener: (() => void) | undefined;
+    const port = {
+      postMessage: vi.fn(),
+      disconnect: vi.fn(),
+      onMessage: {
+        addListener: vi.fn(),
+      },
+      onDisconnect: {
+        addListener: vi.fn((listener: () => void) => {
+          portDisconnectListener = listener;
+        }),
+      },
+    };
+    const sendMessage = vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+      if (message.type === "pageContext.extract") {
+        callback({ ok: true, url: "https://example.com/article", text: "页面内容", truncated: false, usedFallback: false });
+      }
+
+      return undefined;
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        connect: vi.fn(() => port),
+        sendMessage,
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    await useAppStore.getState().refreshPageContext();
+
+    const sendPromise = useAppStore.getState().sendChatMessage("第一问");
+    await vi.waitFor(() => {
+      expect(portDisconnectListener).toBeTypeOf("function");
+      expect(useAppStore.getState().chatSessions[0]?.messages.map((message) => message.content)).toEqual(["第一问", ""]);
+    });
+
+    portDisconnectListener?.();
+    await sendPromise;
+
+    const chatSendCalls = sendMessage.mock.calls.filter(([message]) => (message as { type: string }).type === "chat.send");
+    expect(chatSendCalls).toHaveLength(0);
+    expect(useAppStore.getState().chatSessions[0]?.messages[1]).toMatchObject({
+      role: "assistant",
+      content: "流式响应异常中断，请重新生成后重试",
+      streaming: false,
+    });
+  });
+
+  it("流式返回片段后报错时保留已有内容并停止流式状态", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    let portMessageListener: ((message: unknown) => void) | undefined;
+    const port = {
+      postMessage: vi.fn(),
+      disconnect: vi.fn(),
+      onMessage: {
+        addListener: vi.fn((listener: (message: unknown) => void) => {
+          portMessageListener = listener;
+        }),
+      },
+      onDisconnect: {
+        addListener: vi.fn(),
+      },
+    };
+    vi.stubGlobal("chrome", {
+      runtime: {
+        connect: vi.fn(() => port),
+        sendMessage: vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+          if (message.type === "pageContext.extract") {
+            callback({ ok: true, url: "https://example.com/article", text: "页面内容", truncated: false, usedFallback: false });
+          }
+
+          return undefined;
+        }),
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    await useAppStore.getState().refreshPageContext();
+
+    const sendPromise = useAppStore.getState().sendChatMessage("第一问");
+    await vi.waitFor(() => {
+      expect(portMessageListener).toBeTypeOf("function");
+    });
+
+    portMessageListener?.({ type: "chunk", content: "已有内容" });
+    await vi.waitFor(() => {
+      expect(useAppStore.getState().chatSessions[0]?.messages[1].content).toBe("已有内容");
+    });
+    portMessageListener?.({ type: "error", message: "upstream raw error with sk-secret" });
+    await sendPromise;
+
+    expect(useAppStore.getState().failure?.message).toBe("流式响应异常中断，请重新生成后重试");
+    expect(useAppStore.getState().failure?.message).not.toContain("sk-secret");
+    expect(useAppStore.getState().chatSessions[0]?.messages[1]).toMatchObject({
+      content: "已有内容\n\n流式响应异常中断，请重新生成后重试",
+      streaming: false,
+    });
   });
 
   it("同一毫秒连续创建会话时也会生成不同会话 ID", async () => {

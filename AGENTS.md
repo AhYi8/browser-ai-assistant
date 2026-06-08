@@ -256,6 +256,10 @@
 * Network 默认采集类型集属于全局聊天偏好；默认必须为 `All` 以兼容旧行为，发送分析前必须按所选类型过滤请求元数据，过滤后为空时返回明确中文提示且不得发起相关性筛选。
 * Network 请求类型映射必须兼容 Chrome DevTools `_resourceType`，其中 `Fetch/XHR` 合并 `fetch` 与 `xhr`，`Doc/CSS/JS/Img/WS` 分别对应 `document/stylesheet/script/image/websocket`，截图未单列或缺失的类型归入 `Other`。
 * AI 消息下方的 Network 请求详情附件中，每条 `.message-network-request-item` 必须可单独折叠，且默认折叠，避免大段 JSON 默认占满聊天面板；请求项必须有明确展开提示，长 URL 和 JSON 不得撑破 Side Panel 布局。
+* 用户对开启 Network 上下文产生的消息执行重新生成时，必须保留自动化 Network 分析意图；当前 Network 开关开启时应重新读取快照、筛选并补充详情，而不是退化为普通对话。
+* 当前聊天设置中的 Network 筛选分组大小和请求类型属于会话级覆盖，优先级高于全局聊天偏好；留空或恢复默认时才继承全局设置。
+* 流式回复异常中断、上游报错或端口未返回内容就断开时，不得删除 AI 占位气泡，也不得自动回退为非流式请求；必须将该 AI 消息收尾为非 streaming，并显示固定中文失败提示。
+* 斜杠 Prompt 命令列表必须支持键盘操作：弹出后默认选中第一项，方向键切换，Enter/Tab 选择，同时保留鼠标选择能力。
 
 ## 11. 前端设计系统约束
 

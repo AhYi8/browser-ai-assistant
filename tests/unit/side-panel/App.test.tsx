@@ -422,6 +422,71 @@ describe("App", () => {
     expect(screen.getByRole("spinbutton", { name: "当前聊天 top_k" }).closest("label")).toHaveClass("chat-preference-field");
   });
 
+  it("当前聊天设置可以覆盖 Network 分组大小和请求类型并恢复全局默认", async () => {
+    const user = userEvent.setup();
+    const updateActiveSessionChatPreferences = vi.fn(async (updates) => {
+      useAppStore.setState((state) => {
+        const session = state.chatSessions.find((item) => item.id === state.activeSessionId);
+        if (!session) {
+          return {};
+        }
+
+        return {
+          chatSessions: state.chatSessions.map((item) =>
+            item.id === session.id
+              ? {
+                  ...item,
+                  chatPreferenceOverrides: {
+                    ...item.chatPreferenceOverrides,
+                    ...updates,
+                  },
+                }
+              : item,
+          ),
+        };
+      });
+    });
+    await saveChatSession(
+      createChatSession({
+        id: "session-current-network-settings",
+        title: "当前 Network 设置",
+        chatPreferenceOverrides: {
+          networkRelevanceBatchSize: 20,
+          networkRequestTypeFilters: ["img"],
+        },
+      }),
+    );
+    useAppStore.setState({
+      updateActiveSessionChatPreferences,
+      chatPreferences: {
+        ...useAppStore.getState().chatPreferences,
+        networkRelevanceBatchSize: 50,
+        networkRequestTypeFilters: ["all"],
+      },
+    });
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "打开当前聊天设置" }));
+    const batchInput = screen.getByRole("spinbutton", { name: "当前聊天 Network 筛选每组请求数" });
+    expect(batchInput).toHaveDisplayValue("20");
+    expect(batchInput).toHaveAttribute("placeholder", "50");
+    expect(screen.getByRole("checkbox", { name: "当前聊天采集 Img" })).toBeChecked();
+
+    await user.clear(batchInput);
+    await user.type(batchInput, "12");
+    expect(updateActiveSessionChatPreferences).toHaveBeenLastCalledWith({ networkRelevanceBatchSize: 12 });
+
+    await user.click(screen.getByRole("checkbox", { name: "当前聊天采集 Fetch/XHR" }));
+    expect(updateActiveSessionChatPreferences).toHaveBeenLastCalledWith({ networkRequestTypeFilters: ["img", "fetch_xhr"] });
+
+    await user.click(screen.getByRole("button", { name: "恢复当前聊天 Network 设置为全局默认" }));
+    expect(updateActiveSessionChatPreferences).toHaveBeenLastCalledWith({
+      networkRelevanceBatchSize: undefined,
+      networkRequestTypeFilters: undefined,
+    });
+  });
+
   it("导出按钮位于当前聊天设置右侧并提供 Markdown、Word、PDF 格式", async () => {
     const user = userEvent.setup();
     const downloadMock = createDownloadMock();
@@ -1333,6 +1398,39 @@ describe("App", () => {
     expect(styles).toContain("text-overflow: ellipsis;");
   });
 
+  it("点击历史会话整行空白区域可以切换会话且菜单不会误触发切换", async () => {
+    const user = userEvent.setup();
+    await saveChatSession(
+      createChatSession({
+        id: "session-first",
+        title: "第一条历史",
+        updatedAt: 2,
+        messages: [createChatMessage({ id: "message-first", role: "user", content: "第一条内容", createdAt: 2 })],
+      }),
+    );
+    await saveChatSession(
+      createChatSession({
+        id: "session-second",
+        title: "第二条历史",
+        updatedAt: 1,
+        messages: [createChatMessage({ id: "message-second", role: "user", content: "第二条内容", createdAt: 1 })],
+      }),
+    );
+
+    render(<App />);
+
+    expect(await screen.findByText("第一条内容")).toBeInTheDocument();
+    const secondRow = screen.getByText("第二条历史").closest(".session-item-row");
+    expect(secondRow).not.toBeNull();
+    await user.click(secondRow as HTMLElement);
+    expect(await screen.findByText("第二条内容")).toBeInTheDocument();
+
+    const firstMenuButton = screen.getByRole("button", { name: "会话操作 第一条历史" });
+    await user.click(firstMenuButton);
+    expect(screen.getByRole("menuitem", { name: "重命名" })).toBeInTheDocument();
+    expect(screen.getByText("第二条内容")).toBeInTheDocument();
+  });
+
   it("标题生成等待中时历史会话标题处展示等待态", async () => {
     await saveChatSession(createChatSession({ id: "session-title-generating", title: "第一问", titleGenerating: true } as Partial<ChatSession>));
 
@@ -1584,6 +1682,35 @@ describe("App", () => {
     const editInput = screen.getByRole("textbox", { name: "编辑用户消息" });
     const editPromptToken = screen.getByRole("button", { name: "编辑消息提示词：风险审查" });
     expect(editPromptToken.closest(".prompt-inline-editor")).toBe(editInput.closest(".prompt-inline-editor"));
+  });
+
+  it("斜杠 Prompt 菜单支持上下键切换并用 Enter 或 Tab 选择", async () => {
+    const user = userEvent.setup();
+    const styles = readFileSync(resolve(process.cwd(), "src/side-panel/styles.css"), "utf8");
+    await savePromptTemplate(createPromptTemplate({ id: "prompt-first", title: "第一条", content: "第一条内容", sortOrder: 10 }));
+    await savePromptTemplate(createPromptTemplate({ id: "prompt-second", title: "第二条", content: "第二条内容", sortOrder: 20 }));
+
+    render(<App />);
+
+    const input = screen.getByLabelText("对话输入");
+    await user.type(input, "/");
+    const firstOption = screen.getByRole("option", { name: /第一条/ });
+    const secondOption = screen.getByRole("option", { name: /第二条/ });
+    expect(firstOption).toHaveAttribute("aria-selected", "true");
+    expect(secondOption).toHaveAttribute("aria-selected", "false");
+
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    expect(firstOption).toHaveAttribute("aria-selected", "false");
+    expect(secondOption).toHaveAttribute("aria-selected", "true");
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(screen.getByRole("button", { name: "已调用提示词：第二条" })).toBeInTheDocument();
+
+    fireEvent.keyDown(input, { key: "Backspace" });
+    await user.type(input, "/");
+    fireEvent.keyDown(input, { key: "Tab" });
+    expect(screen.getByRole("button", { name: "已调用提示词：第一条" })).toBeInTheDocument();
+    expect(styles).toContain(".slash-command-option-active");
+    expect(styles).toContain("box-shadow: inset 3px 0 0 var(--color-primary);");
   });
 
   it("输入法组合输入期间不会用 Enter 快捷键触发发送", async () => {

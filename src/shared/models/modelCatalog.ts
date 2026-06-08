@@ -13,6 +13,7 @@ export interface ModelListRequest {
 }
 
 type Fetcher = typeof fetch;
+type ModelConfigPreferenceOverrides = Pick<ChatSessionPreferenceOverrides, "systemPrompt" | "temperature" | "maxTokens" | "topK">;
 
 export function createListModelsRequest(provider: ModelProvider): ModelListRequest {
   if (provider.endpointType === "anthropic_messages") {
@@ -98,7 +99,7 @@ export function createModelConfig(
 ): ModelConfig {
   return {
     ...model,
-    ...pickDefinedPreferenceOverrides(overrides),
+    ...pickModelConfigPreferenceOverrides(overrides),
     name: model.displayName,
     channelName: provider.name,
     endpointType: provider.endpointType,
@@ -152,8 +153,23 @@ function removeKnownEndpointSuffix(segments: string[], knownSuffixes: string[][]
   return segments;
 }
 
-function pickDefinedPreferenceOverrides(overrides: ChatSessionPreferenceOverrides): ChatSessionPreferenceOverrides {
-  return Object.fromEntries(Object.entries(overrides).filter(([, value]) => value !== undefined)) as ChatSessionPreferenceOverrides;
+function pickModelConfigPreferenceOverrides(overrides: ChatSessionPreferenceOverrides): ModelConfigPreferenceOverrides {
+  const modelOverrides: ModelConfigPreferenceOverrides = {};
+
+  if (overrides.systemPrompt !== undefined) {
+    modelOverrides.systemPrompt = overrides.systemPrompt;
+  }
+  if (overrides.temperature !== undefined) {
+    modelOverrides.temperature = overrides.temperature;
+  }
+  if (overrides.maxTokens !== undefined) {
+    modelOverrides.maxTokens = overrides.maxTokens;
+  }
+  if (overrides.topK !== undefined) {
+    modelOverrides.topK = overrides.topK;
+  }
+
+  return modelOverrides;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAppStore } from "../../../src/side-panel/state/appStore";
-import { clearDatabase, saveAppSetting, saveModelProvider, saveProviderModel } from "../../../src/shared/storage/repositories";
-import type { ChatMessage, ModelProvider, NetworkRequestDetail, NetworkRequestMeta, ProviderModel } from "../../../src/shared/types";
+import { clearDatabase, saveAppSetting, saveChatSession, saveModelProvider, saveProviderModel } from "../../../src/shared/storage/repositories";
+import type { ChatMessage, ChatSession, ModelProvider, NetworkRequestDetail, NetworkRequestMeta, ProviderModel } from "../../../src/shared/types";
 
 function createProvider(): ModelProvider {
   return {
@@ -53,6 +53,35 @@ function createDetail(request: NetworkRequestMeta): NetworkRequestDetail {
     responseBody: "{}",
     truncated: false,
     redacted: false,
+  };
+}
+
+function createChatMessage(partial: Partial<ChatMessage>): ChatMessage {
+  return {
+    id: "message-1",
+    role: "user",
+    content: "分析接口",
+    createdAt: 1,
+    modelId: "model-1",
+    endpointType: "openai_chat",
+    streamMode: false,
+    systemPrompt: "你是网页助手",
+    contextPrompt: "",
+    contextMode: "text",
+    ...partial,
+  };
+}
+
+function createChatSession(partial: Partial<ChatSession>): ChatSession {
+  return {
+    id: "session-1",
+    title: "Network 分析",
+    archived: false,
+    sortOrder: 1,
+    createdAt: 1,
+    updatedAt: 1,
+    messages: [],
+    ...partial,
   };
 }
 
@@ -416,5 +445,164 @@ describe("appStore Network 分组筛选", () => {
     await useAppStore.getState().sendChatMessage("分析所有接口");
 
     expect(useAppStore.getState().failure?.message).toBe("Network 请求相关性筛选失败");
+  });
+
+  it("开启 Network 上下文后重新生成 AI 消息会重新执行自动化 Network 分析", async () => {
+    const requests = [createRequest(1)];
+    const details = requests.map(createDetail);
+    const sendMessage = vi.fn((message: { type: string; messages?: ChatMessage[]; requestIds?: string[]; tabId?: number }, callback: (response: unknown) => void) => {
+      if (message.type === "networkContext.getSnapshot") {
+        callback({ ok: true, tabId: 7, requests });
+        return undefined;
+      }
+
+      if (message.type === "networkContext.getDetails") {
+        callback({ ok: true, details });
+        return undefined;
+      }
+
+      if (message.type === "chat.send") {
+        const content = message.messages?.at(-1)?.content ?? "";
+        callback(content.includes("Network context:") ? { ok: true, content: "重新分析 Network" } : { ok: true, content: '{"requestIds":["req-1"]}' });
+        return undefined;
+      }
+
+      callback({ ok: true });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+    await saveModelProvider(createProvider());
+    await saveProviderModel(createModel());
+    await saveChatSession(
+      createChatSession({
+        messages: [
+          createChatMessage({ id: "message-user-1", role: "user", content: "分析接口", createdAt: 1 }),
+          createChatMessage({ id: "message-ai-1", role: "assistant", content: "旧分析", createdAt: 2 }),
+        ],
+      }),
+    );
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    useAppStore.getState().setStreamMode(false);
+    useAppStore.getState().setNetworkContextEnabled(true);
+
+    await useAppStore.getState().regenerateMessage("message-ai-1");
+
+    expect(sendMessage.mock.calls.some(([message]) => (message as { type: string }).type === "networkContext.getSnapshot")).toBe(true);
+    expect(sendMessage.mock.calls.some(([message]) => (message as { type: string }).type === "networkContext.getDetails")).toBe(true);
+    const finalChatRequest = sendMessage.mock.calls
+      .map(([message]) => message as { type: string; messages?: ChatMessage[] })
+      .filter((message) => message.type === "chat.send")
+      .at(-1);
+    expect(finalChatRequest?.messages?.at(-1)?.content).toContain("Network context:");
+    expect(useAppStore.getState().chatSessions[0].messages.map((message) => message.content)).toEqual(["分析接口", "重新分析 Network"]);
+  });
+
+  it("Network 首次异常后重新生成用户消息会重新执行自动化 Network 分析", async () => {
+    const requests = [createRequest(1)];
+    const details = requests.map(createDetail);
+    const sendMessage = vi.fn((message: { type: string; messages?: ChatMessage[]; requestIds?: string[]; tabId?: number }, callback: (response: unknown) => void) => {
+      if (message.type === "networkContext.getSnapshot") {
+        callback({ ok: true, tabId: 7, requests });
+        return undefined;
+      }
+
+      if (message.type === "networkContext.getDetails") {
+        callback({ ok: true, details });
+        return undefined;
+      }
+
+      if (message.type === "chat.send") {
+        const content = message.messages?.at(-1)?.content ?? "";
+        callback(content.includes("Network context:") ? { ok: true, content: "异常后重新分析" } : { ok: true, content: '{"requestIds":["req-1"]}' });
+        return undefined;
+      }
+
+      callback({ ok: true });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+    await saveModelProvider(createProvider());
+    await saveProviderModel(createModel());
+    await saveChatSession(
+      createChatSession({
+        messages: [createChatMessage({ id: "message-user-1", role: "user", content: "分析接口", createdAt: 1 })],
+      }),
+    );
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    useAppStore.getState().setStreamMode(false);
+    useAppStore.getState().setNetworkContextEnabled(true);
+
+    await useAppStore.getState().regenerateMessage("message-user-1");
+
+    expect(sendMessage.mock.calls.some(([message]) => (message as { type: string }).type === "networkContext.getSnapshot")).toBe(true);
+    expect(sendMessage.mock.calls.some(([message]) => (message as { type: string }).type === "networkContext.getDetails")).toBe(true);
+    expect(useAppStore.getState().chatSessions[0].messages.map((message) => message.content)).toEqual(["分析接口", "异常后重新分析"]);
+  });
+
+  it("当前会话 Network 覆盖优先于全局聊天偏好", async () => {
+    const requests = Array.from({ length: 60 }, (_, index) => ({
+      ...createRequest(index + 1),
+      resourceType: index === 0 ? "image" : "fetch",
+    }));
+    const details = requests.map(createDetail);
+    const relevancePrompts: string[] = [];
+    const sendMessage = vi.fn((message: { type: string; messages?: ChatMessage[]; requestIds?: string[]; tabId?: number }, callback: (response: unknown) => void) => {
+      if (message.type === "networkContext.getSnapshot") {
+        callback({ ok: true, tabId: 7, requests });
+        return undefined;
+      }
+
+      if (message.type === "networkContext.getDetails") {
+        callback({ ok: true, details: details.filter((detail) => message.requestIds?.includes(detail.id)) });
+        return undefined;
+      }
+
+      if (message.type === "chat.send") {
+        const content = message.messages?.at(-1)?.content ?? "";
+        if (content.includes("Network context:")) {
+          callback({ ok: true, content: "使用当前聊天 Network 设置" });
+          return undefined;
+        }
+
+        relevancePrompts.push(content);
+        callback({ ok: true, content: '{"requestIds":["req-1"]}' });
+        return undefined;
+      }
+
+      callback({ ok: true });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+    await saveAppSetting({
+      key: "chatPreferences",
+      value: {
+        networkRelevanceBatchSize: 50,
+        networkRequestTypeFilters: ["fetch_xhr"],
+      },
+      updatedAt: 2,
+    });
+    await saveModelProvider(createProvider());
+    await saveProviderModel(createModel());
+    await saveChatSession(
+      createChatSession({
+        chatPreferenceOverrides: {
+          networkRelevanceBatchSize: 10,
+          networkRequestTypeFilters: ["img"],
+        },
+      }),
+    );
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    useAppStore.getState().setStreamMode(false);
+    useAppStore.getState().setNetworkContextEnabled(true);
+
+    await useAppStore.getState().sendChatMessage("分析图片请求");
+
+    expect(relevancePrompts).toHaveLength(1);
+    expect(relevancePrompts[0]).toContain("id=req-1");
+    expect(relevancePrompts[0]).not.toContain("id=req-2");
+    expect(useAppStore.getState().chatSessions[0].messages[1].content).toBe("使用当前聊天 Network 设置");
   });
 });

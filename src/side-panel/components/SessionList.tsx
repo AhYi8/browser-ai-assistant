@@ -592,16 +592,18 @@ function SessionItem({
       onDragStart={(event) => onDragStart?.(session.id, event)}
       onDragEnd={onDragEnd}
     >
-      <div className="session-item-row">
+      <div className="session-item-row" onClick={() => !renaming && onSelect(session.id)}>
         {renaming ? (
           <input
             className="ui-input session-rename-input"
             aria-label="重命名会话"
             value={renamingValue}
             autoFocus
+            onClick={(event) => event.stopPropagation()}
             onChange={(event) => onRenameChange(event.target.value)}
             onBlur={onRenameSave}
             onKeyDown={(event) => {
+              event.stopPropagation();
               if (event.key === "Enter") {
                 onRenameCommit();
               }
@@ -611,18 +613,29 @@ function SessionItem({
             }}
           />
         ) : (
-          <button className="session-title-button" type="button" title={session.title} onClick={() => onSelect(session.id)}>
+          <button
+            className="session-title-button"
+            type="button"
+            title={session.title}
+            onClick={(event) => {
+              event.stopPropagation();
+              onSelect(session.id);
+            }}
+          >
             <span className="session-item-title">{visibleTitle}</span>
           </button>
         )}
-        <div className="session-item-menu-wrap">
+        <div className="session-item-menu-wrap" onClick={(event) => event.stopPropagation()}>
           <button
             className="session-menu-button"
             type="button"
             aria-label={`会话操作 ${session.title}`}
             aria-haspopup="menu"
             aria-expanded={menuOpen}
-            onClick={() => onToggleMenu(session.id)}
+            onClick={(event) => {
+              event.stopPropagation();
+              onToggleMenu(session.id);
+            }}
           >
             ⋯
           </button>
