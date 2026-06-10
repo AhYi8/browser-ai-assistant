@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { App } from "../../../src/side-panel/App";
 import { useAppStore } from "../../../src/side-panel/state/appStore";
 import { DEFAULT_NETWORK_RELEVANCE_PROMPT } from "../../../src/shared/networkContext";
+import type { ModelToolRegistryEntry } from "../../../src/shared/models/types";
 import {
   clearDatabase,
   getProviderModels,
@@ -17,6 +18,18 @@ import {
   saveProviderModel,
 } from "../../../src/shared/storage/repositories";
 import type { ChatFolder, ChatMessage, ChatSession, ExtractionRule, ModelProvider, PromptTemplate, ProviderModel, SendShortcut } from "../../../src/shared/types";
+
+const registeredModelToolsMock = vi.hoisted(() => ({
+  tools: [] as ModelToolRegistryEntry[],
+}));
+
+vi.mock("../../../src/shared/models/toolRegistry", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../src/shared/models/toolRegistry")>();
+  return {
+    ...actual,
+    getRegisteredModelTools: () => registeredModelToolsMock.tools,
+  };
+});
 
 function createChatMessage(partial: Partial<ChatMessage>): ChatMessage {
   return {
@@ -275,6 +288,7 @@ describe("App", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    registeredModelToolsMock.tools = [];
     useAppStore.getState().reset();
   });
 
@@ -842,6 +856,8 @@ describe("App", () => {
         networkRelevanceBatchSize: 50,
         networkRequestTypeFilters: ["all"],
         webSearchPolicy: "first_message",
+        toolCallingEnabled: false,
+        enabledToolIds: [],
         temperature: 0.7,
         maxTokens: 1024,
         sendShortcut: "enter",
@@ -861,6 +877,39 @@ describe("App", () => {
     expect(updateChatPreferences).toHaveBeenCalledWith({ sendShortcut: "ctrl_enter" });
   });
 
+  it("聊天偏好可以保存工具调用总开关并显示空工具列表", async () => {
+    const user = userEvent.setup();
+    const updateChatPreferences = vi.fn(async () => undefined);
+    useAppStore.setState({
+      chatPreferences: {
+        systemPrompt: "你是网页助手",
+        networkRelevancePrompt: DEFAULT_NETWORK_RELEVANCE_PROMPT,
+        networkRelevanceBatchSize: 50,
+        networkRequestTypeFilters: ["all"],
+        webSearchPolicy: "first_message",
+        toolCallingEnabled: false,
+        enabledToolIds: [],
+        temperature: 0.7,
+        maxTokens: 1024,
+        sendShortcut: "enter",
+        historyDrawerDefaultOpen: true,
+        injectPageContextByDefault: true,
+        extractHtmlByDefault: false,
+      },
+      updateChatPreferences,
+    });
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("tab", { name: "聊天偏好" }));
+    expect(screen.getByText("暂无可用工具")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("checkbox", { name: "启用工具调用" }));
+
+    expect(updateChatPreferences).toHaveBeenCalledWith({ toolCallingEnabled: true });
+  });
+
   it("聊天偏好可以保存新对话默认注入页面上下文", async () => {
     const user = userEvent.setup();
     const updateChatPreferences = vi.fn(async () => undefined);
@@ -871,6 +920,8 @@ describe("App", () => {
         networkRelevanceBatchSize: 50,
         networkRequestTypeFilters: ["all"],
         webSearchPolicy: "first_message",
+        toolCallingEnabled: false,
+        enabledToolIds: [],
         temperature: 0.7,
         maxTokens: 1024,
         sendShortcut: "enter",
@@ -900,6 +951,8 @@ describe("App", () => {
         networkRelevanceBatchSize: 50,
         networkRequestTypeFilters: ["all"],
         webSearchPolicy: "first_message",
+        toolCallingEnabled: false,
+        enabledToolIds: [],
         temperature: 0.7,
         maxTokens: 1024,
         sendShortcut: "enter",
@@ -3284,6 +3337,7 @@ describe("App", () => {
     const streamSwitch = screen.getByRole("switch", { name: "流式响应" });
     const networkSwitch = screen.getByRole("switch", { name: "Network 上下文" });
     const webSearchSwitch = screen.getByRole("switch", { name: "网络搜索" });
+    const toolCallingButton = screen.getByRole("button", { name: "工具调用：已关闭" });
     const contextSwitch = screen.getByRole("switch", { name: "提取模式" });
     const contextStrip = document.querySelector(".context-strip");
 
@@ -3294,6 +3348,8 @@ describe("App", () => {
     expect(streamSwitch).toHaveAttribute("aria-checked", "true");
     expect(networkSwitch).toHaveAttribute("aria-checked", "false");
     expect(webSearchSwitch).toHaveAttribute("aria-checked", "false");
+    expect(toolCallingButton).toHaveAttribute("aria-pressed", "false");
+    expect(toolCallingButton).not.toBeDisabled();
     expect(contextSwitch).toHaveAttribute("aria-checked", "false");
     expect(contextSwitch).toHaveAttribute("title", "提取文本");
     expect(streamSwitch).toHaveClass("composer-switch");
@@ -3310,8 +3366,169 @@ describe("App", () => {
     expect(screen.getByRole("switch", { name: "流式响应" })).toHaveAttribute("aria-checked", "false");
     expect(screen.getByRole("switch", { name: "Network 上下文" })).toHaveAttribute("aria-checked", "true");
     expect(screen.getByRole("switch", { name: "网络搜索" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("button", { name: "工具调用：已关闭" })).toHaveAttribute("aria-pressed", "false");
     expect(screen.getByRole("switch", { name: "提取模式" })).toHaveAttribute("aria-checked", "true");
     expect(screen.getByRole("switch", { name: "提取模式" })).toHaveAttribute("title", "提取所有");
+  });
+
+  it("聊天输入区的工具调用图标按钮打开菜单并控制当前会话工具设置", async () => {
+    const user = userEvent.setup();
+    const updateActiveSessionChatPreferences = vi.fn(async (updates) => {
+      useAppStore.setState((state) => {
+        const session = state.chatSessions.find((item) => item.id === state.activeSessionId);
+        if (!session) {
+          return {};
+        }
+
+        return {
+          chatSessions: state.chatSessions.map((item) =>
+            item.id === session.id
+              ? {
+                  ...item,
+                  chatPreferenceOverrides: {
+                    ...item.chatPreferenceOverrides,
+                    ...updates,
+                  },
+                }
+              : item,
+          ),
+        };
+      });
+    });
+    registeredModelToolsMock.tools = [
+      {
+        id: "browser.take_snapshot",
+        name: "take_snapshot",
+        description: "读取当前页面结构快照",
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+      },
+      {
+        id: "browser.click",
+        name: "click",
+        description: "点击页面上的目标元素",
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+      },
+    ];
+
+    const session = createChatSession({
+      id: "session-tool-calling-composer",
+      title: "工具调用会话",
+      chatPreferenceOverrides: { toolCallingEnabled: false, enabledToolIds: ["browser.take_snapshot"] },
+    });
+    await saveChatSession(session);
+    useAppStore.setState({
+      activeSessionId: "session-tool-calling-composer",
+      chatSessions: [session],
+      chatPreferences: {
+        ...useAppStore.getState().chatPreferences,
+        toolCallingEnabled: true,
+      },
+      updateActiveSessionChatPreferences,
+    });
+
+    render(<App />);
+
+    const toolCallingButton = screen.getByRole("button", { name: "工具调用：已关闭" });
+    expect(toolCallingButton.closest(".composer-switches")).not.toBeNull();
+    expect(toolCallingButton).not.toBeDisabled();
+    expect(toolCallingButton).toHaveAttribute("aria-pressed", "false");
+
+    await user.click(toolCallingButton);
+
+    const menu = screen.getByRole("dialog", { name: "工具调用设置" });
+    expect(menu).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "启用" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "启用全部" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "关闭" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /take_snapshot/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /click/ })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByText("读取当前页面结构快照")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "启用全部" }));
+
+    expect(updateActiveSessionChatPreferences).toHaveBeenCalledWith({
+      toolCallingEnabled: true,
+      enabledToolIds: ["browser.take_snapshot", "browser.click"],
+    });
+    await waitFor(() => expect(screen.getByRole("button", { name: "工具调用：已启用" })).toHaveAttribute("aria-pressed", "true"));
+
+    await user.click(screen.getByRole("button", { name: /click/ }));
+
+    expect(updateActiveSessionChatPreferences).toHaveBeenLastCalledWith({ enabledToolIds: ["browser.take_snapshot"] });
+
+    await user.click(document.body);
+
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "工具调用设置" })).not.toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "打开当前聊天设置" }));
+
+    expect(screen.queryByRole("combobox", { name: "当前聊天工具调用" })).not.toBeInTheDocument();
+    expect(screen.queryByText("当前聊天启用工具")).not.toBeInTheDocument();
+    expect(screen.queryByText(/当前聊天工具调用请通过输入区工具图标菜单/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "恢复当前聊天工具设置为全局默认" })).not.toBeInTheDocument();
+
+    const styles = readFileSync(resolve(process.cwd(), "src/side-panel/styles.css"), "utf8");
+    expect(styles).toMatch(/\.composer-tool-menu\s*\{[^}]*@apply\s+fixed/s);
+  });
+
+  it("聊天输入区的工具调用菜单支持空会话、启用关闭和键盘关闭", async () => {
+    const user = userEvent.setup();
+    const updateActiveSessionChatPreferences = vi.fn(async (updates) => {
+      useAppStore.setState((state) => ({
+        chatPreferences: {
+          ...state.chatPreferences,
+          ...updates,
+        },
+      }));
+    });
+    useAppStore.setState({
+      activeSessionId: undefined,
+      chatSessions: [],
+      updateActiveSessionChatPreferences,
+    });
+
+    render(<App />);
+
+    const toolCallingButton = screen.getByRole("button", { name: "工具调用：已关闭" });
+    expect(toolCallingButton).not.toBeDisabled();
+
+    await user.click(toolCallingButton);
+
+    expect(screen.getByRole("dialog", { name: "工具调用设置" })).toBeInTheDocument();
+    expect(screen.getByText("暂无可用工具")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "启用" }));
+    expect(updateActiveSessionChatPreferences).toHaveBeenCalledWith({ toolCallingEnabled: true });
+
+    await user.click(screen.getByRole("button", { name: "关闭" }));
+    expect(updateActiveSessionChatPreferences).toHaveBeenLastCalledWith({ toolCallingEnabled: false });
+
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "工具调用设置" })).not.toBeInTheDocument());
+  });
+
+  it("聊天输入区的工具调用菜单默认和工具按钮中心线对齐", async () => {
+    const user = userEvent.setup();
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 500 });
+    render(<App />);
+
+    const toolCallingButton = screen.getByRole("button", { name: "工具调用：已关闭" });
+    vi.spyOn(toolCallingButton, "getBoundingClientRect").mockReturnValue({
+      x: 260,
+      y: 400,
+      left: 260,
+      right: 296,
+      top: 400,
+      bottom: 436,
+      width: 36,
+      height: 36,
+      toJSON: () => ({}),
+    });
+
+    await user.click(toolCallingButton);
+
+    const menu = screen.getByRole("dialog", { name: "工具调用设置" });
+    await waitFor(() => expect(menu).toHaveStyle({ left: "118px" }));
   });
 
   it("开启 Network 上下文后在发送前展示 DevTools 未连接提示", async () => {

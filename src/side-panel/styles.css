@@ -1177,6 +1177,76 @@ body {
     color: var(--color-primary);
   }
 
+  .composer-switch[aria-pressed="true"] {
+    color: var(--color-primary);
+  }
+
+  .composer-switch:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+  }
+
+  .composer-tool-menu-wrap {
+    @apply relative inline-grid;
+  }
+
+  .composer-tool-menu {
+    @apply fixed z-40 grid w-[min(84vw,320px)] max-w-[calc(100vw-24px)] gap-2 rounded-lg p-2;
+    background: var(--color-surface-soft);
+    border: 1px solid var(--color-hairline);
+    box-shadow: 0 12px 28px color-mix(in srgb, var(--color-surface-dark) 18%, transparent);
+    transform: translateY(-100%);
+  }
+
+  .composer-tool-menu-actions {
+    @apply grid grid-cols-3 gap-1.5;
+  }
+
+  .composer-tool-menu-action {
+    @apply min-h-9 rounded-md px-2 text-sm transition;
+    background: var(--color-canvas);
+    border: 1px solid var(--color-hairline);
+    color: var(--color-body-strong);
+  }
+
+  .composer-tool-menu-action:hover {
+    border-color: color-mix(in srgb, var(--color-primary) 45%, var(--color-hairline));
+    color: var(--color-primary);
+  }
+
+  .composer-tool-menu-list {
+    @apply grid max-h-64 gap-1.5 overflow-y-auto;
+  }
+
+  .composer-tool-menu-item {
+    @apply grid gap-1 rounded-md p-2 text-left transition;
+    background: var(--color-canvas);
+    border: 1px solid var(--color-hairline);
+    color: var(--color-body);
+  }
+
+  .composer-tool-menu-item:hover {
+    border-color: color-mix(in srgb, var(--color-primary) 35%, var(--color-hairline));
+  }
+
+  .composer-tool-menu-item-active {
+    background: color-mix(in srgb, var(--color-primary) 10%, var(--color-canvas));
+    border-color: color-mix(in srgb, var(--color-primary) 55%, var(--color-hairline));
+  }
+
+  .composer-tool-menu-item-name {
+    @apply text-sm font-medium;
+    color: var(--color-body-strong);
+    overflow-wrap: anywhere;
+  }
+
+  .composer-tool-menu-item-description,
+  .composer-tool-menu-empty {
+    @apply text-xs;
+    color: var(--color-muted);
+    overflow-wrap: anywhere;
+  }
+
   .dialog-overlay {
     @apply fixed inset-0;
     background: color-mix(in srgb, var(--color-surface-dark) 42%, transparent);

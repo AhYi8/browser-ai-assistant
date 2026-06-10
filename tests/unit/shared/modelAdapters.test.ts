@@ -4,6 +4,7 @@ import { createListModelsRequest, createModelConfig, parseModelListResponse, tes
 import { createModelRequestPayload } from "../../../src/shared/models/modelRequestPayload";
 import { createOpenAIChatPayload } from "../../../src/shared/models/openaiChatAdapter";
 import { validateModelConfig } from "../../../src/shared/models/modelValidation";
+import type { ModelRequestMessage, ModelToolDefinition } from "../../../src/shared/models/types";
 import type { ChatMessage, ModelConfig, ModelProvider, ProviderModel } from "../../../src/shared/types";
 
 function createModel(overrides: Partial<ModelConfig> = {}): ModelConfig {
@@ -83,6 +84,54 @@ const messages: ChatMessage[] = [
     systemPrompt: "你是网页助手",
     contextPrompt: "网页上下文",
     contextMode: "text",
+  },
+];
+
+const toolDefinition: ModelToolDefinition = {
+  name: "read_page_context",
+  description: "读取当前页面上下文",
+  parameters: {
+    type: "object",
+    properties: {
+      mode: {
+        type: "string",
+        enum: ["text", "all"],
+      },
+    },
+    required: ["mode"],
+    additionalProperties: false,
+  },
+};
+
+const toolMessages: ModelRequestMessage[] = [
+  {
+    id: "user-tool-1",
+    role: "user",
+    content: "读取页面",
+    createdAt: 1,
+    modelId: "model-1",
+    endpointType: "openai_chat",
+    streamMode: false,
+    systemPrompt: "你是网页助手",
+    contextPrompt: "",
+    contextMode: "text",
+  },
+  {
+    role: "assistant",
+    content: "",
+    toolCalls: [
+      {
+        id: "call-1",
+        name: "read_page_context",
+        arguments: { mode: "text" },
+      },
+    ],
+  },
+  {
+    role: "tool",
+    toolCallId: "call-1",
+    name: "read_page_context",
+    content: "页面标题：示例",
   },
 ];
 
@@ -249,6 +298,46 @@ describe("模型适配器", () => {
     expect(payload.body).not.toHaveProperty("response_format");
   });
 
+  it("OpenAI-compatible 请求支持通用工具定义和工具调用历史消息", () => {
+    const payload = createOpenAIChatPayload(createModel(), toolMessages, false, undefined, {
+      tools: [toolDefinition],
+      toolChoice: "auto",
+    });
+
+    expect(payload.body).toMatchObject({
+      tools: [
+        {
+          type: "function",
+          function: toolDefinition,
+        },
+      ],
+      tool_choice: "auto",
+      messages: [
+        { role: "user", content: "读取页面" },
+        {
+          role: "assistant",
+          content: "",
+          tool_calls: [
+            {
+              id: "call-1",
+              type: "function",
+              function: {
+                name: "read_page_context",
+                arguments: '{"mode":"text"}',
+              },
+            },
+          ],
+        },
+        {
+          role: "tool",
+          tool_call_id: "call-1",
+          name: "read_page_context",
+          content: "页面标题：示例",
+        },
+      ],
+    });
+  });
+
   it("OpenAI-compatible 渠道只保存基础端点时自动补全 Chat Completions 路径", () => {
     const payload = createOpenAIChatPayload(
       createModel({
@@ -371,6 +460,57 @@ describe("模型适配器", () => {
     const payload = createAnthropicMessagesPayload(model, messages, false);
 
     expect(payload.url).toBe("https://api.anthropic.com/v1/messages");
+  });
+
+  it("Anthropic 请求支持通用工具定义和 tool_use/tool_result 历史消息", () => {
+    const payload = createAnthropicMessagesPayload(
+      createModel({
+        endpointType: "anthropic_messages",
+        endpointUrl: "https://api.anthropic.com/v1/messages",
+        modelId: "claude-test",
+      }),
+      toolMessages,
+      false,
+      {
+        tools: [toolDefinition],
+        toolChoice: "auto",
+      },
+    );
+
+    expect(payload.body).toMatchObject({
+      tools: [
+        {
+          name: "read_page_context",
+          description: "读取当前页面上下文",
+          input_schema: toolDefinition.parameters,
+        },
+      ],
+      tool_choice: { type: "auto" },
+      messages: [
+        { role: "user", content: "读取页面" },
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: "call-1",
+              name: "read_page_context",
+              input: { mode: "text" },
+            },
+          ],
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "call-1",
+              content: "页面标题：示例",
+            },
+          ],
+        },
+      ],
+    });
   });
 
   it("创建聊天模型配置时允许用聊天偏好覆盖采样参数", () => {

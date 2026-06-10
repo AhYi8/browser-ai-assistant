@@ -3,7 +3,8 @@ import { buildChatRequestMessages, buildPromptExpandedUserContent } from "../../
 import { createModelConfig } from "../../shared/chat/modelConfig";
 import { createPageContextPrompt } from "../../shared/chat/pageContextPrompt";
 import type { RemoteModelInfo } from "../../shared/models/modelCatalog";
-import type { OpenAIStructuredOutputFormat } from "../../shared/models/types";
+import { getRegisteredModelTools, normalizeEnabledToolIds, resolveEnabledModelTools } from "../../shared/models/toolRegistry";
+import type { ModelToolChoice, OpenAIStructuredOutputFormat } from "../../shared/models/types";
 import {
   createNetworkContextPrompt,
   createNetworkMetadataPrompt,
@@ -283,6 +284,8 @@ const DEFAULT_CHAT_PREFERENCES: ChatPreferenceValues = {
   networkRelevanceBatchSize: 50,
   networkRequestTypeFilters: DEFAULT_NETWORK_REQUEST_TYPE_FILTERS,
   webSearchPolicy: "first_message",
+  toolCallingEnabled: false,
+  enabledToolIds: [],
   temperature: 0.7,
   maxTokens: 1024,
   topK: undefined,
@@ -1587,6 +1590,8 @@ function normalizeChatPreferences(value?: Partial<ChatPreferenceValues>): ChatPr
     networkRelevanceBatchSize: Math.round(normalizeNumber(value?.networkRelevanceBatchSize, DEFAULT_CHAT_PREFERENCES.networkRelevanceBatchSize, 1, 10_000)),
     networkRequestTypeFilters: normalizeNetworkRequestTypeFilters(value?.networkRequestTypeFilters),
     webSearchPolicy: normalizeWebSearchPolicy(value?.webSearchPolicy),
+    toolCallingEnabled: normalizeBoolean(value?.toolCallingEnabled, DEFAULT_CHAT_PREFERENCES.toolCallingEnabled),
+    enabledToolIds: normalizeEnabledToolIds(value?.enabledToolIds),
     temperature: normalizeNumber(value?.temperature, DEFAULT_CHAT_PREFERENCES.temperature, 0, 2),
     maxTokens: Math.round(normalizeNumber(value?.maxTokens, DEFAULT_CHAT_PREFERENCES.maxTokens, 1, 200_000)),
     topK: normalizeOptionalInteger(value?.topK, 1, 1_000),
@@ -1653,6 +1658,12 @@ function normalizeChatPreferenceOverrides(value?: ChatSessionPreferenceOverrides
   if (value?.webSearchMaxResults !== undefined) {
     overrides.webSearchMaxResults = normalizeTavilyMaxResults(value.webSearchMaxResults);
   }
+  if (value?.toolCallingEnabled !== undefined) {
+    overrides.toolCallingEnabled = normalizeBoolean(value.toolCallingEnabled, DEFAULT_CHAT_PREFERENCES.toolCallingEnabled);
+  }
+  if (value?.enabledToolIds !== undefined) {
+    overrides.enabledToolIds = normalizeEnabledToolIds(value.enabledToolIds);
+  }
   if (value?.temperature !== undefined) {
     overrides.temperature = normalizeNumber(value.temperature, DEFAULT_CHAT_PREFERENCES.temperature, 0, 2);
   }
@@ -1675,6 +1686,8 @@ function resolveEffectiveChatPreferences(
     networkRelevanceBatchSize: overrides?.networkRelevanceBatchSize ?? preferences.networkRelevanceBatchSize,
     networkRequestTypeFilters: overrides?.networkRequestTypeFilters ?? preferences.networkRequestTypeFilters,
     webSearchPolicy: overrides?.webSearchPolicy ?? preferences.webSearchPolicy,
+    toolCallingEnabled: overrides?.toolCallingEnabled ?? preferences.toolCallingEnabled,
+    enabledToolIds: overrides?.enabledToolIds ?? preferences.enabledToolIds,
     temperature: overrides?.temperature ?? preferences.temperature,
     maxTokens: overrides?.maxTokens ?? preferences.maxTokens,
     topK: overrides?.topK ?? preferences.topK,
@@ -1685,6 +1698,8 @@ function resolveEffectiveChatPreferences(
     networkRelevanceBatchSize: normalizedOverrides.networkRelevanceBatchSize ?? preferences.networkRelevanceBatchSize,
     networkRequestTypeFilters: normalizedOverrides.networkRequestTypeFilters ?? preferences.networkRequestTypeFilters,
     webSearchPolicy: normalizedOverrides.webSearchPolicy ?? preferences.webSearchPolicy,
+    toolCallingEnabled: normalizedOverrides.toolCallingEnabled ?? preferences.toolCallingEnabled,
+    enabledToolIds: normalizedOverrides.enabledToolIds ?? preferences.enabledToolIds,
     temperature: normalizedOverrides.temperature ?? preferences.temperature,
     maxTokens: normalizedOverrides.maxTokens ?? preferences.maxTokens,
     topK: normalizedOverrides.topK,
@@ -1755,12 +1770,14 @@ async function getCurrentTabUrlForGeneration(debugRequestId: string): Promise<{ 
 type StoreGetter = StoreApi<AppState>["getState"];
 type StoreSetter = StoreApi<AppState>["setState"];
 
-type ChatSendMessage = {
+type AppChatSendMessage = {
   type: "chat.send";
   model: ReturnType<typeof createModelConfig>;
   messages: ChatMessage[];
   stream: boolean;
   structuredOutput?: OpenAIStructuredOutputFormat;
+  enabledToolIds?: string[];
+  toolChoice?: ModelToolChoice;
 };
 
 type NetworkContextSnapshotResponse =
@@ -1848,6 +1865,8 @@ type EffectiveChatPreferences = Required<
     | "networkRelevanceBatchSize"
     | "networkRequestTypeFilters"
     | "webSearchPolicy"
+    | "toolCallingEnabled"
+    | "enabledToolIds"
     | "temperature"
     | "maxTokens"
   >
@@ -2154,7 +2173,12 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
       : Promise.resolve();
     void titleGenerationPromise;
 
-    const request: ChatSendMessage = {
+    const enabledTools = effectiveChatPreferences.toolCallingEnabled
+      ? resolveEnabledModelTools(getRegisteredModelTools(), effectiveChatPreferences.enabledToolIds)
+      : [];
+    const enabledToolIds = enabledTools.map((tool) => tool.id);
+    const requestStreamMode = enabledTools.length > 0 ? false : input.state.streamMode;
+    const request: AppChatSendMessage = {
       type: "chat.send",
       model: modelConfig,
       messages: buildChatRequestMessages({
@@ -2165,10 +2189,16 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
         systemPrompt: effectiveChatPreferences.systemPrompt,
         appendPageContextToSystemPrompt: input.state.appendPageContextToSystemPrompt,
       }),
-      stream: input.state.streamMode,
+      stream: requestStreamMode,
+      ...(enabledTools.length > 0
+        ? {
+            enabledToolIds,
+            toolChoice: "auto",
+          }
+        : {}),
     };
 
-    if (input.state.streamMode) {
+    if (requestStreamMode) {
       const streamResult = await sendStreamingChatMessage({
         set: input.set,
         sessionId: nextSession.id,
@@ -2213,7 +2243,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
       createdAt: assistantCreatedAt,
       modelId: input.model.id,
       endpointType: input.provider.endpointType,
-      streamMode: input.state.streamMode,
+      streamMode: requestStreamMode,
       systemPrompt: effectiveChatPreferences.systemPrompt,
       contextPrompt: input.pageContextPrompt,
       contextMode: input.state.contextMode,
@@ -2304,7 +2334,7 @@ const NETWORK_RELEVANCE_TOOL_OUTPUT = {
 
 async function prepareNetworkContextForRequest(input: {
   userMessage: ChatMessage;
-  modelConfig: ChatSendMessage["model"];
+  modelConfig: AppChatSendMessage["model"];
   endpointType: EndpointType;
   networkRelevancePrompt: string;
   networkRelevanceBatchSize: number;
@@ -2486,7 +2516,7 @@ async function prepareWebSearchContextForRequest(input: {
 }
 
 async function selectRelevantNetworkRequestBatches(input: {
-  modelConfig: ChatSendMessage["model"];
+  modelConfig: AppChatSendMessage["model"];
   endpointType: EndpointType;
   userDemand: string;
   requests: NetworkRequestMeta[];
@@ -2531,7 +2561,7 @@ async function selectRelevantNetworkRequestBatches(input: {
 }
 
 async function selectRelevantNetworkRequestBatchWithRetry(input: {
-  modelConfig: ChatSendMessage["model"];
+  modelConfig: AppChatSendMessage["model"];
   messages: ChatMessage[];
   requests: NetworkRequestMeta[];
 }): Promise<{ ok: true; requestIds: string[] } | Extract<NetworkRelevanceResponse, { ok: false }>> {
@@ -2555,7 +2585,7 @@ async function selectRelevantNetworkRequestBatchWithRetry(input: {
 }
 
 async function selectRelevantNetworkRequests(input: {
-  modelConfig: ChatSendMessage["model"];
+  modelConfig: AppChatSendMessage["model"];
   messages: ChatMessage[];
 }): Promise<NetworkRelevanceResponse | undefined> {
   const attempts: Array<{
@@ -2615,7 +2645,7 @@ function isStructuredOutputUnsupported(response: NetworkRelevanceResponse | unde
 }
 
 function createNetworkRelevanceMessages(input: {
-  model: ChatSendMessage["model"];
+  model: AppChatSendMessage["model"];
   endpointType: EndpointType;
   userDemand: string;
   requests: NetworkRequestMeta[];
@@ -2835,7 +2865,7 @@ interface StreamingChatInput {
   privateMode?: boolean;
   networkContextAttachment?: ChatNetworkContextAttachment;
   webSearchContextAttachment?: ChatWebSearchContextAttachment;
-  request: ChatSendMessage;
+  request: AppChatSendMessage;
 }
 
 async function sendStreamingChatMessage(input: StreamingChatInput): Promise<StreamingChatResult> {

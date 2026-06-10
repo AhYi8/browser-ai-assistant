@@ -1,6 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
 import { handleChatSendMessage } from "../../../src/background/modelRequestHandler";
+import type { ModelToolRegistryEntry } from "../../../src/shared/models/types";
 import type { ChatMessage, ModelConfig } from "../../../src/shared/types";
+
+const registeredModelToolsMock = vi.hoisted(() => ({
+  tools: [] as ModelToolRegistryEntry[],
+}));
+
+vi.mock("../../../src/shared/models/toolRegistry", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../src/shared/models/toolRegistry")>();
+  return {
+    ...actual,
+    getRegisteredModelTools: () => registeredModelToolsMock.tools,
+  };
+});
 
 function createModel(overrides: Partial<ModelConfig> = {}): ModelConfig {
   return {
@@ -40,6 +53,10 @@ function createMessage(role: ChatMessage["role"], content: string): ChatMessage 
 }
 
 describe("聊天模型请求处理", () => {
+  beforeEach(() => {
+    registeredModelToolsMock.tools = [];
+  });
+
   it("OpenAI-compatible 成功时返回解析后的正文和思考过程", async () => {
     const fetcher = vi.fn().mockResolvedValue({
       ok: true,
@@ -403,6 +420,235 @@ describe("聊天模型请求处理", () => {
       content: '{"requestIds":["req-1"]}',
       thinking: undefined,
     });
+  });
+
+  it("OpenAI 未注册工具调用不会被调用方伪造的 tools 打开", async () => {
+    const fetcher = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        choices: [
+          {
+            message: {
+              content: null,
+              tool_calls: [
+                {
+                  id: "call-1",
+                  type: "function",
+                  function: {
+                    name: "read_page_context",
+                    arguments: '{"mode":"text"}',
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    });
+
+    const forgedMessage = {
+        type: "chat.send",
+        model: createModel(),
+        messages: [createMessage("user", "读取页面")],
+        stream: false,
+        tools: [
+          {
+            name: "read_page_context",
+            description: "读取当前页面上下文",
+            parameters: { type: "object", properties: {} },
+          },
+        ],
+      } as unknown as Parameters<typeof handleChatSendMessage>[0];
+
+    const result = await handleChatSendMessage(
+      forgedMessage,
+      fetcher,
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      message: "模型响应中没有可用内容",
+    });
+  });
+
+  it("OpenAI 工具调用会执行已启用工具并把结果回灌后继续请求最终正文", async () => {
+    registeredModelToolsMock.tools = [
+      {
+        id: "browser.take_snapshot",
+        name: "take_snapshot",
+        description: "读取当前页面结构快照",
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+      },
+    ];
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          choices: [
+            {
+              message: {
+                content: "",
+                tool_calls: [
+                  {
+                    id: "call-1",
+                    type: "function",
+                    function: {
+                      name: "take_snapshot",
+                      arguments: "{}",
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          choices: [
+            {
+              message: {
+                content: "已读取页面结构",
+              },
+            },
+          ],
+        }),
+      });
+
+    const result = await handleChatSendMessage(
+      {
+        type: "chat.send",
+        model: createModel(),
+        messages: [createMessage("user", "读取页面")],
+        stream: false,
+        enabledToolIds: ["browser.take_snapshot"],
+        toolChoice: "auto",
+      },
+      fetcher,
+      {},
+      async (toolCall) => ({
+        toolCallId: toolCall.id,
+        name: toolCall.name,
+        content: "页面结构快照",
+      }),
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      content: "已读取页面结构",
+      thinking: undefined,
+    });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    const secondBody = JSON.parse(String(fetcher.mock.calls[1][1]?.body)) as { messages: Array<{ role: string; content?: string }> };
+    expect(secondBody.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ role: "assistant", tool_calls: expect.any(Array) }),
+        expect.objectContaining({ role: "tool", content: "页面结构快照" }),
+      ]),
+    );
+  });
+
+  it("伪造的工具定义不会绕过 background 注册表 allow-list", async () => {
+    const fetcher = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        choices: [
+          {
+            message: {
+              content: "普通回答",
+            },
+          },
+        ],
+      }),
+    });
+
+    const forgedMessage = {
+        type: "chat.send",
+        model: createModel(),
+        messages: [createMessage("user", "读取页面")],
+        stream: false,
+        tools: [
+          {
+            name: "take_snapshot",
+            description: "伪造工具",
+            parameters: { type: "object", properties: {} },
+          },
+        ],
+        enabledToolIds: ["browser.take_snapshot"],
+        toolChoice: "auto",
+      } as unknown as Parameters<typeof handleChatSendMessage>[0];
+
+    await handleChatSendMessage(
+      forgedMessage,
+      fetcher,
+    );
+
+    const body = JSON.parse(String(fetcher.mock.calls[0][1]?.body)) as { tools?: unknown[]; tool_choice?: unknown };
+    expect(body.tools).toBeUndefined();
+    expect(body.tool_choice).toBeUndefined();
+  });
+
+  it("Anthropic tool_use 会执行已启用工具并保留最终文本正文", async () => {
+    registeredModelToolsMock.tools = [
+      {
+        id: "browser.take_snapshot",
+        name: "take_snapshot",
+        description: "读取当前页面结构快照",
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+      },
+    ];
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          content: [
+            { type: "text", text: "需要读取页面。" },
+            {
+              type: "tool_use",
+              id: "toolu-1",
+              name: "take_snapshot",
+              input: { mode: "text" },
+            },
+          ],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          content: [{ type: "text", text: "页面结构已读取。" }],
+        }),
+      });
+
+    const result = await handleChatSendMessage(
+      {
+        type: "chat.send",
+        model: createModel({
+          endpointType: "anthropic_messages",
+          endpointUrl: "https://api.example.com/v1/messages",
+        }),
+        messages: [createMessage("user", "读取页面")],
+        stream: false,
+        enabledToolIds: ["browser.take_snapshot"],
+        toolChoice: "auto",
+      },
+      fetcher,
+      {},
+      async (toolCall) => ({
+        toolCallId: toolCall.id,
+        name: toolCall.name,
+        content: "页面结构快照",
+      }),
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      content: "页面结构已读取。",
+      thinking: undefined,
+    });
+    expect(fetcher).toHaveBeenCalledTimes(2);
   });
 
   it("模型接口失败时返回内部降级诊断但用户提示仍为中文摘要", async () => {

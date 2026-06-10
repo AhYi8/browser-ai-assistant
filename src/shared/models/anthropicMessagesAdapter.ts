@@ -1,18 +1,21 @@
-import type { ChatImageAttachment, ChatMessage, ModelConfig } from "../types";
+import type { ChatImageAttachment, ModelConfig } from "../types";
 import { createEndpointUrl } from "./modelCatalog";
-import type { ModelRequestPayload } from "./types";
+import type { ModelRequestMessage, ModelRequestPayload, ModelToolCall, ModelToolChoice, ModelToolOptions } from "./types";
 
 type AnthropicMessageContent =
   | string
   | Array<
       | { type: "text"; text: string }
       | { type: "image"; source: { type: "base64"; media_type: string; data: string } }
+      | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> }
+      | { type: "tool_result"; tool_use_id: string; content: string; is_error?: boolean }
     >;
 
 export function createAnthropicMessagesPayload(
   model: ModelConfig,
-  messages: ChatMessage[],
+  messages: ModelRequestMessage[],
   stream: boolean,
+  toolOptions: ModelToolOptions = {},
 ): ModelRequestPayload {
   const system = messages.find((message) => message.role === "system")?.content || model.systemPrompt;
 
@@ -21,10 +24,7 @@ export function createAnthropicMessagesPayload(
     system,
     messages: messages
       .filter((message) => message.role !== "system")
-      .map((message) => ({
-        role: message.role,
-        content: createAnthropicMessageContent(message.content, message.attachments),
-      })),
+      .map(createAnthropicMessage),
     temperature: model.temperature,
     max_tokens: model.maxTokens,
     stream,
@@ -32,6 +32,17 @@ export function createAnthropicMessagesPayload(
 
   if (typeof model.topK === "number") {
     body.top_k = model.topK;
+  }
+
+  if (toolOptions.tools?.length) {
+    body.tools = toolOptions.tools.map((tool) => ({
+      name: tool.name,
+      ...(tool.description ? { description: tool.description } : {}),
+      input_schema: tool.parameters,
+    }));
+    if (toolOptions.toolChoice) {
+      body.tool_choice = createAnthropicToolChoice(toolOptions.toolChoice);
+    }
   }
 
   return {
@@ -42,6 +53,59 @@ export function createAnthropicMessagesPayload(
       "anthropic-version": "2023-06-01",
     },
     body,
+  };
+}
+
+function createAnthropicMessage(message: ModelRequestMessage): { role: "user" | "assistant"; content: AnthropicMessageContent } {
+  if (message.role === "tool") {
+    return {
+      role: "user",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: message.toolCallId,
+          content: message.content,
+          ...(message.isError ? { is_error: true } : {}),
+        },
+      ],
+    };
+  }
+
+  if (message.role === "assistant" && "toolCalls" in message && message.toolCalls.length > 0) {
+    const contentBlocks: Exclude<AnthropicMessageContent, string> = [];
+    if (message.content.trim()) {
+      contentBlocks.push({ type: "text", text: message.content });
+    }
+    contentBlocks.push(...message.toolCalls.map(createAnthropicToolUseBlock));
+    return {
+      role: "assistant",
+      content: contentBlocks,
+    };
+  }
+
+  return {
+    role: message.role === "assistant" ? "assistant" : "user",
+    content: createAnthropicMessageContent(message.content, "attachments" in message ? message.attachments : undefined),
+  };
+}
+
+function createAnthropicToolUseBlock(toolCall: ModelToolCall): { type: "tool_use"; id: string; name: string; input: Record<string, unknown> } {
+  return {
+    type: "tool_use",
+    id: toolCall.id,
+    name: toolCall.name,
+    input: toolCall.arguments,
+  };
+}
+
+function createAnthropicToolChoice(toolChoice: ModelToolChoice): unknown {
+  if (toolChoice === "auto" || toolChoice === "none") {
+    return { type: toolChoice };
+  }
+
+  return {
+    type: "tool",
+    name: toolChoice.name,
   };
 }
 

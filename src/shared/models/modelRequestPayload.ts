@@ -1,17 +1,18 @@
 import { createAnthropicMessagesPayload } from "./anthropicMessagesAdapter";
 import { createOpenAIChatPayload } from "./openaiChatAdapter";
-import type { OpenAIStructuredOutputFormat } from "./types";
-import type { ChatMessage, ModelConfig } from "../types";
+import type { ModelRequestMessage, ModelToolOptions, OpenAIStructuredOutputFormat } from "./types";
+import type { ModelConfig } from "../types";
 
 export function createModelRequestPayload(
   model: ModelConfig,
-  messages: ChatMessage[],
+  messages: ModelRequestMessage[],
   stream: boolean,
   structuredOutput?: OpenAIStructuredOutputFormat,
+  toolOptions: ModelToolOptions = {},
 ) {
   if (model.endpointType === "anthropic_messages") {
-    return createAnthropicMessagesPayload(model, messages, stream);
+    return createAnthropicMessagesPayload(model, messages, stream, toolOptions);
   }
 
-  return createOpenAIChatPayload(model, messages, stream, structuredOutput);
+  return createOpenAIChatPayload(model, messages, stream, structuredOutput, toolOptions);
 }

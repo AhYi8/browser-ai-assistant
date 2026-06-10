@@ -1,6 +1,6 @@
-import type { ChatImageAttachment, ChatMessage, ModelConfig } from "../types";
+import type { ChatImageAttachment, ModelConfig } from "../types";
 import { createEndpointUrl } from "./modelCatalog";
-import type { ModelRequestPayload, OpenAIStructuredOutputFormat } from "./types";
+import type { ModelRequestMessage, ModelRequestPayload, ModelToolCall, ModelToolChoice, ModelToolOptions, OpenAIStructuredOutputFormat } from "./types";
 
 type OpenAIMessageContent =
   | string
@@ -11,16 +11,14 @@ type OpenAIMessageContent =
 
 export function createOpenAIChatPayload(
   model: ModelConfig,
-  messages: ChatMessage[],
+  messages: ModelRequestMessage[],
   stream: boolean,
   structuredOutput?: OpenAIStructuredOutputFormat,
+  toolOptions: ModelToolOptions = {},
 ): ModelRequestPayload {
   const body: Record<string, unknown> = {
     model: model.modelId,
-    messages: messages.map((message) => ({
-      role: message.role,
-      content: createOpenAIMessageContent(message.content, message.attachments),
-    })),
+    messages: messages.map(createOpenAIMessage),
     temperature: model.temperature,
     max_tokens: model.maxTokens,
     stream,
@@ -49,6 +47,16 @@ export function createOpenAIChatPayload(
     };
   }
 
+  if (!structuredOutput && toolOptions.tools?.length) {
+    body.tools = toolOptions.tools.map((tool) => ({
+      type: "function",
+      function: tool,
+    }));
+    if (toolOptions.toolChoice) {
+      body.tool_choice = createOpenAIToolChoice(toolOptions.toolChoice);
+    }
+  }
+
   return {
     url: createEndpointUrl(model.endpointUrl, "openai_chat"),
     headers: {
@@ -56,6 +64,52 @@ export function createOpenAIChatPayload(
       Authorization: `Bearer ${model.apiKey}`,
     },
     body,
+  };
+}
+
+function createOpenAIMessage(message: ModelRequestMessage): Record<string, unknown> {
+  if (message.role === "tool") {
+    return {
+      role: "tool",
+      tool_call_id: message.toolCallId,
+      name: message.name,
+      content: message.content,
+    };
+  }
+
+  const base: Record<string, unknown> = {
+    role: message.role,
+    content: createOpenAIMessageContent(message.content, "attachments" in message ? message.attachments : undefined),
+  };
+
+  if (message.role === "assistant" && "toolCalls" in message && message.toolCalls.length > 0) {
+    base.tool_calls = message.toolCalls.map(createOpenAIToolCall);
+  }
+
+  return base;
+}
+
+function createOpenAIToolCall(toolCall: ModelToolCall): Record<string, unknown> {
+  return {
+    id: toolCall.id,
+    type: "function",
+    function: {
+      name: toolCall.name,
+      arguments: JSON.stringify(toolCall.arguments),
+    },
+  };
+}
+
+function createOpenAIToolChoice(toolChoice: ModelToolChoice): unknown {
+  if (toolChoice === "auto" || toolChoice === "none") {
+    return toolChoice;
+  }
+
+  return {
+    type: "function",
+    function: {
+      name: toolChoice.name,
+    },
   };
 }
 

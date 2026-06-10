@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { DragEvent } from "react";
 import { NETWORK_REQUEST_TYPE_FILTER_OPTIONS } from "../../shared/networkContext";
+import { getRegisteredModelTools } from "../../shared/models/toolRegistry";
 import type {
   ChatPreferenceValues,
   ExtractionRule,
@@ -1014,6 +1015,7 @@ function PromptTemplateEditor({ draft, validationMessage, onChange, onSave, onDe
 function ChatPreferenceSettings() {
   const chatPreferences = useAppStore((state) => state.chatPreferences);
   const updateChatPreferences = useAppStore((state) => state.updateChatPreferences);
+  const registeredTools = getRegisteredModelTools();
   const systemPromptInput = useComposedTextInput(chatPreferences.systemPrompt, (systemPrompt) => {
     void updateChatPreferences({ systemPrompt });
   });
@@ -1027,6 +1029,10 @@ function ChatPreferenceSettings() {
     }
 
     void updateChatPreferences({ networkRequestTypeFilters: nextFilters });
+  };
+  const handleToolToggle = (toolId: string, checked: boolean) => {
+    const nextToolIds = checked ? [...chatPreferences.enabledToolIds, toolId] : chatPreferences.enabledToolIds.filter((id) => id !== toolId);
+    void updateChatPreferences({ enabledToolIds: Array.from(new Set(nextToolIds)) });
   };
 
   return (
@@ -1108,6 +1114,40 @@ function ChatPreferenceSettings() {
             </label>
           ))}
         </div>
+      </fieldset>
+      <fieldset className="chat-preference-network-types">
+        <legend className="text-sm">工具调用</legend>
+        <label className="chat-preference-switch">
+          <input
+            className="chat-preference-switch-input"
+            type="checkbox"
+            checked={chatPreferences.toolCallingEnabled}
+            onChange={(event) => void updateChatPreferences({ toolCallingEnabled: event.target.checked })}
+          />
+          <span className="chat-preference-switch-control" aria-hidden="true">
+            <span className="chat-preference-switch-thumb" />
+          </span>
+          <span className="chat-preference-switch-label">启用工具调用</span>
+        </label>
+        <p className="ui-muted text-xs">启用工具调用且存在已启用工具时，将自动使用非流式请求。</p>
+        {registeredTools.length > 0 ? (
+          <div className="chat-preference-network-type-list">
+            {registeredTools.map((tool) => (
+              <label key={tool.id} className="chat-preference-network-type-chip">
+                <input
+                  type="checkbox"
+                  aria-label={`启用工具 ${tool.name}`}
+                  checked={chatPreferences.enabledToolIds.includes(tool.id)}
+                  disabled={!chatPreferences.toolCallingEnabled}
+                  onChange={(event) => handleToolToggle(tool.id, event.target.checked)}
+                />
+                <span>{tool.name}</span>
+              </label>
+            ))}
+          </div>
+        ) : (
+          <p className="ui-muted text-xs">暂无可用工具</p>
+        )}
       </fieldset>
       <label className="chat-preference-field">
         发送快捷键

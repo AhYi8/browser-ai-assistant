@@ -34,7 +34,6 @@ export function ChatPreferenceDrawer({ open, onOpenChange }: ChatPreferenceDrawe
 
     void updateActiveSessionChatPreferences({ networkRequestTypeFilters: nextFilters });
   };
-
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>

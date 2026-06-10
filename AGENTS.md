@@ -283,6 +283,19 @@
 * 新增搜索渠道时必须通过 `WebSearchProviderType` 扩展配置和附件类型，不能把渠道特有字段硬编码到聊天主流程。
 * 渠道管理中模型渠道 item 的展开/折叠只控制当前渠道详情；默认对话模型、AI 标题生成模型和模型列表属于渠道管理配置主体，不得放进单个渠道 item 的折叠内容中。
 
+### 10.15 原生工具调用基础
+
+* OpenAI Compatible 与 Anthropic 的原生工具调用必须共用协议无关的 `ModelToolDefinition`、`ModelToolCall`、`ModelToolResult`、`ModelRequestMessage` 等类型，避免在业务层直接拼各协议私有结构。
+* 工具调用总开关默认关闭；每个工具必须通过独立工具 ID 显式启用，当前聊天设置覆盖全局聊天偏好。
+* 工具注册表是唯一 allow-list；runtime 消息只传 `enabledToolIds`，background 必须基于注册表和 `enabledToolIds` 自行生成可暴露工具定义，不能信任 UI 或 runtime message 传入的任意 `tools` 定义；`tools` 只允许作为 background 内部净化后的模型请求选项；模型返回的工具名只有匹配已注册且已启用的工具时才允许执行，不能按模型输出动态执行未知工具。
+* 模型返回的工具参数属于外部输入，必须解析并校验为普通对象；非法 JSON、数组、空值或非对象参数必须作为中文工具错误回灌，不能静默执行。
+* 模型响应解析层发现工具参数非法时，必须写入 `ModelToolCall.parseError`；工具循环层必须基于该字段拒绝执行并把中文错误结果回灌给模型。
+* 工具调用请求使用非流式工具循环；普通聊天在未暴露工具时继续遵循用户的流式偏好。
+* 当前聊天工具调用入口必须放在 `.composer-actions` 的紧凑图标弹窗按钮中，按钮通过非激活/激活状态提示当前会话是否启用；弹窗内提供“启用”“启用全部”“关闭”和单工具启用列表，单工具激活态必须用边框与底色区分；弹窗默认按 `.composer-tool-menu-wrap` 中心线对齐并在靠近视口边缘时夹住不溢出；当前聊天设置抽屉不承载工具调用配置，避免形成重复入口。
+* 工具调用设置 UI 必须提示“启用工具且存在已启用工具时会自动使用非流式请求”；当前聊天的单工具启停统一通过输入区工具图标弹窗完成，避免多个入口状态不一致。
+* Network 相关性筛选使用的 `structuredOutput` 属于内部结构化输出能力，不受用户工具调用总开关影响，避免破坏现有 Network 分析降级链路。
+* 新增具体工具时必须补充工具注册、启用/禁用、参数校验、工具结果回灌和禁用状态拒绝执行的单元测试。
+
 ## 11. 前端设计系统约束
 
 本项目的前端视觉风格采用 VoltAgent `awesome-design-md` 中的 Claude 设计规范，来源：`https://github.com/VoltAgent/awesome-design-md/blob/main/design-md/claude/DESIGN.md`。

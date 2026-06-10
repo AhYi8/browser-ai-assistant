@@ -1437,6 +1437,60 @@ describe("appStore", () => {
     expect(useAppStore.getState().contextMode).toBe("text");
   });
 
+  it("工具调用偏好旧数据缺失或脏数据时默认关闭并过滤非法工具 ID", async () => {
+    await saveAppSetting({
+      key: "chatPreferences",
+      value: {
+        systemPrompt: "全局系统提示",
+        temperature: 0.4,
+        maxTokens: 2048,
+        toolCallingEnabled: "true",
+        enabledToolIds: ["page.read_context", "", "../bad", 123],
+      },
+      updatedAt: 2,
+    });
+
+    await useAppStore.getState().loadChannelConfig();
+
+    expect(useAppStore.getState().chatPreferences.toolCallingEnabled).toBe(false);
+    expect(useAppStore.getState().chatPreferences.enabledToolIds).toEqual(["page.read_context"]);
+  });
+
+  it("可以保存全局工具调用总开关和单工具启用列表", async () => {
+    await useAppStore.getState().updateChatPreferences({
+      toolCallingEnabled: true,
+      enabledToolIds: ["page.read_context"],
+    });
+
+    expect(useAppStore.getState().chatPreferences.toolCallingEnabled).toBe(true);
+    expect(useAppStore.getState().chatPreferences.enabledToolIds).toEqual(["page.read_context"]);
+    expect(await getAppSetting("chatPreferences")).toMatchObject({
+      toolCallingEnabled: true,
+      enabledToolIds: ["page.read_context"],
+    });
+  });
+
+  it("会话级工具调用覆盖优先保存到当前会话", async () => {
+    const provider = createProvider();
+    const model = createModel();
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    await useAppStore.getState().updateActiveSessionChatPreferences({
+      toolCallingEnabled: true,
+      enabledToolIds: ["page.read_context"],
+    });
+
+    const activeSessionId = useAppStore.getState().activeSessionId;
+    const session = await getChatSession(activeSessionId);
+    expect(session?.chatPreferenceOverrides).toMatchObject({
+      toolCallingEnabled: true,
+      enabledToolIds: ["page.read_context"],
+    });
+  });
+
   it("保存新对话默认提取 HTML 后直接发送首问使用 all 模式", async () => {
     const provider = createProvider();
     const model = createModel();

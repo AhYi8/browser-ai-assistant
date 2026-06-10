@@ -1,5 +1,6 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, ClipboardEvent as ReactClipboardEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
+import { getRegisteredModelTools } from "../../shared/models/toolRegistry";
 import { isPngDataUrl, isTabCaptureImageAttachment, TAB_CAPTURE_VISIBLE_MESSAGE_TYPE, type TabCaptureVisibleResponse } from "../../shared/tabCapture";
 import type { ChatImageAttachment, ChatPromptInvocation, PromptTemplate, SendShortcut } from "../../shared/types";
 import { useAppStore } from "../state/appStore";
@@ -13,6 +14,7 @@ const SWITCH_ICON_PATHS = {
   stream: "M13 2 5 14h6l-1 8 8-12h-6l1-8Z",
   network: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Zm0 0c2.4 2.5 3.6 5.5 3.6 9S14.4 18.5 12 21m0-18C9.6 5.5 8.4 8.5 8.4 12s1.2 6.5 3.6 9M3.6 9h16.8M3.6 15h16.8",
   webSearch: "M10.5 18a7.5 7.5 0 1 1 5.3-2.2L21 21M8.5 10.5h4M10.5 8.5v4",
+  toolCalling: "M14.7 6.3a4 4 0 0 0-5 5L4 17v3h3l5.7-5.7a4 4 0 0 0 5-5l-2.6 2.6-3-3 2.6-2.6Z",
   extractText: "M6 4h12M6 8h12M6 12h8M6 16h12M6 20h8",
   extractAll: "M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3M8 9h8M8 13h8M8 17h5",
 } as const;
@@ -27,14 +29,24 @@ interface ChatComposerProps {
 interface ComposerSwitchProps {
   ariaLabel: string;
   checked: boolean;
+  disabled?: boolean;
   icon: SwitchIconName;
   label: string;
   onToggle: () => void;
 }
 
-function ComposerSwitch({ ariaLabel, checked, icon, label, onToggle }: ComposerSwitchProps) {
+function ComposerSwitch({ ariaLabel, checked, disabled, icon, label, onToggle }: ComposerSwitchProps) {
   return (
-    <button className="composer-switch" type="button" role="switch" aria-label={ariaLabel} aria-checked={checked} title={label} onClick={onToggle}>
+    <button
+      className="composer-switch"
+      type="button"
+      role="switch"
+      aria-label={ariaLabel}
+      aria-checked={checked}
+      disabled={disabled}
+      title={label}
+      onClick={onToggle}
+    >
       <svg className="composer-switch-icon" viewBox="0 0 24 24" aria-hidden="true">
         <path d={SWITCH_ICON_PATHS[icon]} />
       </svg>
@@ -53,10 +65,22 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   const [attachmentError, setAttachmentError] = useState("");
   const [previewAttachment, setPreviewAttachment] = useState<ChatImageAttachment | undefined>();
   const [contextDialogOpen, setContextDialogOpen] = useState(false);
+  const [toolMenuOpen, setToolMenuOpen] = useState(false);
+  const [toolMenuPosition, setToolMenuPosition] = useState<{ left: number; top: number } | undefined>();
   const [composing, setComposing] = useState(false);
   const imageInputId = useId();
+  const toolMenuRef = useRef<HTMLDivElement | null>(null);
+  const toolMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const currentModelSupportsVision = useAppStore((state) => Boolean(state.models.find((model) => model.id === state.selectedModelId)?.supportsVision));
   const sendShortcut = useAppStore((state) => state.chatPreferences.sendShortcut);
+  const toolCallingEnabled = useAppStore((state) => {
+    const activeSession = state.chatSessions.find((session) => session.id === state.activeSessionId);
+    return activeSession?.chatPreferenceOverrides?.toolCallingEnabled ?? state.chatPreferences.toolCallingEnabled;
+  });
+  const enabledToolIds = useAppStore((state) => {
+    const activeSession = state.chatSessions.find((session) => session.id === state.activeSessionId);
+    return activeSession?.chatPreferenceOverrides?.enabledToolIds ?? state.chatPreferences.enabledToolIds;
+  });
   const promptTemplates = useAppStore((state) => state.promptTemplates);
   const streamMode = useAppStore((state) => state.streamMode);
   const networkContextEnabled = useAppStore((state) => state.networkContextEnabled);
@@ -77,10 +101,12 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   const setContextMode = useAppStore((state) => state.setContextMode);
   const setComposerHasDraft = useAppStore((state) => state.setComposerHasDraft);
   const setAppendPageContextToSystemPrompt = useAppStore((state) => state.setAppendPageContextToSystemPrompt);
+  const updateActiveSessionChatPreferences = useAppStore((state) => state.updateActiveSessionChatPreferences);
   const refreshPageContext = useAppStore((state) => state.refreshPageContext);
   const loadContextTabs = useAppStore((state) => state.loadContextTabs);
   const toggleContextTabSelection = useAppStore((state) => state.toggleContextTabSelection);
   const sendChatMessage = useAppStore((state) => state.sendChatMessage);
+  const registeredTools = useMemo(() => getRegisteredModelTools(), []);
 
   useEffect(() => {
     setComposerHasDraft(input.trim().length > 0 || attachments.length > 0 || promptInvocations.length > 0);
@@ -117,6 +143,37 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
     document.addEventListener("keydown", closeOnEscape);
     return () => document.removeEventListener("keydown", closeOnEscape);
   }, [contextDialogOpen]);
+
+  useEffect(() => {
+    if (!toolMenuOpen) {
+      return undefined;
+    }
+
+    const closeOnPointerDown = (event: PointerEvent) => {
+      if (toolMenuRef.current?.contains(event.target as Node)) {
+        return;
+      }
+
+      setToolMenuOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setToolMenuOpen(false);
+      }
+    };
+
+    updateToolMenuPosition();
+    document.addEventListener("pointerdown", closeOnPointerDown);
+    document.addEventListener("keydown", closeOnEscape);
+    window.addEventListener("resize", updateToolMenuPosition);
+    window.addEventListener("scroll", updateToolMenuPosition, true);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnPointerDown);
+      document.removeEventListener("keydown", closeOnEscape);
+      window.removeEventListener("resize", updateToolMenuPosition);
+      window.removeEventListener("scroll", updateToolMenuPosition, true);
+    };
+  }, [toolMenuOpen]);
 
   const submit = async () => {
     const content = input.trim();
@@ -306,7 +363,34 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
     setAttachments(nextAttachments);
   };
 
+  const handleToolToggle = (toolId: string, checked: boolean) => {
+    const nextToolIds = checked ? [...enabledToolIds, toolId] : enabledToolIds.filter((id) => id !== toolId);
+    void updateActiveSessionChatPreferences({ enabledToolIds: Array.from(new Set(nextToolIds)) });
+  };
+
+  const updateToolMenuPosition = () => {
+    const rect = toolMenuButtonRef.current?.getBoundingClientRect();
+    if (!rect) {
+      return;
+    }
+
+    const menuWidth = Math.min(window.innerWidth - 24, 320);
+    const centeredLeft = rect.left + rect.width / 2 - menuWidth / 2;
+    setToolMenuPosition({
+      left: Math.max(12, Math.min(centeredLeft, window.innerWidth - menuWidth - 12)),
+      top: Math.max(12, rect.top - 12),
+    });
+  };
+
+  const toggleToolMenu = () => {
+    if (!toolMenuOpen) {
+      updateToolMenuPosition();
+    }
+    setToolMenuOpen((value) => !value);
+  };
+
   const contextModeLabel = contextMode === "all" ? "提取所有" : "提取文本";
+  const toolCallingLabel = `工具调用：${toolCallingEnabled ? "已启用" : "已关闭"}`;
   const filteredPromptTemplates = filterPromptTemplates(promptTemplates, slashQuery);
   const canSubmit = canSend && !sending && (input.trim().length > 0 || attachments.length > 0 || promptInvocations.length > 0);
 
@@ -432,6 +516,82 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
             label="搜索"
             onToggle={() => setWebSearchEnabled(!webSearchEnabled)}
           />
+          <div className="composer-tool-menu-wrap" ref={toolMenuRef}>
+            <button
+              ref={toolMenuButtonRef}
+              className="composer-switch"
+              type="button"
+              aria-label={toolCallingLabel}
+              aria-expanded={toolMenuOpen}
+              aria-haspopup="dialog"
+              aria-pressed={toolCallingEnabled}
+              title={toolCallingLabel}
+              onClick={toggleToolMenu}
+            >
+              <svg className="composer-switch-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d={SWITCH_ICON_PATHS.toolCalling} />
+              </svg>
+            </button>
+            {toolMenuOpen ? (
+              <div
+                className="composer-tool-menu"
+                role="dialog"
+                aria-label="工具调用设置"
+                style={toolMenuPosition ? { left: toolMenuPosition.left, top: toolMenuPosition.top } : undefined}
+              >
+                <div className="composer-tool-menu-actions">
+                  <button
+                    className="composer-tool-menu-action"
+                    type="button"
+                    onClick={() => void updateActiveSessionChatPreferences({ toolCallingEnabled: true })}
+                  >
+                    启用
+                  </button>
+                  <button
+                    className="composer-tool-menu-action"
+                    type="button"
+                    onClick={() =>
+                      void updateActiveSessionChatPreferences({
+                        toolCallingEnabled: true,
+                        enabledToolIds: registeredTools.map((tool) => tool.id),
+                      })
+                    }
+                  >
+                    启用全部
+                  </button>
+                  <button
+                    className="composer-tool-menu-action"
+                    type="button"
+                    onClick={() => void updateActiveSessionChatPreferences({ toolCallingEnabled: false })}
+                  >
+                    关闭
+                  </button>
+                </div>
+                {registeredTools.length > 0 ? (
+                  <div className="composer-tool-menu-list">
+                    {registeredTools.map((tool) => {
+                      const active = enabledToolIds.includes(tool.id);
+                      return (
+                        <button
+                          key={tool.id}
+                          className={active ? "composer-tool-menu-item composer-tool-menu-item-active" : "composer-tool-menu-item"}
+                          type="button"
+                          aria-pressed={active}
+                          aria-label={`${tool.name} ${tool.description ?? ""}`.trim()}
+                          onClick={() => handleToolToggle(tool.id, !active)}
+                        >
+                          <span className="composer-tool-menu-item-name">{tool.name}</span>
+                          {tool.description ? <span className="composer-tool-menu-item-description">{tool.description}</span> : null}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="composer-tool-menu-empty">暂无可用工具</p>
+                )}
+              </div>
+            ) : null}
+          </div>
           <ComposerSwitch
             ariaLabel="拼接上下文"
             checked={appendPageContextToSystemPrompt}

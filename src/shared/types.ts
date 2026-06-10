@@ -50,6 +50,8 @@ export interface ChatPreferenceValues {
   networkRelevanceBatchSize: number;
   networkRequestTypeFilters: NetworkRequestTypeFilter[];
   webSearchPolicy: WebSearchPolicy;
+  toolCallingEnabled: boolean;
+  enabledToolIds: string[];
   temperature: number;
   maxTokens: number;
   topK?: number;
@@ -67,6 +69,8 @@ export interface ChatSessionPreferenceOverrides {
   webSearchIncludeAnswer?: TavilyIncludeAnswer;
   webSearchIncludeRawContent?: TavilyIncludeRawContent;
   webSearchMaxResults?: number;
+  toolCallingEnabled?: boolean;
+  enabledToolIds?: string[];
   temperature?: number;
   maxTokens?: number;
   topK?: number;
