@@ -410,7 +410,7 @@ body {
   }
 
   .chat-model-row {
-    @apply relative flex items-end gap-2 p-3 pl-5;
+    @apply relative flex items-center gap-2 p-3 pl-5;
     position: relative;
     border-bottom: 1px solid var(--color-hairline);
   }
@@ -473,7 +473,7 @@ body {
   }
 
   .chat-history-trigger {
-    @apply shrink-0;
+    @apply h-10 shrink-0 px-3 text-sm;
   }
 
   .chat-history-panel-toggle {
@@ -501,7 +501,7 @@ body {
   }
 
   .chat-header-actions {
-    @apply flex shrink-0 items-end gap-2;
+    @apply flex shrink-0 items-center gap-2;
   }
 
   .chat-drawer-trigger {
@@ -1284,7 +1284,7 @@ body {
   }
 
   .composer-tool-menu {
-    @apply fixed z-40 grid w-[min(84vw,450px)] max-w-[calc(100vw-24px)] gap-2 rounded-lg p-2;
+    @apply fixed z-40 grid w-[min(84vw,500px)] max-w-[calc(100vw-24px)] gap-2 rounded-lg p-2;
     background: var(--color-surface-soft);
     border: 1px solid var(--color-hairline);
     box-shadow: 0 12px 28px color-mix(in srgb, var(--color-surface-dark) 18%, transparent);
@@ -1311,6 +1311,20 @@ body {
     @apply grid max-h-64 gap-1.5 overflow-y-auto;
   }
 
+  .composer-tool-menu-group {
+    @apply grid gap-1.5;
+  }
+
+  .composer-tool-menu-group-title {
+    @apply px-1 text-xs font-medium;
+    color: var(--color-muted);
+  }
+
+  .composer-tool-menu-group-hint {
+    @apply px-1 text-xs;
+    color: var(--color-muted);
+  }
+
   .composer-tool-menu-item {
     @apply grid gap-1 rounded-md p-2 text-left transition;
     background: var(--color-canvas);
@@ -1318,13 +1332,21 @@ body {
     color: var(--color-body);
   }
 
-  .composer-tool-menu-item:hover {
+  .composer-tool-menu-item:not(:disabled):hover {
     border-color: color-mix(in srgb, var(--color-primary) 35%, var(--color-hairline));
+  }
+
+  .composer-tool-menu-item:disabled {
+    @apply cursor-not-allowed opacity-60;
   }
 
   .composer-tool-menu-item-active {
     background: color-mix(in srgb, var(--color-primary) 10%, var(--color-canvas));
     border-color: color-mix(in srgb, var(--color-primary) 55%, var(--color-hairline));
+  }
+
+  .composer-tool-menu-item-readonly.composer-tool-menu-item-active {
+    background: color-mix(in srgb, var(--color-primary) 8%, var(--color-canvas));
   }
 
   .composer-tool-menu-item-name {
@@ -1395,6 +1417,23 @@ body {
     @apply flex flex-wrap gap-2;
   }
 
+  .chat-preference-tool-group-list {
+    @apply grid gap-3;
+  }
+
+  .chat-preference-tool-group {
+    @apply flex w-full flex-wrap gap-2;
+  }
+
+  .chat-preference-tool-group > .ui-muted {
+    @apply w-full;
+  }
+
+  .chat-preference-tool-group-title {
+    @apply w-full text-xs font-medium;
+    color: var(--color-muted);
+  }
+
   .chat-preference-network-type-chip {
     @apply inline-flex min-h-8 cursor-pointer items-center gap-2 rounded-md px-2.5 py-1 text-xs transition;
     background: var(--color-canvas);
@@ -1402,8 +1441,12 @@ body {
     color: var(--color-body);
   }
 
-  .chat-preference-network-type-chip:hover {
+  .chat-preference-network-type-chip:has(input:not(:disabled)):hover {
     border-color: var(--color-primary);
+  }
+
+  .chat-preference-network-type-chip:has(input:disabled) {
+    @apply cursor-not-allowed opacity-60;
   }
 
   .chat-preference-network-type-chip input {

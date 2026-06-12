@@ -855,6 +855,7 @@ describe("App", () => {
         networkRelevancePrompt: DEFAULT_NETWORK_RELEVANCE_PROMPT,
         networkRelevanceBatchSize: 50,
         networkRequestTypeFilters: ["all"],
+        aiRequestRetryCount: 5,
         toolCallingEnabled: false,
         enabledToolIds: [],
         temperature: 0.7,
@@ -885,6 +886,7 @@ describe("App", () => {
         networkRelevancePrompt: DEFAULT_NETWORK_RELEVANCE_PROMPT,
         networkRelevanceBatchSize: 50,
         networkRequestTypeFilters: ["all"],
+        aiRequestRetryCount: 5,
         toolCallingEnabled: false,
         enabledToolIds: [],
         temperature: 0.7,
@@ -917,6 +919,7 @@ describe("App", () => {
         networkRelevancePrompt: DEFAULT_NETWORK_RELEVANCE_PROMPT,
         networkRelevanceBatchSize: 50,
         networkRequestTypeFilters: ["all"],
+        aiRequestRetryCount: 5,
         toolCallingEnabled: false,
         enabledToolIds: [],
         temperature: 0.7,
@@ -947,6 +950,7 @@ describe("App", () => {
         networkRelevancePrompt: DEFAULT_NETWORK_RELEVANCE_PROMPT,
         networkRelevanceBatchSize: 50,
         networkRequestTypeFilters: ["all"],
+        aiRequestRetryCount: 5,
         toolCallingEnabled: false,
         enabledToolIds: [],
         temperature: 0.7,
@@ -3503,6 +3507,7 @@ describe("App", () => {
         ...useAppStore.getState().chatPreferences,
         toolCallingEnabled: true,
       },
+      browserControlEnabled: true,
       updateActiveSessionChatPreferences,
     });
 
@@ -3521,20 +3526,22 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "启用全部" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "关闭" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /take_snapshot/ })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: /click/ })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: /click/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /take_snapshot/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /click/ })).toBeDisabled();
     expect(screen.getByText("读取当前页面结构快照")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "启用全部" }));
 
     expect(updateActiveSessionChatPreferences).toHaveBeenCalledWith({
       toolCallingEnabled: true,
-      enabledToolIds: ["browser.take_snapshot", "browser.click"],
+      enabledToolIds: [],
     });
     await waitFor(() => expect(screen.getByRole("button", { name: "工具调用：已启用" })).toHaveAttribute("aria-pressed", "true"));
 
     await user.click(screen.getByRole("button", { name: /click/ }));
 
-    expect(updateActiveSessionChatPreferences).toHaveBeenLastCalledWith({ enabledToolIds: ["browser.take_snapshot"] });
+    expect(updateActiveSessionChatPreferences).toHaveBeenCalledTimes(1);
 
     await user.click(document.body);
 
@@ -3549,6 +3556,38 @@ describe("App", () => {
 
     const styles = readFileSync(resolve(process.cwd(), "src/side-panel/styles.css"), "utf8");
     expect(styles).toMatch(/\.composer-tool-menu\s*\{[^}]*@apply\s+fixed/s);
+  });
+
+  it("浏览器自动化工具样式只跟随浏览器控制运行态激活", async () => {
+    const user = userEvent.setup();
+    registeredModelToolsMock.tools = [
+      {
+        id: "browser.take_snapshot",
+        name: "take_snapshot",
+        description: "读取当前页面结构快照",
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+      },
+    ];
+
+    const session = createChatSession({
+      id: "session-browser-tool-style",
+      title: "浏览器工具样式",
+      chatPreferenceOverrides: { toolCallingEnabled: true, enabledToolIds: ["browser.take_snapshot"] },
+    });
+    await saveChatSession(session);
+    useAppStore.setState({
+      activeSessionId: session.id,
+      chatSessions: [session],
+      browserControlEnabled: false,
+    });
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "工具调用：已启用" }));
+
+    const snapshotButton = screen.getByRole("button", { name: /take_snapshot/ });
+    expect(snapshotButton).toHaveAttribute("aria-pressed", "false");
+    expect(snapshotButton).toBeDisabled();
   });
 
   it("聊天输入区的工具调用菜单支持空会话、启用关闭和键盘关闭", async () => {

@@ -25,6 +25,7 @@ import {
   TAVILY_SEARCH_TOOL_ID,
   TAVILY_SEARCH_TOOL_NAME,
   getRegisteredModelTools,
+  getModelToolGroups,
 } from "../../../src/shared/models/toolRegistry";
 
 describe("模型工具注册表", () => {
@@ -220,5 +221,31 @@ describe("模型工具注册表", () => {
     expect(closePageTool?.parameters.properties).toMatchObject({
       index: { type: "integer", minimum: 1 },
     });
+  });
+
+  it("浏览器自动化工具归入浏览器自动化分组，便于检索和识别", () => {
+    const groups = getModelToolGroups(getRegisteredModelTools());
+    const browserGroup = groups.find((group) => group.id === "browser_automation");
+
+    expect(browserGroup).toMatchObject({
+      id: "browser_automation",
+      label: "浏览器自动化",
+    });
+    expect(browserGroup?.tools.map((tool) => tool.id)).toEqual([
+      BROWSER_TAKE_SNAPSHOT_TOOL_ID,
+      BROWSER_CLICK_TOOL_ID,
+      BROWSER_FILL_TOOL_ID,
+      BROWSER_PRESS_KEY_TOOL_ID,
+      BROWSER_WAIT_FOR_TOOL_ID,
+      BROWSER_NAVIGATE_PAGE_TOOL_ID,
+      BROWSER_NEW_PAGE_TOOL_ID,
+      BROWSER_LIST_PAGES_TOOL_ID,
+      BROWSER_SELECT_PAGE_TOOL_ID,
+      BROWSER_CLOSE_PAGE_TOOL_ID,
+    ]);
+  });
+
+  it("注册工具列表返回稳定引用，避免设置页渲染时重复创建对象", () => {
+    expect(getRegisteredModelTools()).toBe(getRegisteredModelTools());
   });
 });

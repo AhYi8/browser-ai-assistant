@@ -86,7 +86,21 @@ describe("标题生成", () => {
     });
 
     expect(title).toBe("页面摘要讨论");
-    expect(requestTitle).toHaveBeenCalledWith(createTitleModel(), messages);
+    expect(requestTitle).toHaveBeenCalledWith(createTitleModel(), messages, undefined);
+  });
+
+  it("标题生成会把 AI 请求重试次数传给请求函数", async () => {
+    const requestTitle = vi.fn().mockResolvedValue('{"title":"页面摘要讨论"}');
+
+    await generateSessionTitle({
+      fallbackTitle: "总结这个网页",
+      messages,
+      titleModel: createTitleModel(),
+      retryCount: 5,
+      requestTitle,
+    });
+
+    expect(requestTitle).toHaveBeenCalledWith(createTitleModel(), messages, 5);
   });
 
   it("标题模型返回非 JSON 文本时使用默认名", async () => {

@@ -229,7 +229,19 @@ describe("appStore 网络搜索", () => {
       .map(([message]) => message as { type: string; enabledToolIds?: string[] })
       .filter((message) => message.type === "chat.send");
     expect(chatRequests[0].enabledToolIds).toEqual(["web_search.tavily"]);
-    expect(chatRequests[1].enabledToolIds).toEqual(["web_search.tavily", "browser.take_snapshot", "browser.click"]);
+    expect(chatRequests[1].enabledToolIds).toEqual([
+      "web_search.tavily",
+      "browser.take_snapshot",
+      "browser.click",
+      "browser.fill",
+      "browser.press_key",
+      "browser.wait_for",
+      "browser.navigate_page",
+      "browser.new_page",
+      "browser.list_pages",
+      "browser.select_page",
+      "browser.close_page",
+    ]);
   });
 });
 
@@ -1421,6 +1433,7 @@ describe("appStore", () => {
     expect(useAppStore.getState().chatPreferences.historyDrawerDefaultOpen).toBe(true);
     expect(useAppStore.getState().chatPreferences.injectPageContextByDefault).toBe(true);
     expect(useAppStore.getState().chatPreferences.extractHtmlByDefault).toBe(false);
+    expect(useAppStore.getState().chatPreferences.aiRequestRetryCount).toBe(5);
     expect(useAppStore.getState().browserControlEnabled).toBe(false);
     expect(useAppStore.getState().chatPreferences.networkRelevancePrompt).toBe(DEFAULT_NETWORK_RELEVANCE_PROMPT);
     expect(useAppStore.getState().appendPageContextToSystemPrompt).toBe(true);
@@ -1435,7 +1448,7 @@ describe("appStore", () => {
         temperature: 0.4,
         maxTokens: 2048,
         toolCallingEnabled: "true",
-        enabledToolIds: ["page.read_context", "", "../bad", 123],
+        enabledToolIds: ["page.read_context", "browser.take_snapshot", "", "../bad", 123],
       },
       updatedAt: 2,
     });

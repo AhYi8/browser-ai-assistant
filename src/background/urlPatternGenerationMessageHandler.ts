@@ -13,6 +13,7 @@ export interface UrlPatternGenerationMessage {
   model: ProviderModel;
   url?: string;
   debugRequestId?: string;
+  retryCount?: number;
 }
 
 export interface CurrentTabUrlMessage {
@@ -50,7 +51,7 @@ export async function handleUrlPatternGenerationMessage(
     });
 
     const url = message.url?.trim() || (await getCurrentTabUrl(message.debugRequestId));
-    return generateUrlPatternsWithModel(message.provider, message.model, url, fetcher);
+    return generateUrlPatternsWithModel(message.provider, message.model, url, fetcher, message.retryCount);
   } catch (error) {
     console.error(`${DEBUG_PREFIX} 后台生成流程异常`, error);
     return {

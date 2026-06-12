@@ -85,6 +85,15 @@ export function ChatPreferenceDrawer({ open, onOpenChange }: ChatPreferenceDrawe
                 step={1}
                 onChange={(value) => void updateActiveSessionChatPreferences({ networkRelevanceBatchSize: value })}
               />
+              <PreferenceNumberInput
+                label="AI 请求失败重试次数"
+                value={overrides.aiRequestRetryCount}
+                placeholder={chatPreferences.aiRequestRetryCount}
+                min={0}
+                max={20}
+                step={1}
+                onChange={(value) => void updateActiveSessionChatPreferences({ aiRequestRetryCount: value })}
+              />
             </div>
             <fieldset className="chat-preference-network-types">
               <legend className="text-sm">当前聊天默认采集 Network 请求类型</legend>

@@ -121,4 +121,41 @@ describe("URL 正则生成消息处理器", () => {
       }),
     );
   });
+
+  it("URL 正则生成遇到可恢复失败时会按配置重试", async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("busy", { status: 500, statusText: "Server Error" }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify(["https://example\\.com/.*"]),
+                },
+              },
+            ],
+          }),
+          { status: 200 },
+        ),
+      );
+
+    const result = await handleUrlPatternGenerationMessage(
+      {
+        type: "extractionRule.generateUrlPatterns",
+        provider: createProvider(),
+        model: createModel(),
+        url: "https://example.com/news/123",
+        retryCount: 5,
+      },
+      fetcher as unknown as typeof fetch,
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      patterns: ["https://example\\.com/.*"],
+    });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
 });

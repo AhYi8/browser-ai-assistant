@@ -1,6 +1,7 @@
 import { parseAssistantResponse } from "../shared/chat/parseAssistantResponse";
 import { createModelRequestPayload } from "../shared/models/modelRequestPayload";
 import { shouldPassDeepSeekReasoningContent } from "../shared/models/openaiChatAdapter";
+import { normalizeModelRequestRetryCount, shouldRetryModelResponse, withModelRequestRetry } from "../shared/models/modelRequestRetry";
 import { BROWSER_TAKE_SNAPSHOT_TOOL_ID, BROWSER_TAKE_SNAPSHOT_TOOL_NAME, CURRENT_TIME_TOOL_NAME, TAVILY_SEARCH_TOOL_NAME, getRegisteredModelTools, resolveEnabledModelTools } from "../shared/models/toolRegistry";
 import type { ModelRequestMessage, ModelSystemMessage, ModelToolCall, ModelToolChoice, ModelToolDefinition, ModelToolExecutor, ModelToolRegistryEntry, OpenAIStructuredOutputFormat } from "../shared/models/types";
 import type { ChatToolAttachment, ChatToolCallRecord, ModelConfig } from "../shared/types";
@@ -20,6 +21,7 @@ export interface ChatSendMessage {
   enabledToolIds?: string[];
   toolChoice?: ModelToolChoice;
   tavily?: TavilySearchOptions;
+  retryCount?: number;
 }
 
 type PreparedChatSendMessage = ChatSendMessage & {
@@ -114,27 +116,43 @@ async function requestModelOnce(
       tools: message.tools,
       toolChoice: message.toolChoice,
     });
-    const response = await fetcher(payload.url, {
+    const requestInit = {
       method: "POST",
       headers: payload.headers,
       body: JSON.stringify(payload.body),
+    };
+    const retryCount = normalizeModelRequestRetryCount(message.retryCount);
+
+    if (message.stream) {
+      const streamResponse = await withModelRequestRetry(() => fetcher(payload.url, requestInit), retryCount, {
+        onRetryResult: cancelRetryableResponseBody,
+      });
+
+      if (!streamResponse.ok) {
+        return {
+          ok: false,
+          message: `模型请求失败：${streamResponse.status} ${streamResponse.statusText}`.trim(),
+        };
+      }
+
+      return readStreamResponse(streamResponse, message.model, callbacks);
+    }
+
+    const modelResponse = await withModelRequestRetry(() => fetchAndReadModelResponse(fetcher, payload.url, requestInit), retryCount, {
+      shouldRetryResult: (result) => result.retryable,
+      onRetryResult: (result) => cancelRetryableResponseBody(result.response),
     });
 
-    if (!response.ok) {
-      const errorBody = message.structuredOutput ? await readSafeErrorBody(response) : undefined;
+    if (!modelResponse.response.ok) {
+      const errorBody = message.structuredOutput ? await readSafeErrorBody(modelResponse.response) : undefined;
       return {
         ok: false,
-        message: `模型请求失败：${response.status} ${response.statusText}`.trim(),
-        ...(message.structuredOutput ? { status: response.status, errorBody } : {}),
+        message: `模型请求失败：${modelResponse.response.status} ${modelResponse.response.statusText}`.trim(),
+        ...(message.structuredOutput ? { status: modelResponse.response.status, errorBody } : {}),
       };
     }
 
-    if (message.stream) {
-      return readStreamResponse(response, message.model, callbacks);
-    }
-
-    const data = await response.json();
-    const responseData = extractAssistantResponseData(data, {
+    const responseData = extractAssistantResponseData(modelResponse.data, {
       structuredOutput: message.structuredOutput,
       collectToolCalls: Boolean(message.tools?.length),
     });
@@ -158,6 +176,26 @@ async function requestModelOnce(
       message: "模型请求失败，请稍后重试",
     };
   }
+}
+
+async function fetchAndReadModelResponse(
+  fetcher: Fetcher,
+  url: string,
+  init: RequestInit,
+): Promise<{ response: Response; data?: unknown; retryable: boolean }> {
+  const response = await fetcher(url, init);
+
+  if (!response.ok) {
+    return { response, retryable: shouldRetryModelResponse(response) };
+  }
+
+  const data = await response.json();
+  return { response, data, retryable: false };
+}
+
+function cancelRetryableResponseBody(response: Response): Promise<void> | void {
+  // 已决定丢弃该响应并重试时主动取消 body，避免连续失败占用连接资源。
+  return response.body?.cancel().catch(() => undefined);
 }
 
 function createModelToolDefinition(tool: ModelToolRegistryEntry): ModelToolDefinition {

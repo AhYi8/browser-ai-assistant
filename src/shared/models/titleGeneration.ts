@@ -6,7 +6,8 @@ export interface GenerateSessionTitleInput {
   fallbackTitle: string;
   messages: ChatMessage[];
   titleModel?: ModelConfig;
-  requestTitle: (model: ModelConfig, messages: ChatMessage[]) => Promise<string>;
+  retryCount?: number;
+  requestTitle: (model: ModelConfig, messages: ChatMessage[], retryCount?: number) => Promise<string>;
 }
 
 export interface CreateTitleGenerationMessagesInput {
@@ -21,7 +22,7 @@ export async function generateSessionTitle(input: GenerateSessionTitleInput): Pr
   }
 
   try {
-    const generatedTitle = parseGeneratedTitle(await input.requestTitle(input.titleModel, input.messages));
+    const generatedTitle = parseGeneratedTitle(await input.requestTitle(input.titleModel, input.messages, input.retryCount));
     return generatedTitle || input.fallbackTitle;
   } catch {
     return input.fallbackTitle;

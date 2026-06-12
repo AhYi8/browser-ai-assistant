@@ -1,5 +1,6 @@
 import { createModelConfig } from "../models/modelCatalog";
 import { createModelRequestPayload } from "../models/modelRequestPayload";
+import { DEFAULT_MODEL_REQUEST_RETRY_COUNT, normalizeModelRequestRetryCount, withModelRequestRetry } from "../models/modelRequestRetry";
 import type { ChatMessage, ModelProvider, ProviderModel } from "../types";
 
 const DEBUG_PREFIX = "[提取规则 AI 生成诊断]";
@@ -19,6 +20,7 @@ export async function generateUrlPatternsWithModel(
   providerModel: ProviderModel,
   url: string,
   fetcher: typeof fetch = fetch,
+  retryCount = DEFAULT_MODEL_REQUEST_RETRY_COUNT,
 ): Promise<UrlPatternGenerationResponse> {
   try {
     const model = createModelConfig(provider, providerModel);
@@ -32,11 +34,15 @@ export async function generateUrlPatternsWithModel(
       bodyKeys: isObject(payload.body) ? Object.keys(payload.body) : [],
     });
 
-    const response = await fetcher(payload.url, {
-      method: "POST",
-      headers: payload.headers,
-      body: JSON.stringify(payload.body),
-    });
+    const response = await withModelRequestRetry(
+      () =>
+        fetcher(payload.url, {
+          method: "POST",
+          headers: payload.headers,
+          body: JSON.stringify(payload.body),
+        }),
+      normalizeModelRequestRetryCount(retryCount),
+    );
 
     console.debug(`${DEBUG_PREFIX} 模型接口响应`, {
       ok: response.ok,

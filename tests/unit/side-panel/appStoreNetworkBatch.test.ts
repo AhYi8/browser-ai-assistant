@@ -109,7 +109,7 @@ describe("appStore Network 分组筛选", () => {
       content: string;
       callback: (response: unknown) => void;
     }> = [];
-    const sendMessage = vi.fn((message: { type: string; messages?: ChatMessage[]; requestIds?: string[]; tabId?: number }, callback: (response: unknown) => void) => {
+    const sendMessage = vi.fn((message: { type: string; messages?: ChatMessage[]; requestIds?: string[]; tabId?: number; retryCount?: number }, callback: (response: unknown) => void) => {
       if (message.type === "networkContext.getSnapshot") {
         callback({ ok: true, tabId: 7, requests });
         return undefined;
@@ -143,6 +143,12 @@ describe("appStore Network 分组筛选", () => {
       },
     });
     await setupNetworkChat();
+    useAppStore.setState((state) => ({
+      chatPreferences: {
+        ...state.chatPreferences,
+        aiRequestRetryCount: 5,
+      },
+    }));
 
     const sendPromise = useAppStore.getState().sendChatMessage("分析所有接口");
     await vi.waitFor(() => {
@@ -159,6 +165,10 @@ describe("appStore Network 分组筛选", () => {
     expect(pendingRelevanceCallbacks[2].content).toContain("id=req-150");
     expect(pendingRelevanceCallbacks[3].content).toContain("id=req-151");
     expect(pendingRelevanceCallbacks[3].content).toContain("id=req-200");
+    const relevanceRequests = sendMessage.mock.calls
+      .map(([message]) => message as { type: string; messages?: ChatMessage[]; retryCount?: number })
+      .filter((message) => message.type === "chat.send" && !(message.messages?.at(-1)?.content ?? "").includes("Network context:"));
+    expect(relevanceRequests.map((message) => message.retryCount)).toEqual([1, 1, 1, 1]);
 
     pendingRelevanceCallbacks[0].callback({ ok: true, content: '{"requestIds":["req-1"]}' });
     pendingRelevanceCallbacks[1].callback({ ok: true, content: '{"requestIds":["req-51"]}' });
@@ -175,6 +185,11 @@ describe("appStore Network 分组筛选", () => {
     });
     expect(useAppStore.getState().failure).toBeUndefined();
     expect(useAppStore.getState().chatSessions[0].messages[1].content).toBe("AI 分组接口分析");
+    const finalChatRequest = sendMessage.mock.calls
+      .map(([message]) => message as { type: string; messages?: ChatMessage[]; retryCount?: number })
+      .filter((message) => message.type === "chat.send" && (message.messages?.at(-1)?.content ?? "").includes("Network context:"))
+      .at(-1);
+    expect(finalChatRequest?.retryCount).toBe(5);
   });
 
   it("聊天偏好会归一化 Network 默认采集类型", async () => {

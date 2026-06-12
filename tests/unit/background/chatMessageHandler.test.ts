@@ -115,6 +115,82 @@ describe("聊天模型请求处理", () => {
     );
   });
 
+  it("模型请求遇到可恢复失败时会按请求配置重试", async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("busy", { status: 500, statusText: "Server Error" }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: "重试成功",
+                },
+              },
+            ],
+          }),
+          { status: 200 },
+        ),
+      );
+
+    const result = await handleChatSendMessage(
+      {
+        type: "chat.send",
+        model: createModel(),
+        messages: [createMessage("user", "总结页面")],
+        stream: false,
+        retryCount: 5,
+      },
+      fetcher,
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      content: "重试成功",
+      thinking: undefined,
+    });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it("非流式响应正文解析失败时会重新发起模型请求", async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("{", { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: "解析重试成功",
+                },
+              },
+            ],
+          }),
+          { status: 200 },
+        ),
+      );
+
+    const result = await handleChatSendMessage(
+      {
+        type: "chat.send",
+        model: createModel(),
+        messages: [createMessage("user", "总结页面")],
+        stream: false,
+        retryCount: 1,
+      },
+      fetcher,
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      content: "解析重试成功",
+      thinking: undefined,
+    });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
   it("普通 OpenAI-compatible 非流式响应只把 reasoning_content 作为思考展示，不保存协议原文", async () => {
     const fetcher = vi.fn().mockResolvedValue({
       ok: true,
@@ -1264,6 +1340,7 @@ describe("聊天模型请求处理", () => {
         model: createModel(),
         messages: [createMessage("user", "你好")],
         stream: false,
+        retryCount: 0,
       },
       fetcher,
     );

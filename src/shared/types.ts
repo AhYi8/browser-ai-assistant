@@ -48,6 +48,7 @@ export interface ChatPreferenceValues {
   networkRelevancePrompt: string;
   networkRelevanceBatchSize: number;
   networkRequestTypeFilters: NetworkRequestTypeFilter[];
+  aiRequestRetryCount: number;
   toolCallingEnabled: boolean;
   enabledToolIds: string[];
   temperature: number;
@@ -63,6 +64,7 @@ export interface ChatSessionPreferenceOverrides {
   systemPrompt?: string;
   networkRelevanceBatchSize?: number;
   networkRequestTypeFilters?: NetworkRequestTypeFilter[];
+  aiRequestRetryCount?: number;
   toolCallingEnabled?: boolean;
   enabledToolIds?: string[];
   temperature?: number;

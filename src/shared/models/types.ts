@@ -15,6 +15,7 @@ export interface ModelToolDefinition {
 export interface ModelToolRegistryEntry extends ModelToolDefinition {
   id: string;
   displayName?: string;
+  groupId?: string;
 }
 
 export interface ModelToolCall {

@@ -3,8 +3,15 @@ import { buildChatRequestMessages } from "../../shared/chat/buildChatRequestMess
 import { createModelConfig } from "../../shared/chat/modelConfig";
 import { createPageContextPrompt } from "../../shared/chat/pageContextPrompt";
 import type { RemoteModelInfo } from "../../shared/models/modelCatalog";
-import { TAVILY_SEARCH_TOOL_ID, getRegisteredModelTools, normalizeEnabledToolIds, resolveEnabledModelTools } from "../../shared/models/toolRegistry";
+import {
+  TAVILY_SEARCH_TOOL_ID,
+  getRegisteredModelTools,
+  isBrowserAutomationToolId,
+  normalizeEnabledToolIds,
+  resolveEnabledModelTools,
+} from "../../shared/models/toolRegistry";
 import type { ModelToolChoice, OpenAIStructuredOutputFormat } from "../../shared/models/types";
+import { DEFAULT_MODEL_REQUEST_RETRY_COUNT, normalizeModelRequestRetryCount } from "../../shared/models/modelRequestRetry";
 import {
   createNetworkContextPrompt,
   createNetworkMetadataPrompt,
@@ -280,6 +287,7 @@ const DEFAULT_CHAT_PREFERENCES: ChatPreferenceValues = {
   networkRelevancePrompt: DEFAULT_NETWORK_RELEVANCE_PROMPT,
   networkRelevanceBatchSize: 50,
   networkRequestTypeFilters: DEFAULT_NETWORK_REQUEST_TYPE_FILTERS,
+  aiRequestRetryCount: DEFAULT_MODEL_REQUEST_RETRY_COUNT,
   toolCallingEnabled: false,
   enabledToolIds: [],
   temperature: 0.7,
@@ -1182,7 +1190,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
     });
 
     try {
-      const response = await generateUrlPatternsWithModel(provider, model, urlResult.url);
+      const response = await generateUrlPatternsWithModel(provider, model, urlResult.url, fetch, state.chatPreferences.aiRequestRetryCount);
 
       console.debug(`${DEBUG_PREFIX} 前端收到生成响应`, {
         debugRequestId,
@@ -1601,8 +1609,9 @@ function normalizeChatPreferences(value?: Partial<ChatPreferenceValues>): ChatPr
         : DEFAULT_CHAT_PREFERENCES.networkRelevancePrompt,
     networkRelevanceBatchSize: Math.round(normalizeNumber(value?.networkRelevanceBatchSize, DEFAULT_CHAT_PREFERENCES.networkRelevanceBatchSize, 1, 10_000)),
     networkRequestTypeFilters: normalizeNetworkRequestTypeFilters(value?.networkRequestTypeFilters),
+    aiRequestRetryCount: normalizeModelRequestRetryCount(value?.aiRequestRetryCount, DEFAULT_CHAT_PREFERENCES.aiRequestRetryCount),
     toolCallingEnabled: normalizeBoolean(value?.toolCallingEnabled, DEFAULT_CHAT_PREFERENCES.toolCallingEnabled),
-    enabledToolIds: normalizeEnabledToolIds(value?.enabledToolIds),
+    enabledToolIds: normalizeUserEditableToolIds(value?.enabledToolIds),
     temperature: normalizeNumber(value?.temperature, DEFAULT_CHAT_PREFERENCES.temperature, 0, 2),
     maxTokens: Math.round(normalizeNumber(value?.maxTokens, DEFAULT_CHAT_PREFERENCES.maxTokens, 1, 200_000)),
     topK: normalizeOptionalInteger(value?.topK, 1, 1_000),
@@ -1653,11 +1662,14 @@ function normalizeChatPreferenceOverrides(value?: ChatSessionPreferenceOverrides
   if (value?.networkRequestTypeFilters !== undefined) {
     overrides.networkRequestTypeFilters = normalizeNetworkRequestTypeFilters(value.networkRequestTypeFilters);
   }
+  if (value?.aiRequestRetryCount !== undefined) {
+    overrides.aiRequestRetryCount = normalizeModelRequestRetryCount(value.aiRequestRetryCount, DEFAULT_CHAT_PREFERENCES.aiRequestRetryCount);
+  }
   if (value?.toolCallingEnabled !== undefined) {
     overrides.toolCallingEnabled = normalizeBoolean(value.toolCallingEnabled, DEFAULT_CHAT_PREFERENCES.toolCallingEnabled);
   }
   if (value?.enabledToolIds !== undefined) {
-    overrides.enabledToolIds = normalizeEnabledToolIds(value.enabledToolIds);
+    overrides.enabledToolIds = normalizeUserEditableToolIds(value.enabledToolIds);
   }
   if (value?.temperature !== undefined) {
     overrides.temperature = normalizeNumber(value.temperature, DEFAULT_CHAT_PREFERENCES.temperature, 0, 2);
@@ -1680,6 +1692,7 @@ function resolveEffectiveChatPreferences(
     systemPrompt: overrides?.systemPrompt ?? preferences.systemPrompt,
     networkRelevanceBatchSize: overrides?.networkRelevanceBatchSize ?? preferences.networkRelevanceBatchSize,
     networkRequestTypeFilters: overrides?.networkRequestTypeFilters ?? preferences.networkRequestTypeFilters,
+    aiRequestRetryCount: overrides?.aiRequestRetryCount ?? preferences.aiRequestRetryCount,
     toolCallingEnabled: overrides?.toolCallingEnabled ?? preferences.toolCallingEnabled,
     enabledToolIds: overrides?.enabledToolIds ?? preferences.enabledToolIds,
     temperature: overrides?.temperature ?? preferences.temperature,
@@ -1691,12 +1704,30 @@ function resolveEffectiveChatPreferences(
     systemPrompt: normalizedOverrides.systemPrompt ?? preferences.systemPrompt,
     networkRelevanceBatchSize: normalizedOverrides.networkRelevanceBatchSize ?? preferences.networkRelevanceBatchSize,
     networkRequestTypeFilters: normalizedOverrides.networkRequestTypeFilters ?? preferences.networkRequestTypeFilters,
+    aiRequestRetryCount: normalizedOverrides.aiRequestRetryCount ?? preferences.aiRequestRetryCount,
     toolCallingEnabled: normalizedOverrides.toolCallingEnabled ?? preferences.toolCallingEnabled,
     enabledToolIds: normalizedOverrides.enabledToolIds ?? preferences.enabledToolIds,
     temperature: normalizedOverrides.temperature ?? preferences.temperature,
     maxTokens: normalizedOverrides.maxTokens ?? preferences.maxTokens,
     topK: normalizedOverrides.topK,
   };
+}
+
+function normalizeUserEditableToolIds(value: unknown): string[] {
+  return normalizeEnabledToolIds(value).filter((toolId) => !isBrowserAutomationToolId(toolId));
+}
+
+function resolveRuntimeEnabledToolIds(enabledToolIds: string[], browserControlEnabled: boolean): string[] {
+  const registeredTools = getRegisteredModelTools();
+  const browserToolIds = registeredTools.filter((tool) => isBrowserAutomationToolId(tool.id)).map((tool) => tool.id);
+  const baseIds = enabledToolIds.filter((toolId) => browserControlEnabled || !isBrowserAutomationToolId(toolId));
+
+  if (!browserControlEnabled) {
+    return baseIds;
+  }
+
+  // 浏览器控制是显式调试能力，开启后需要整组自动可用，避免单个工具缺失导致自动化链路中断。
+  return Array.from(new Set([...baseIds, ...browserToolIds]));
 }
 
 function normalizeNumber(value: unknown, fallback: number, min: number, max: number): number {
@@ -1772,6 +1803,7 @@ type AppChatSendMessage = {
   enabledToolIds?: string[];
   toolChoice?: ModelToolChoice;
   tavily?: TavilySearchOptions;
+  retryCount?: number;
 };
 
 type NetworkContextSnapshotResponse =
@@ -1843,6 +1875,7 @@ type EffectiveChatPreferences = Required<
     | "systemPrompt"
     | "networkRelevanceBatchSize"
     | "networkRequestTypeFilters"
+    | "aiRequestRetryCount"
     | "toolCallingEnabled"
     | "enabledToolIds"
     | "temperature"
@@ -1857,6 +1890,7 @@ interface GenerateTitleForSessionInput {
   userContent: string;
   pageContext: string;
   assistantContent?: string;
+  retryCount: number;
   get: StoreGetter;
   set: StoreSetter;
 }
@@ -2107,6 +2141,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
             networkRelevancePrompt: input.state.chatPreferences.networkRelevancePrompt,
             networkRelevanceBatchSize: effectiveChatPreferences.networkRelevanceBatchSize,
             networkRequestTypeFilters: effectiveChatPreferences.networkRequestTypeFilters,
+            aiRequestRetryCount: effectiveChatPreferences.aiRequestRetryCount,
             existingMessages: input.existingMessages,
             set: input.set,
           })
@@ -2123,6 +2158,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
         fallbackTitle: input.fallbackTitle,
         userContent: input.userMessage.content,
         pageContext: input.state.appendPageContextToSystemPrompt ? input.state.pageContext.text : "",
+        retryCount: effectiveChatPreferences.aiRequestRetryCount,
         get: input.get,
         set: input.set,
       })
@@ -2130,9 +2166,8 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
     void titleGenerationPromise;
 
     const enabledTools = effectiveChatPreferences.toolCallingEnabled
-      ? resolveEnabledModelTools(getRegisteredModelTools(), effectiveChatPreferences.enabledToolIds)
+      ? resolveEnabledModelTools(getRegisteredModelTools(), resolveRuntimeEnabledToolIds(effectiveChatPreferences.enabledToolIds, input.state.browserControlEnabled))
           .filter((tool) => !input.state.networkContextEnabled || tool.id !== TAVILY_SEARCH_TOOL_ID)
-          .filter((tool) => input.state.browserControlEnabled || !tool.id.startsWith("browser."))
       : [];
     const enabledToolIds = enabledTools.map((tool) => tool.id);
     const requestStreamMode = input.state.streamMode;
@@ -2148,6 +2183,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
         appendPageContextToSystemPrompt: input.state.appendPageContextToSystemPrompt,
       }),
       stream: requestStreamMode,
+      retryCount: effectiveChatPreferences.aiRequestRetryCount,
       tavily: {
         includeAnswer: input.state.webSearchSettings.tavily.includeAnswer,
         includeRawContent: input.state.webSearchSettings.tavily.includeRawContent,
@@ -2282,6 +2318,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
 }
 
 const NETWORK_RELEVANCE_MAX_RETRIES = 3;
+const NETWORK_RELEVANCE_MODEL_REQUEST_RETRY_COUNT = 1;
 const NETWORK_RELEVANCE_SCHEMA = {
   type: "object",
   properties: {
@@ -2317,6 +2354,7 @@ async function prepareNetworkContextForRequest(input: {
   networkRelevancePrompt: string;
   networkRelevanceBatchSize: number;
   networkRequestTypeFilters: NetworkRequestTypeFilter[];
+  aiRequestRetryCount: number;
   existingMessages: ChatMessage[];
   set: StoreSetter;
 }): Promise<PreparedNetworkContext> {
@@ -2351,6 +2389,7 @@ async function prepareNetworkContextForRequest(input: {
     requests,
     promptTemplate: input.networkRelevancePrompt,
     batchSize: input.networkRelevanceBatchSize,
+    retryCount: Math.min(input.aiRequestRetryCount, NETWORK_RELEVANCE_MODEL_REQUEST_RETRY_COUNT),
   });
   if (!relevanceResponse?.ok) {
     return { ok: false, message: relevanceResponse?.message ?? "Network 请求相关性筛选失败" };
@@ -2452,6 +2491,7 @@ async function selectRelevantNetworkRequestBatches(input: {
   requests: NetworkRequestMeta[];
   promptTemplate: string;
   batchSize: number;
+  retryCount: number;
 }): Promise<{ ok: true; requestIds: string[] } | Extract<NetworkRelevanceResponse, { ok: false }>> {
   const batches = chunkArray(input.requests, input.batchSize);
   const results = await Promise.all(
@@ -2466,6 +2506,7 @@ async function selectRelevantNetworkRequestBatches(input: {
           promptTemplate: input.promptTemplate,
         }),
         requests: batch,
+        retryCount: input.retryCount,
       }),
     ),
   );
@@ -2494,12 +2535,14 @@ async function selectRelevantNetworkRequestBatchWithRetry(input: {
   modelConfig: AppChatSendMessage["model"];
   messages: ChatMessage[];
   requests: NetworkRequestMeta[];
+  retryCount: number;
 }): Promise<{ ok: true; requestIds: string[] } | Extract<NetworkRelevanceResponse, { ok: false }>> {
   let lastFailure: Extract<NetworkRelevanceResponse, { ok: false }> | undefined;
   for (let retryIndex = 0; retryIndex < NETWORK_RELEVANCE_MAX_RETRIES; retryIndex += 1) {
     const response = await selectRelevantNetworkRequests({
       modelConfig: input.modelConfig,
       messages: input.messages,
+      retryCount: input.retryCount,
     });
     if (response?.ok) {
       return {
@@ -2517,6 +2560,7 @@ async function selectRelevantNetworkRequestBatchWithRetry(input: {
 async function selectRelevantNetworkRequests(input: {
   modelConfig: AppChatSendMessage["model"];
   messages: ChatMessage[];
+  retryCount: number;
 }): Promise<NetworkRelevanceResponse | undefined> {
   const attempts: Array<{
     structuredOutput?: OpenAIStructuredOutputFormat;
@@ -2534,6 +2578,7 @@ async function selectRelevantNetworkRequests(input: {
       messages: input.messages,
       stream: false,
       structuredOutput: attempt.structuredOutput,
+      retryCount: input.retryCount,
     });
     if (response?.ok) {
       return response;
@@ -2638,12 +2683,14 @@ async function generateTitleForSession(input: GenerateTitleForSessionInput): Pro
       fallbackTitle: input.fallbackTitle,
       messages: titleMessages,
       titleModel: titleModelConfig,
-      requestTitle: async (model, messages) => {
+      retryCount: input.retryCount,
+      requestTitle: async (model, messages, retryCount) => {
         const response = await sendRuntimeMessage<{ ok: true; content: string } | { ok: false; message: string } | undefined>({
           type: "chat.send",
           model,
           messages,
           stream: false,
+          retryCount,
         });
         if (!response?.ok) {
           throw new Error(response?.message ?? "标题生成失败");
@@ -2682,12 +2729,14 @@ async function generateTitleFromSavedPrivateSession(input: { session: ChatSessio
       fallbackTitle: input.session.title,
       messages: titleMessages,
       titleModel: titleModelConfig,
-      requestTitle: async (model, messages) => {
+      retryCount: state.chatPreferences.aiRequestRetryCount,
+      requestTitle: async (model, messages, retryCount) => {
         const response = await sendRuntimeMessage<{ ok: true; content: string } | { ok: false; message: string } | undefined>({
           type: "chat.send",
           model,
           messages,
           stream: false,
+          retryCount,
         });
         if (!response?.ok) {
           throw new Error(response?.message ?? "标题生成失败");
