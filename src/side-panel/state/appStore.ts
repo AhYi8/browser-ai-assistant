@@ -291,6 +291,8 @@ const DEFAULT_CHAT_PREFERENCES: ChatPreferenceValues = {
   browserAutomationMaxToolIterations: 32,
   toolCallingEnabled: false,
   enabledToolIds: [],
+  toolCallDisplayMode: "assistant_grouped",
+  showToolCallProcessInAssistantMode: false,
   temperature: 0.7,
   maxTokens: 1024,
   topK: undefined,
@@ -1617,6 +1619,11 @@ function normalizeChatPreferences(value?: Partial<ChatPreferenceValues>): ChatPr
     ),
     toolCallingEnabled: normalizeBoolean(value?.toolCallingEnabled, DEFAULT_CHAT_PREFERENCES.toolCallingEnabled),
     enabledToolIds: normalizeUserEditableToolIds(value?.enabledToolIds),
+    toolCallDisplayMode: normalizeToolCallDisplayMode(value?.toolCallDisplayMode),
+    showToolCallProcessInAssistantMode: normalizeBoolean(
+      value?.showToolCallProcessInAssistantMode,
+      DEFAULT_CHAT_PREFERENCES.showToolCallProcessInAssistantMode,
+    ),
     temperature: normalizeNumber(value?.temperature, DEFAULT_CHAT_PREFERENCES.temperature, 0, 2),
     maxTokens: Math.round(normalizeNumber(value?.maxTokens, DEFAULT_CHAT_PREFERENCES.maxTokens, 1, 200_000)),
     topK: normalizeOptionalInteger(value?.topK, 1, 1_000),
@@ -1633,6 +1640,10 @@ function resolveDefaultContextMode(preferences: ChatPreferenceValues): PageConte
 
 function normalizeSendShortcut(value: unknown): SendShortcut {
   return isSendShortcutValue(value) ? value : DEFAULT_CHAT_PREFERENCES.sendShortcut;
+}
+
+function normalizeToolCallDisplayMode(value: unknown): ChatPreferenceValues["toolCallDisplayMode"] {
+  return value === "compact" || value === "assistant_grouped" ? value : DEFAULT_CHAT_PREFERENCES.toolCallDisplayMode;
 }
 
 function normalizeNetworkRequestTypeFilters(value: unknown): NetworkRequestTypeFilter[] {
@@ -2257,6 +2268,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
           reasoningContent?: string;
           toolCallRecords?: ChatToolCallRecord[];
           toolAttachments?: ChatToolAttachment[];
+          toolTurnMessages?: ChatMessage[];
         }
       | { ok: false; message: string }
       | undefined
@@ -2288,9 +2300,9 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
       contextMode: input.state.contextMode,
       matchedRuleId: input.state.pageContext.matchedRuleId,
       networkContextAttachment: preparedNetworkContext.attachment,
-      toolCallRecords: response.toolCallRecords,
       toolAttachments: mergeToolAttachments(initialToolAttachments, response.toolAttachments),
     };
+    const assistantMessages = [...(response.toolTurnMessages ?? []), assistantMessage];
     if (input.privateMode) {
       input.set((current) => {
         const currentSession = current.privateChatSession;
@@ -2302,7 +2314,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
           privateChatSession: {
             ...currentSession,
             updatedAt: assistantMessage.createdAt,
-            messages: [...currentSession.messages, assistantMessage],
+            messages: [...currentSession.messages, ...assistantMessages],
           },
         };
       });
@@ -2312,7 +2324,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
     const completedSession = await updateChatSession(nextSession.id, (latestSession) => ({
       ...latestSession,
       updatedAt: assistantMessage.createdAt,
-      messages: [...latestSession.messages, assistantMessage],
+      messages: [...latestSession.messages, ...assistantMessages],
     }));
     if (!completedSession) {
       return;
@@ -2328,7 +2340,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
         chatSessions: upsertSession(current.chatSessions, {
           ...currentSession,
           updatedAt: assistantMessage.createdAt,
-          messages: [...currentSession.messages, assistantMessage],
+          messages: [...currentSession.messages, ...assistantMessages],
         }),
       };
     });
@@ -2850,6 +2862,7 @@ function updateGeneratedTitleInState(
 type ChatStreamPortMessage =
   | { type: "chunk"; content: string }
   | { type: "thinking"; content: string }
+  | { type: "assistant:tool-turn"; message: ChatMessage }
   | { type: "tool:start"; record: ChatToolCallRecord }
   | { type: "tool:complete"; record: ChatToolCallRecord; attachments?: ChatToolAttachment[] }
   | {
@@ -2859,6 +2872,7 @@ type ChatStreamPortMessage =
       reasoningContent?: string;
       toolCallRecords?: ChatToolCallRecord[];
       toolAttachments?: ChatToolAttachment[];
+      toolTurnMessages?: ChatMessage[];
     }
   | { type: "error"; message?: string };
 
@@ -2885,6 +2899,57 @@ interface StreamingChatInput {
 
 type AssistantPlaceholderInput = Omit<StreamingChatInput, "request">;
 
+async function appendAssistantMessageToSession(
+  sessionId: string,
+  assistantMessage: ChatMessage,
+  set: StoreSetter,
+  privateMode = false,
+): Promise<ChatMessage | undefined> {
+  if (privateMode) {
+    set((current) => {
+      const currentSession = current.privateChatSession;
+      if (!current.privateModeActive || !currentSession || currentSession.id !== sessionId) {
+        return {};
+      }
+
+      return {
+        privateChatSession: {
+          ...currentSession,
+          updatedAt: assistantMessage.createdAt,
+          messages: [...currentSession.messages, assistantMessage],
+        },
+      };
+    });
+    return assistantMessage;
+  }
+
+  const initializedSession = await updateChatSession(sessionId, (latestSession) => ({
+    ...latestSession,
+    updatedAt: assistantMessage.createdAt,
+    messages: [...latestSession.messages, assistantMessage],
+  }));
+  if (!initializedSession) {
+    return undefined;
+  }
+
+  set((current) => {
+    const currentSession = current.chatSessions.find((session) => session.id === initializedSession.id);
+    if (!currentSession) {
+      return {};
+    }
+
+    return {
+      chatSessions: upsertSession(current.chatSessions, {
+        ...currentSession,
+        updatedAt: assistantMessage.createdAt,
+        messages: [...currentSession.messages, assistantMessage],
+      }),
+    };
+  });
+
+  return assistantMessage;
+}
+
 async function createAssistantPlaceholder(input: AssistantPlaceholderInput): Promise<ChatMessage | undefined> {
   const assistantCreatedAt = Date.now();
   const assistantMessage: ChatMessage = {
@@ -2904,49 +2969,7 @@ async function createAssistantPlaceholder(input: AssistantPlaceholderInput): Pro
     streaming: true,
   };
 
-  if (input.privateMode) {
-    input.set((current) => {
-      const currentSession = current.privateChatSession;
-      if (!current.privateModeActive || !currentSession || currentSession.id !== input.sessionId) {
-        return {};
-      }
-
-      return {
-        privateChatSession: {
-          ...currentSession,
-          updatedAt: assistantMessage.createdAt,
-          messages: [...currentSession.messages, assistantMessage],
-        },
-      };
-    });
-    return assistantMessage;
-  }
-
-  const initializedSession = await updateChatSession(input.sessionId, (latestSession) => ({
-    ...latestSession,
-    updatedAt: assistantMessage.createdAt,
-    messages: [...latestSession.messages, assistantMessage],
-  }));
-  if (!initializedSession) {
-    return undefined;
-  }
-
-  input.set((current) => {
-    const currentSession = current.chatSessions.find((session) => session.id === initializedSession.id);
-    if (!currentSession) {
-      return {};
-    }
-
-    return {
-      chatSessions: upsertSession(current.chatSessions, {
-        ...currentSession,
-        updatedAt: assistantMessage.createdAt,
-        messages: [...currentSession.messages, assistantMessage],
-      }),
-    };
-  });
-
-  return assistantMessage;
+  return appendAssistantMessageToSession(input.sessionId, assistantMessage, input.set, input.privateMode);
 }
 
 async function sendStreamingChatMessage(input: StreamingChatInput): Promise<StreamingChatResult> {
@@ -2954,8 +2977,10 @@ async function sendStreamingChatMessage(input: StreamingChatInput): Promise<Stre
     return { completed: false };
   }
 
-  const assistantMessage = await createAssistantPlaceholder(input);
-  if (!assistantMessage) {
+  const usesTools = Boolean(input.request.enabledToolIds?.length);
+  let assistantMessage: ChatMessage | undefined = usesTools ? undefined : await createAssistantPlaceholder(input);
+  let currentToolTurnMessageId: string | undefined;
+  if (!usesTools && !assistantMessage) {
     return { completed: true };
   }
 
@@ -2982,55 +3007,96 @@ async function sendStreamingChatMessage(input: StreamingChatInput): Promise<Stre
       });
       return writeQueue;
     };
+    const ensureFinalAssistantMessage = async (): Promise<ChatMessage | undefined> => {
+      if (assistantMessage) {
+        return assistantMessage;
+      }
+
+      assistantMessage = await createAssistantPlaceholder(input);
+      return assistantMessage;
+    };
 
     port.onMessage.addListener((message: ChatStreamPortMessage) => {
       if (message.type === "chunk") {
-        void enqueueWrite(() => appendAssistantChunk(input.sessionId, assistantMessage.id, message.content, input.set, input.privateMode));
+        void enqueueWrite(async () => {
+          const finalAssistantMessage = await ensureFinalAssistantMessage();
+          if (finalAssistantMessage) {
+            await appendAssistantChunk(input.sessionId, finalAssistantMessage.id, message.content, input.set, input.privateMode);
+          }
+        });
         return;
       }
 
       if (message.type === "thinking") {
-        void enqueueWrite(() => appendAssistantThinkingChunk(input.sessionId, assistantMessage.id, message.content, input.set, input.privateMode));
+        void enqueueWrite(async () => {
+          const finalAssistantMessage = await ensureFinalAssistantMessage();
+          if (finalAssistantMessage) {
+            await appendAssistantThinkingChunk(input.sessionId, finalAssistantMessage.id, message.content, input.set, input.privateMode);
+          }
+        });
+        return;
+      }
+
+      if (message.type === "assistant:tool-turn") {
+        void enqueueWrite(async () => {
+          const storedMessage = await appendAssistantMessageToSession(input.sessionId, message.message, input.set, input.privateMode);
+          currentToolTurnMessageId = storedMessage?.id;
+        });
         return;
       }
 
       if (message.type === "tool:start") {
-        void enqueueWrite(() => upsertAssistantToolCallRecord(input.sessionId, assistantMessage.id, message.record, [], input.set, input.privateMode));
+        void enqueueWrite(async () => {
+          if (currentToolTurnMessageId) {
+            await upsertAssistantToolCallRecord(input.sessionId, currentToolTurnMessageId, message.record, [], input.set, input.privateMode);
+          }
+        });
         return;
       }
 
       if (message.type === "tool:complete") {
-        void enqueueWrite(() =>
-          upsertAssistantToolCallRecord(input.sessionId, assistantMessage.id, message.record, message.attachments ?? [], input.set, input.privateMode),
-        );
+        void enqueueWrite(async () => {
+          if (currentToolTurnMessageId) {
+            await upsertAssistantToolCallRecord(input.sessionId, currentToolTurnMessageId, message.record, message.attachments ?? [], input.set, input.privateMode);
+          }
+        });
         return;
       }
 
       if (message.type === "complete") {
         receivedFinalComplete = true;
-        void enqueueWrite(() =>
-          finalizeAssistantMessage(input.sessionId, assistantMessage.id, message.content, message.thinking, input.set, input.privateMode, {
+        void enqueueWrite(async () => {
+          const finalAssistantMessage = await ensureFinalAssistantMessage();
+          if (!finalAssistantMessage) {
+            return;
+          }
+          await finalizeAssistantMessage(input.sessionId, finalAssistantMessage.id, message.content, message.thinking, input.set, input.privateMode, {
             reasoningContent: message.reasoningContent,
-            toolCallRecords: message.toolCallRecords,
             toolAttachments: mergeToolAttachments(input.toolAttachments, message.toolAttachments),
-          }),
-        ).then(() => finish({ completed: true, assistantContent: message.content }));
+          });
+        }).then(() => finish({ completed: true, assistantContent: message.content }));
         return;
       }
 
       const failureMessage = resolveStreamPortFailureMessage(message);
       input.set({ failure: { message: failureMessage } });
-      void enqueueWrite(() => failAssistantMessage(input.sessionId, assistantMessage.id, failureMessage, input.set, input.privateMode)).then(() =>
-        finish({ completed: true }),
-      );
+      void enqueueWrite(async () => {
+        const finalAssistantMessage = await ensureFinalAssistantMessage();
+        if (finalAssistantMessage) {
+          await failAssistantMessage(input.sessionId, finalAssistantMessage.id, failureMessage, input.set, input.privateMode);
+        }
+      }).then(() => finish({ completed: true }));
     });
 
     port.onDisconnect.addListener(() => {
       if (!receivedFinalComplete) {
         input.set({ failure: { message: STREAM_FAILURE_MESSAGE } });
-        void enqueueWrite(() => failAssistantMessage(input.sessionId, assistantMessage.id, STREAM_FAILURE_MESSAGE, input.set, input.privateMode)).then(() =>
-          finish({ completed: true }, { disconnect: false }),
-        );
+        void enqueueWrite(async () => {
+          const finalAssistantMessage = await ensureFinalAssistantMessage();
+          if (finalAssistantMessage) {
+            await failAssistantMessage(input.sessionId, finalAssistantMessage.id, STREAM_FAILURE_MESSAGE, input.set, input.privateMode);
+          }
+        }).then(() => finish({ completed: true }, { disconnect: false }));
         return;
       }
 

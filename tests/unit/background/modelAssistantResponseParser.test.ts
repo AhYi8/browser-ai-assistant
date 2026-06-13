@@ -1,0 +1,146 @@
+import { describe, expect, it } from "vitest";
+import { extractAssistantResponseData } from "../../../src/background/modelAssistantResponseParser";
+import type { OpenAIStructuredOutputFormat } from "../../../src/shared/models/types";
+
+describe("模型 assistant 响应抽取", () => {
+  it("抽取 OpenAI 文本、reasoning_content 和工具调用", () => {
+    const result = extractAssistantResponseData(
+      {
+        choices: [
+          {
+            message: {
+              content: [
+                "我先看页面。",
+                "<｜tool_calls｜>",
+                "<｜invoke name=\"take_snapshot\"｜>",
+                "</｜invoke｜>",
+                "</｜tool_calls｜>",
+              ].join("\n"),
+              reasoning_content: "需要先获得页面结构",
+              tool_calls: [
+                {
+                  id: "call-1",
+                  type: "function",
+                  function: {
+                    name: "current_time",
+                    arguments: "{}",
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+      { collectToolCalls: true },
+    );
+
+    expect(result).toEqual({
+      content: "我先看页面。",
+      reasoningContent: "需要先获得页面结构",
+      toolCalls: [
+        { id: "call-1", name: "current_time", arguments: {} },
+        { id: "dsml-tool-call-1", name: "take_snapshot", arguments: {} },
+      ],
+    });
+  });
+
+  it("结构化输出模式从 OpenAI tool_calls 中抽取第一个 arguments 字符串", () => {
+    const structuredOutput: OpenAIStructuredOutputFormat = {
+      type: "tool",
+      tool: {
+        name: "extract",
+        parameters: {},
+      },
+    };
+
+    const result = extractAssistantResponseData(
+      {
+        choices: [
+          {
+            message: {
+              tool_calls: [
+                {
+                  type: "function",
+                  function: {
+                    name: "extract",
+                    arguments: "{\"answer\":\"ok\"}",
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+      { structuredOutput, collectToolCalls: false },
+    );
+
+    expect(result).toEqual({ content: "{\"answer\":\"ok\"}" });
+  });
+
+  it("结构化输出模式兼容空字符串 content 与 tool_calls 同时存在", () => {
+    const structuredOutput: OpenAIStructuredOutputFormat = {
+      type: "tool",
+      tool: {
+        name: "extract",
+        parameters: {},
+      },
+    };
+
+    const result = extractAssistantResponseData(
+      {
+        choices: [
+          {
+            message: {
+              content: "",
+              tool_calls: [
+                {
+                  type: "function",
+                  function: {
+                    name: "extract",
+                    arguments: "{\"answer\":\"ok\"}",
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+      { structuredOutput, collectToolCalls: false },
+    );
+
+    expect(result).toEqual({ content: "{\"answer\":\"ok\"}" });
+  });
+
+  it("OpenAI 无内容时回退抽取 Anthropic 文本和工具调用", () => {
+    const result = extractAssistantResponseData(
+      {
+        content: [
+          { type: "text", text: "需要点击按钮。" },
+          { type: "tool_use", id: "tool-1", name: "click", input: { uid: "6_99" } },
+        ],
+      },
+      { collectToolCalls: true },
+    );
+
+    expect(result).toEqual({
+      content: "需要点击按钮。",
+      toolCalls: [{ id: "tool-1", name: "click", arguments: { uid: "6_99" } }],
+    });
+  });
+
+  it("带 choices 的 OpenAI-compatible 空响应不会回退到同对象里的 Anthropic content 字段", () => {
+    const result = extractAssistantResponseData(
+      {
+        choices: [{ message: { content: "" } }],
+        content: [{ type: "text", text: "不应被当作 Anthropic 正文" }],
+      },
+      { collectToolCalls: true },
+    );
+
+    expect(result).toEqual({ content: "" });
+  });
+
+  it("未知响应结构返回空内容", () => {
+    expect(extractAssistantResponseData({ foo: "bar" }, { collectToolCalls: true })).toEqual({ content: "" });
+  });
+});

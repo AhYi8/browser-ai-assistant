@@ -80,6 +80,12 @@ describe("当前系统时间工具调用", () => {
         json: vi.fn().mockResolvedValue({
           choices: [{ message: { content: "现在是 2026 年 6 月 11 日。" } }],
         }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          choices: [{ message: { content: "现在是 2026 年 6 月 11 日。" } }],
+        }),
       });
 
     const result = await handleChatSendMessage(
@@ -97,17 +103,22 @@ describe("当前系统时间工具调用", () => {
     expect(result).toMatchObject({
       ok: true,
       content: "现在是 2026 年 6 月 11 日。",
-      toolCallRecords: [
+      toolTurnMessages: [
         expect.objectContaining({
-          toolId: CURRENT_TIME_TOOL_ID,
-          name: "get_current_time",
-          status: "success",
+          toolCallRecords: [
+            expect.objectContaining({
+              toolId: CURRENT_TIME_TOOL_ID,
+              name: "get_current_time",
+              status: "success",
+            }),
+          ],
         }),
       ],
     });
+    expect(result).not.toHaveProperty("toolCallRecords");
     expect(result).not.toHaveProperty("toolAttachments");
-    const finalModelBody = JSON.parse(String(fetcher.mock.calls[1][1]?.body)) as { messages: Array<{ role: string; content?: string }> };
-    expect(finalModelBody.messages).toEqual(
+    const toolDecisionBody = JSON.parse(String(fetcher.mock.calls[1][1]?.body)) as { messages: Array<{ role: string; content?: string }> };
+    expect(toolDecisionBody.messages).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           role: "tool",
@@ -115,6 +126,9 @@ describe("当前系统时间工具调用", () => {
         }),
       ]),
     );
+    const finalModelBody = JSON.parse(String(fetcher.mock.calls[2][1]?.body)) as { tools?: unknown[]; tool_choice?: unknown };
+    expect(finalModelBody.tools).toBeUndefined();
+    expect(finalModelBody.tool_choice).toBeUndefined();
   });
 
   it("当前系统时间工具收到额外参数时拒绝执行并把中文错误回灌给模型", async () => {
@@ -147,6 +161,12 @@ describe("当前系统时间工具调用", () => {
         json: vi.fn().mockResolvedValue({
           choices: [{ message: { content: "参数已拒绝。" } }],
         }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          choices: [{ message: { content: "参数已拒绝。" } }],
+        }),
       });
 
     await handleChatSendMessage(
@@ -161,8 +181,8 @@ describe("当前系统时间工具调用", () => {
       fetcher,
     );
 
-    const finalModelBody = JSON.parse(String(fetcher.mock.calls[1][1]?.body)) as { messages: Array<{ role: string; content?: string }> };
-    expect(finalModelBody.messages).toEqual(
+    const toolDecisionBody = JSON.parse(String(fetcher.mock.calls[1][1]?.body)) as { messages: Array<{ role: string; content?: string }> };
+    expect(toolDecisionBody.messages).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           role: "tool",

@@ -1164,6 +1164,30 @@ function ChatPreferenceSettings() {
         )}
       </fieldset>
       <label className="chat-preference-field">
+        工具调用展示方式
+        <select
+          className="ui-input chat-preference-shortcut-select"
+          aria-label="工具调用展示方式"
+          value={chatPreferences.toolCallDisplayMode}
+          onChange={(event) => void updateChatPreferences({ toolCallDisplayMode: event.target.value as ChatPreferenceValues["toolCallDisplayMode"] })}
+        >
+          <option value="assistant_grouped">AI 回复与工具分组</option>
+          <option value="compact">紧凑工具过程</option>
+        </select>
+      </label>
+      <label className="chat-preference-switch">
+        <input
+          className="chat-preference-switch-input"
+          type="checkbox"
+          checked={chatPreferences.showToolCallProcessInAssistantMode}
+          onChange={(event) => void updateChatPreferences({ showToolCallProcessInAssistantMode: event.target.checked })}
+        />
+        <span className="chat-preference-switch-control" aria-hidden="true">
+          <span className="chat-preference-switch-thumb" />
+        </span>
+        <span className="chat-preference-switch-label">非紧凑模式显示工具调用过程</span>
+      </label>
+      <label className="chat-preference-field">
         发送快捷键
         <select
           className="ui-input chat-preference-shortcut-select"

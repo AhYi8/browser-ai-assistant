@@ -600,7 +600,9 @@ describe("App", () => {
     render(<App />);
 
     await screen.findByRole("button", { name: "导出当前聊天" });
-    expect(screen.queryByRole("button", { name: "进入隐私模式" })).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "进入隐私模式" })).not.toBeInTheDocument();
+    });
   });
 
   it("隐私模式有消息时切换历史会话需要确认，取消后保留隐私对话", async () => {
@@ -876,6 +878,8 @@ describe("App", () => {
         historyDrawerDefaultOpen: true,
         injectPageContextByDefault: true,
         extractHtmlByDefault: false,
+        toolCallDisplayMode: "assistant_grouped",
+        showToolCallProcessInAssistantMode: false,
       },
       updateChatPreferences,
     });
@@ -908,6 +912,8 @@ describe("App", () => {
         historyDrawerDefaultOpen: true,
         injectPageContextByDefault: true,
         extractHtmlByDefault: false,
+        toolCallDisplayMode: "assistant_grouped",
+        showToolCallProcessInAssistantMode: false,
       },
       updateChatPreferences,
     });
@@ -921,6 +927,47 @@ describe("App", () => {
     await user.click(screen.getByRole("checkbox", { name: "启用工具调用" }));
 
     expect(updateChatPreferences).toHaveBeenCalledWith({ toolCallingEnabled: true });
+  });
+
+  it("聊天偏好可以保存工具调用展示方式", async () => {
+    const user = userEvent.setup();
+    const updateChatPreferences = vi.fn(async () => undefined);
+    useAppStore.setState({
+      chatPreferences: {
+        ...useAppStore.getState().chatPreferences,
+        toolCallDisplayMode: "assistant_grouped",
+      },
+      updateChatPreferences,
+    });
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("tab", { name: "聊天偏好" }));
+    await user.selectOptions(screen.getByRole("combobox", { name: "工具调用展示方式" }), "compact");
+
+    expect(updateChatPreferences).toHaveBeenCalledWith({ toolCallDisplayMode: "compact" });
+  });
+
+  it("聊天偏好可以保存非紧凑模式下是否显示工具调用过程", async () => {
+    const user = userEvent.setup();
+    const updateChatPreferences = vi.fn(async () => undefined);
+    useAppStore.setState({
+      chatPreferences: {
+        ...useAppStore.getState().chatPreferences,
+        toolCallDisplayMode: "assistant_grouped",
+        showToolCallProcessInAssistantMode: false,
+      },
+      updateChatPreferences,
+    });
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("tab", { name: "聊天偏好" }));
+    await user.click(screen.getByRole("checkbox", { name: "非紧凑模式显示工具调用过程" }));
+
+    expect(updateChatPreferences).toHaveBeenCalledWith({ showToolCallProcessInAssistantMode: true });
   });
 
   it("聊天偏好可以保存浏览器自动化最大工具轮次", async () => {
@@ -942,6 +989,8 @@ describe("App", () => {
         historyDrawerDefaultOpen: true,
         injectPageContextByDefault: true,
         extractHtmlByDefault: false,
+        toolCallDisplayMode: "assistant_grouped",
+        showToolCallProcessInAssistantMode: false,
       },
       updateChatPreferences,
     });
@@ -978,6 +1027,8 @@ describe("App", () => {
         historyDrawerDefaultOpen: true,
         injectPageContextByDefault: true,
         extractHtmlByDefault: false,
+        toolCallDisplayMode: "assistant_grouped",
+        showToolCallProcessInAssistantMode: false,
       },
       updateChatPreferences,
     });
@@ -1010,6 +1061,8 @@ describe("App", () => {
         historyDrawerDefaultOpen: true,
         injectPageContextByDefault: true,
         extractHtmlByDefault: false,
+        toolCallDisplayMode: "assistant_grouped",
+        showToolCallProcessInAssistantMode: false,
       },
       updateChatPreferences,
     });
@@ -4325,6 +4378,345 @@ describe("App", () => {
     expect(dialog).toHaveTextContent("25 ms");
     expect(screen.getAllByText("网络搜索结果").some((item) => Boolean(item.closest(".message-web-search-attachment")))).toBe(true);
     expect(readFileSync(resolve(process.cwd(), "src/side-panel/styles.css"), "utf8")).toContain(".message-tool-call-row");
+  });
+
+  it("默认按工具轮助手消息展示 AI 回复正文但隐藏本轮工具调用过程和消息操作按钮", async () => {
+    await saveChatSession(
+      createChatSession({
+        id: "session-tool-turn-message",
+        title: "工具轮消息",
+        messages: [
+          createChatMessage({
+            id: "message-tool-turn",
+            role: "assistant",
+            assistantMessageKind: "tool_call_turn",
+            content: "我先查看当前页面结构。",
+            thinking: "需要先读取页面。",
+            toolCallRecords: [
+              {
+                id: "call-page",
+                toolId: "page.read_context",
+                name: "read_page_context",
+                displayName: "读取页面上下文",
+                arguments: { mode: "text" },
+                status: "success",
+                startedAt: 1,
+                completedAt: 2,
+                resultSummary: "读取完成",
+              },
+            ],
+          }),
+          createChatMessage({ id: "message-final", role: "assistant", content: "最终回答。" }),
+        ],
+      }),
+    );
+
+    render(<App />);
+
+    expect(await screen.findByText("我先查看当前页面结构。")).toBeInTheDocument();
+    expect(screen.queryByText("需要先读取页面。")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "已调用 读取页面上下文" })).not.toBeInTheDocument();
+    expect(screen.getByText("最终回答。")).toBeInTheDocument();
+    const toolTurnEntry = screen.getByText("我先查看当前页面结构。").closest(".message-entry");
+    const finalEntry = screen.getByText("最终回答。").closest(".message-entry");
+    expect(toolTurnEntry?.querySelector(".message-regenerate-action")).toBeNull();
+    expect(finalEntry?.querySelector(".message-regenerate-action")).not.toBeNull();
+  });
+
+  it("开启偏好后非紧凑模式会在工具轮助手消息下方显示工具调用过程", async () => {
+    await saveAppSetting({
+      key: "chatPreferences",
+      value: {
+        ...useAppStore.getState().chatPreferences,
+        toolCallDisplayMode: "assistant_grouped",
+        showToolCallProcessInAssistantMode: true,
+      },
+      updatedAt: 2,
+    });
+    await saveChatSession(
+      createChatSession({
+        id: "session-tool-turn-process-visible",
+        title: "工具过程显示",
+        messages: [
+          createChatMessage({
+            id: "message-tool-turn-process-visible",
+            role: "assistant",
+            assistantMessageKind: "tool_call_turn",
+            content: "我先读取页面。",
+            toolCallRecords: [
+              {
+                id: "call-page-visible",
+                toolId: "page.read_context",
+                name: "read_page_context",
+                displayName: "读取页面上下文",
+                arguments: { mode: "text" },
+                status: "success",
+                startedAt: 1,
+                completedAt: 2,
+                resultSummary: "读取完成",
+              },
+            ],
+          }),
+        ],
+      }),
+    );
+
+    render(<App />);
+
+    expect(await screen.findByText("我先读取页面。")).toBeInTheDocument();
+    const toolButton = screen.getByRole("button", { name: "已调用 读取页面上下文" });
+    const entry = toolButton.closest(".message-entry");
+    const article = entry?.querySelector("article");
+
+    expect(article).not.toBeNull();
+    expect(article!.compareDocumentPosition(toolButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(article!.contains(toolButton)).toBe(false);
+  });
+
+  it("开启偏好后工具轮调用过程显示在 assistant 消息下方并相对消息列表居中", async () => {
+    await saveAppSetting({
+      key: "chatPreferences",
+      value: {
+        ...useAppStore.getState().chatPreferences,
+        toolCallDisplayMode: "assistant_grouped",
+        showToolCallProcessInAssistantMode: true,
+      },
+      updatedAt: 2,
+    });
+    await saveChatSession(
+      createChatSession({
+        id: "session-tool-call-below-message",
+        title: "工具过程位置",
+        messages: [
+          createChatMessage({
+            id: "message-tool-call-below",
+            role: "assistant",
+            assistantMessageKind: "tool_call_turn",
+            content: "我先打开页面。",
+            toolCallRecords: [
+              {
+                id: "call-open-page",
+                toolId: "browser.new_page",
+                name: "browser_new_page",
+                displayName: "浏览器新建页面",
+                arguments: {},
+                status: "success",
+                startedAt: 1,
+                completedAt: 2,
+                resultSummary: "已打开",
+              },
+            ],
+          }),
+        ],
+      }),
+    );
+
+    render(<App />);
+
+    const toolButton = await screen.findByRole("button", { name: "已调用 浏览器新建页面" });
+    const entry = toolButton.closest(".message-entry");
+    const article = entry?.querySelector("article");
+
+    expect(entry).not.toBeNull();
+    expect(article).not.toBeNull();
+    expect(article!.compareDocumentPosition(toolButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(article!.contains(toolButton)).toBe(false);
+    expect(toolButton.closest(".message-tool-call-list")).toHaveClass("message-tool-call-list-panel-centered");
+  });
+
+  it("空正文工具轮只显示居中的工具调用过程，不显示 assistant 气泡和操作按钮", async () => {
+    await saveAppSetting({
+      key: "chatPreferences",
+      value: {
+        ...useAppStore.getState().chatPreferences,
+        toolCallDisplayMode: "assistant_grouped",
+        showToolCallProcessInAssistantMode: true,
+      },
+      updatedAt: 2,
+    });
+    await saveChatSession(
+      createChatSession({
+        id: "session-empty-tool-turn",
+        title: "空工具轮",
+        messages: [
+          createChatMessage({
+            id: "message-empty-tool-turn",
+            role: "assistant",
+            assistantMessageKind: "tool_call_turn",
+            content: "",
+            thinking: "",
+            toolCallRecords: [
+              {
+                id: "call-snapshot-empty",
+                toolId: "browser.take_snapshot",
+                name: "browser_take_snapshot",
+                displayName: "浏览器页面快照",
+                arguments: {},
+                status: "success",
+                startedAt: 1,
+                completedAt: 2,
+                resultSummary: "已截图",
+              },
+            ],
+          }),
+        ],
+      }),
+    );
+
+    render(<App />);
+
+    const toolButton = await screen.findByRole("button", { name: "已调用 浏览器页面快照" });
+    const entry = toolButton.closest(".message-entry");
+
+    expect(entry?.querySelector("article")).toBeNull();
+    expect(entry?.querySelector(".message-avatar")).toBeNull();
+    expect(entry?.querySelector(".message-regenerate-action")).toBeNull();
+    expect(toolButton.closest(".message-tool-call-list")).toHaveClass("message-tool-call-list-panel-centered");
+  });
+
+  it("空正文但有思考的工具轮也只显示工具调用过程", async () => {
+    await saveAppSetting({
+      key: "chatPreferences",
+      value: {
+        ...useAppStore.getState().chatPreferences,
+        toolCallDisplayMode: "assistant_grouped",
+        showToolCallProcessInAssistantMode: true,
+      },
+      updatedAt: 2,
+    });
+    await saveChatSession(
+      createChatSession({
+        id: "session-empty-content-thinking-tool-turn",
+        title: "空正文有思考工具轮",
+        messages: [
+          createChatMessage({
+            id: "message-empty-content-thinking-tool-turn",
+            role: "assistant",
+            assistantMessageKind: "tool_call_turn",
+            content: "",
+            thinking: "这段工具轮思考不应在聊天面板显示。",
+            toolCallRecords: [
+              {
+                id: "call-snapshot-thinking",
+                toolId: "browser.take_snapshot",
+                name: "browser_take_snapshot",
+                displayName: "浏览器页面快照",
+                arguments: {},
+                status: "success",
+                startedAt: 1,
+                completedAt: 2,
+                resultSummary: "已截图",
+              },
+            ],
+          }),
+        ],
+      }),
+    );
+
+    render(<App />);
+
+    const toolButton = await screen.findByRole("button", { name: "已调用 浏览器页面快照" });
+    const entry = toolButton.closest(".message-entry");
+
+    expect(screen.queryByText("这段工具轮思考不应在聊天面板显示。")).not.toBeInTheDocument();
+    expect(entry?.querySelector("article")).toBeNull();
+    expect(entry?.querySelector(".message-avatar")).toBeNull();
+  });
+
+  it("紧凑工具过程只隐藏工具轮助手正文和思考，仍展示工具调用并保留最终回答", async () => {
+    await saveAppSetting({
+      key: "chatPreferences",
+      value: {
+        ...useAppStore.getState().chatPreferences,
+        toolCallDisplayMode: "compact",
+      },
+      updatedAt: 2,
+    });
+    await saveChatSession(
+      createChatSession({
+        id: "session-compact-tool-turn",
+        title: "紧凑工具过程",
+        messages: [
+          createChatMessage({
+            id: "message-tool-turn-compact",
+            role: "assistant",
+            assistantMessageKind: "tool_call_turn",
+            content: "这段中间回复在聊天面板隐藏。",
+            thinking: "这段思考也隐藏。",
+            toolCallRecords: [
+              {
+                id: "call-page-compact",
+                toolId: "page.read_context",
+                name: "read_page_context",
+                displayName: "读取页面上下文",
+                arguments: { mode: "text" },
+                status: "success",
+                startedAt: 1,
+                completedAt: 2,
+                resultSummary: "读取完成",
+              },
+            ],
+          }),
+          createChatMessage({ id: "message-final-compact", role: "assistant", content: "最终回答仍显示。" }),
+        ],
+      }),
+    );
+
+    render(<App />);
+
+    await screen.findByRole("button", { name: "已调用 读取页面上下文" });
+    expect(screen.queryByText("这段中间回复在聊天面板隐藏。")).not.toBeInTheDocument();
+    expect(screen.queryByText("这段思考也隐藏。")).not.toBeInTheDocument();
+    expect(screen.getByText("最终回答仍显示。")).toBeInTheDocument();
+  });
+
+  it("同一工具轮超过 5 次调用时默认折叠并可展开全部", async () => {
+    const user = userEvent.setup();
+    await saveAppSetting({
+      key: "chatPreferences",
+      value: {
+        ...useAppStore.getState().chatPreferences,
+        toolCallDisplayMode: "assistant_grouped",
+        showToolCallProcessInAssistantMode: true,
+      },
+      updatedAt: 2,
+    });
+    await saveChatSession(
+      createChatSession({
+        id: "session-collapsed-tool-calls",
+        title: "折叠工具调用",
+        messages: [
+          createChatMessage({
+            id: "message-collapsed-tool-calls",
+            role: "assistant",
+            assistantMessageKind: "tool_call_turn",
+            content: "需要连续操作页面。",
+            toolCallRecords: Array.from({ length: 6 }, (_, index) => ({
+              id: `call-${index + 1}`,
+              toolId: "browser.click",
+              name: "browser_click",
+              displayName: `浏览器点击元素 ${index + 1}`,
+              arguments: {},
+              status: "success" as const,
+              startedAt: index,
+              completedAt: index + 1,
+              resultSummary: "完成",
+            })),
+          }),
+        ],
+      }),
+    );
+
+    render(<App />);
+
+    const expandButton = await screen.findByRole("button", { name: "展开全部工具调用（共 6 次）" });
+    expect(screen.queryByRole("button", { name: "已调用 浏览器点击元素 1" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "已调用 浏览器点击元素 6" })).toBeInTheDocument();
+
+    await user.click(expandButton);
+
+    expect(screen.getByRole("button", { name: "收起工具调用" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "已调用 浏览器点击元素 1" })).toBeInTheDocument();
   });
 
   it("同一条助手消息里的多次网络搜索工具附件会聚合成一个展示块", async () => {

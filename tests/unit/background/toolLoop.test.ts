@@ -50,6 +50,84 @@ describe("通用模型工具循环", () => {
     expect(executeTool).not.toHaveBeenCalled();
   });
 
+  it("工具调用前的 AI 回复会作为独立工具轮消息返回，最终回答不再承载工具记录", async () => {
+    const requestModel = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        content: "我需要先读取页面。",
+        thinking: "先确认页面内容。",
+        toolCalls: [
+          { id: "call-1", name: "read_page_context", arguments: { mode: "text" } },
+          { id: "call-2", name: "read_page_context", arguments: { mode: "all" } },
+        ],
+      })
+      .mockResolvedValueOnce({ ok: true, content: "最终回答" });
+    const executeTool: ModelToolExecutor = vi.fn(async (call) => ({
+      toolCallId: call.id,
+      name: call.name,
+      content: `工具结果：${call.id}`,
+    }));
+
+    const result = await runModelToolLoop({
+      initialMessages: baseMessages,
+      tools: [tool],
+      enabledToolIds: [tool.id],
+      requestModel,
+      executeTool,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      content: "最终回答",
+      toolTurnMessages: [
+        expect.objectContaining({
+          role: "assistant",
+          assistantMessageKind: "tool_call_turn",
+          content: "我需要先读取页面。",
+          thinking: "先确认页面内容。",
+          toolCallRecords: [expect.objectContaining({ id: "call-1" }), expect.objectContaining({ id: "call-2" })],
+        }),
+      ],
+    });
+    expect(result).not.toHaveProperty("toolCallRecords");
+    expect(result).not.toHaveProperty("toolAttachments");
+  });
+
+  it("流式回调会先发一次工具轮助手消息，再发本轮工具 start 和 complete", async () => {
+    const events: Array<{ type: "tool-turn" | "start" | "complete"; id: string; recordCount?: number }> = [];
+    const requestModel = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        content: "先读取页面。",
+        toolCalls: [{ id: "call-stream", name: "read_page_context", arguments: { mode: "text" } }],
+      })
+      .mockResolvedValueOnce({ ok: true, content: "最终回答" });
+    const executeTool: ModelToolExecutor = vi.fn(async (call) => ({
+      toolCallId: call.id,
+      name: call.name,
+      content: "工具结果",
+    }));
+
+    await runModelToolLoop({
+      initialMessages: baseMessages,
+      tools: [tool],
+      enabledToolIds: [tool.id],
+      requestModel,
+      executeTool,
+      onToolTurnMessage: (message) => events.push({ type: "tool-turn", id: message.id, recordCount: message.toolCallRecords?.length ?? 0 }),
+      onToolCallStart: (record) => events.push({ type: "start", id: record.id }),
+      onToolCallComplete: (record) => events.push({ type: "complete", id: record.id }),
+    });
+
+    expect(events).toEqual([
+      { type: "tool-turn", id: expect.stringContaining("call-stream"), recordCount: 0 },
+      { type: "start", id: "call-stream" },
+      { type: "complete", id: "call-stream" },
+    ]);
+  });
+
   it("工具调用会先发 start 事件，再执行工具并发 complete 事件", async () => {
     const events: Array<{ type: "start" | "complete"; record: ChatToolCallRecord; attachments?: ChatToolAttachment[] }> = [];
     const requestModel = vi
@@ -104,15 +182,19 @@ describe("通用模型工具循环", () => {
     expect(result).toMatchObject({
       ok: true,
       content: "页面标题是示例",
-      toolCallRecords: [
+      toolTurnMessages: [
         expect.objectContaining({
-          id: "call-1",
-          status: "success",
-          resultSummary: "页面标题：示例",
-          attachmentIds: ["attachment-1"],
+          toolCallRecords: [
+            expect.objectContaining({
+              id: "call-1",
+              status: "success",
+              resultSummary: "页面标题：示例",
+              attachmentIds: ["attachment-1"],
+            }),
+          ],
+          toolAttachments: [expect.objectContaining({ id: "attachment-1", kind: "page-context" })],
         }),
       ],
-      toolAttachments: [expect.objectContaining({ id: "attachment-1", kind: "page-context" })],
     });
     expect(events).toEqual([
       { type: "start", record: expect.objectContaining({ id: "call-1", status: "running" }) },
@@ -155,7 +237,10 @@ describe("通用模型工具循环", () => {
     expect(result).toMatchObject({
       ok: true,
       content: "最终流式回答",
-      toolCallRecords: [expect.objectContaining({ id: "call-1" }), expect.objectContaining({ id: "call-2" })],
+      toolTurnMessages: [
+        expect.objectContaining({ toolCallRecords: [expect.objectContaining({ id: "call-1" })] }),
+        expect.objectContaining({ toolCallRecords: [expect.objectContaining({ id: "call-2" })] }),
+      ],
     });
     expect(requestModel).toHaveBeenCalledTimes(3);
     expect(requestFinalModel).toHaveBeenCalledWith(
@@ -184,7 +269,11 @@ describe("通用模型工具循环", () => {
     expect(result).toMatchObject({
       ok: true,
       content: "我无法读取页面",
-      toolCallRecords: [expect.objectContaining({ id: "call-1", status: "error", errorMessage: "工具 read_page_context 未启用，已拒绝执行。" })],
+      toolTurnMessages: [
+        expect.objectContaining({
+          toolCallRecords: [expect.objectContaining({ id: "call-1", status: "error", errorMessage: "工具 read_page_context 未启用，已拒绝执行。" })],
+        }),
+      ],
     });
     expect(executeTool).not.toHaveBeenCalled();
     expect(requestModel).toHaveBeenLastCalledWith(
@@ -217,7 +306,11 @@ describe("通用模型工具循环", () => {
     expect(result).toMatchObject({
       ok: true,
       content: "没有可用工具。",
-      toolCallRecords: [expect.objectContaining({ id: "call-1", status: "error", toolId: "unknown_tool" })],
+      toolTurnMessages: [
+        expect.objectContaining({
+          toolCallRecords: [expect.objectContaining({ id: "call-1", status: "error", toolId: "unknown_tool" })],
+        }),
+      ],
     });
     expect(executeTool).not.toHaveBeenCalled();
     expect(requestModel).toHaveBeenLastCalledWith(
@@ -250,7 +343,11 @@ describe("通用模型工具循环", () => {
     expect(result).toMatchObject({
       ok: true,
       content: "参数错误",
-      toolCallRecords: [expect.objectContaining({ id: "call-1", status: "error", errorMessage: "工具 read_page_context 参数无效：工具参数必须是对象" })],
+      toolTurnMessages: [
+        expect.objectContaining({
+          toolCallRecords: [expect.objectContaining({ id: "call-1", status: "error", errorMessage: "工具 read_page_context 参数无效：工具参数必须是对象" })],
+        }),
+      ],
     });
     expect(executeTool).not.toHaveBeenCalled();
   });
@@ -299,7 +396,11 @@ describe("通用模型工具循环", () => {
     expect(result).toMatchObject({
       ok: true,
       content: "已合并搜索结果",
-      toolAttachments: [expect.objectContaining({ id: "attachment-call-1" }), expect.objectContaining({ id: "attachment-call-2" })],
+      toolTurnMessages: [
+        expect.objectContaining({
+          toolAttachments: [expect.objectContaining({ id: "attachment-call-1" }), expect.objectContaining({ id: "attachment-call-2" })],
+        }),
+      ],
     });
   });
 

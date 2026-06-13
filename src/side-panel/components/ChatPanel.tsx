@@ -26,6 +26,8 @@ export function ChatPanel({ historyPanelOpen, onToggleHistoryPanel }: ChatPanelP
   const editAndRegenerateUserMessage = useAppStore((state) => state.editAndRegenerateUserMessage);
   const sending = useAppStore((state) => state.sending);
   const pageContext = useAppStore((state) => state.pageContext);
+  const toolCallDisplayMode = useAppStore((state) => state.chatPreferences.toolCallDisplayMode);
+  const showToolCallProcessInAssistantMode = useAppStore((state) => state.chatPreferences.showToolCallProcessInAssistantMode);
   const contextMode = useAppStore((state) => state.contextMode);
   const extractionRules = useAppStore((state) => state.extractionRules);
   const storedActiveSession = useAppStore((state) => state.chatSessions.find((session) => session.id === state.activeSessionId));
@@ -147,6 +149,8 @@ export function ChatPanel({ historyPanelOpen, onToggleHistoryPanel }: ChatPanelP
       </div>
       <MessageList
         messages={activeSession?.messages ?? []}
+        toolCallDisplayMode={toolCallDisplayMode}
+        showToolCallProcessInAssistantMode={showToolCallProcessInAssistantMode}
         onRegenerateMessage={(messageId) => void regenerateMessage(messageId)}
         onEditAndRegenerateUserMessage={(messageId, content) => void editAndRegenerateUserMessage(messageId, content)}
         regenerating={sending}

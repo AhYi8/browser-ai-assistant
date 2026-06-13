@@ -2,6 +2,7 @@ export type EndpointType = "openai_chat" | "anthropic_messages";
 export type ChatRole = "system" | "user" | "assistant";
 export type PageContextExtractMode = "text" | "all";
 export type SendShortcut = "enter" | "shift_enter" | "ctrl_enter" | "ctrl_shift_enter" | "alt_enter";
+export type ToolCallDisplayMode = "assistant_grouped" | "compact";
 export type NetworkRequestTypeFilter = "all" | "fetch_xhr" | "doc" | "css" | "js" | "font" | "img" | "media" | "manifest" | "ws" | "wasm" | "other";
 export type WebSearchProviderType = "tavily";
 export type WebSearchApiKeyStrategy = "round_robin" | "random";
@@ -52,6 +53,8 @@ export interface ChatPreferenceValues {
   browserAutomationMaxToolIterations: number;
   toolCallingEnabled: boolean;
   enabledToolIds: string[];
+  toolCallDisplayMode: ToolCallDisplayMode;
+  showToolCallProcessInAssistantMode: boolean;
   temperature: number;
   maxTokens: number;
   topK?: number;
@@ -227,6 +230,7 @@ export interface ExtractionRule {
 export interface ChatMessage {
   id: string;
   role: ChatRole;
+  assistantMessageKind?: "tool_call_turn";
   content: string;
   createdAt: number;
   modelId: string;

@@ -110,6 +110,40 @@ const value = 1;
 `);
   });
 
+  it("导出会保留紧凑模式在聊天面板隐藏的工具轮助手消息", () => {
+    const session = createSession({
+      title: "工具轮导出",
+      messages: [
+        createMessage({
+          id: "message-tool-turn-export",
+          role: "assistant",
+          assistantMessageKind: "tool_call_turn",
+          content: "工具调用前的 AI 中间回复",
+          thinking: "工具调用前的思考",
+          createdAt: 1700000000000,
+          toolCallRecords: [
+            {
+              id: "call-export",
+              toolId: "page.read_context",
+              name: "read_page_context",
+              displayName: "读取页面上下文",
+              arguments: { mode: "text" },
+              status: "success",
+              startedAt: 1,
+              completedAt: 2,
+              resultSummary: "读取完成",
+            },
+          ],
+        }),
+      ],
+    });
+
+    const markdown = createChatSessionMarkdown(session, 1700000200000);
+
+    expect(markdown).toContain("工具调用前的 AI 中间回复");
+    expect(markdown).toContain("工具调用前的思考");
+  });
+
   it("导出用户消息时把调用的 Prompt 快照拼接到用户输入前", () => {
     const session = createSession({
       title: "Prompt 会话",

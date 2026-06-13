@@ -1274,20 +1274,21 @@ describe("background 入口", () => {
             status: "success",
             attachmentIds: ["tool-attachment-call-1"],
           }),
-          attachments: [expect.objectContaining({ id: "tool-attachment-call-1", kind: "web-search" })],
+          attachments: [
+            expect.objectContaining({
+              id: "tool-attachment-call-1",
+              kind: "web-search",
+              provider: "tavily",
+              query: "Tavily API",
+            }),
+          ],
         }),
       );
       expect(port.postMessage).toHaveBeenCalledWith(
         expect.objectContaining({
           type: "complete",
           content: "最终回答",
-          toolAttachments: [
-            expect.objectContaining({
-              kind: "web-search",
-              provider: "tavily",
-              query: "Tavily API",
-            }),
-          ],
+          toolAttachments: undefined,
         }),
       );
     });

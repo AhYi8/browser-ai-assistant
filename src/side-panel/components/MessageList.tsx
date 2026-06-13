@@ -6,17 +6,26 @@ import { formatTavilySearchAttachmentSummary } from "../../shared/webSearch/tavi
 import { collectMessageToolAttachments, collectRawMessageToolAttachments, isNetworkToolAttachment, isWebSearchToolAttachment } from "../../shared/toolArtifacts";
 import { createChatMessageMarkdown } from "../utils/chatMarkdownExport";
 import { copyOrDownloadMessageImage, copyTextToClipboard } from "../utils/messageClipboard";
-import type { ChatImageAttachment, ChatMessage, ChatPromptInvocation, ChatToolAttachment, ChatToolCallRecord } from "../../shared/types";
+import type { ChatImageAttachment, ChatMessage, ChatPromptInvocation, ChatToolAttachment, ChatToolCallRecord, ToolCallDisplayMode } from "../../shared/types";
 import { PromptInlineEditor, PromptTokenContent } from "./PromptInlineEditor";
 
 interface MessageListProps {
   messages: ChatMessage[];
+  toolCallDisplayMode: ToolCallDisplayMode;
+  showToolCallProcessInAssistantMode: boolean;
   onRegenerateMessage: (messageId: string) => void;
   onEditAndRegenerateUserMessage: (messageId: string, content: string, promptInvocations?: ChatPromptInvocation[]) => void;
   regenerating: boolean;
 }
 
-export function MessageList({ messages, onRegenerateMessage, onEditAndRegenerateUserMessage, regenerating }: MessageListProps) {
+export function MessageList({
+  messages,
+  toolCallDisplayMode,
+  showToolCallProcessInAssistantMode,
+  onRegenerateMessage,
+  onEditAndRegenerateUserMessage,
+  regenerating,
+}: MessageListProps) {
   const [previewAttachment, setPreviewAttachment] = useState<ChatImageAttachment | undefined>();
   const [pendingRegenerateMessageId, setPendingRegenerateMessageId] = useState<string | undefined>();
   const [editingMessageId, setEditingMessageId] = useState<string | undefined>();
@@ -105,23 +114,39 @@ export function MessageList({ messages, onRegenerateMessage, onEditAndRegenerate
 
   return (
     <section aria-label="消息列表" className="message-list">
-      {messages.map((message) => (
+      {messages.map((message) => {
+        const isToolCallTurn = message.role === "assistant" && message.assistantMessageKind === "tool_call_turn";
+        const shouldShowToolCallTimeline = shouldShowToolCallTimelineForMessage(message, toolCallDisplayMode, showToolCallProcessInAssistantMode);
+        const hideToolTurnContent = shouldHideToolTurnContent(message, toolCallDisplayMode);
+        const hasVisibleThinking = message.role === "assistant" && !isToolCallTurn && Boolean(message.thinking) && !hideToolTurnContent;
+        const hasVisibleContent = Boolean(message.content.trim()) && !hideToolTurnContent;
+        const hasVisibleArticle =
+          message.role !== "assistant" ||
+          !isToolCallTurn ||
+          hasVisibleThinking ||
+          hasVisibleContent ||
+          Boolean(message.attachments?.length) ||
+          Boolean(collectMessageToolAttachments(message).length);
+
+        return (
         <div key={message.id} className="message-entry">
-          {message.role === "assistant" && message.toolCallRecords?.length ? (
+          {message.role === "assistant" && message.toolCallRecords?.length && message.assistantMessageKind !== "tool_call_turn" ? (
             <ToolCallTimeline
               records={message.toolCallRecords}
               attachments={collectRawMessageToolAttachments(message)}
               activeToolCallId={activeToolCallId}
               popoverRef={toolCallPopoverRef}
+              panelCentered
               onToggle={(recordId) => setActiveToolCallId((current) => (current === recordId ? undefined : recordId))}
             />
           ) : null}
+        {hasVisibleArticle ? (
         <article className={message.role === "user" ? "message-row message-row-user" : "message-row"}>
           <div className="message-avatar" aria-hidden="true">
             {message.role === "user" ? "我" : "AI"}
           </div>
           <div className="message-bubble-wrap">
-            {message.role === "assistant" && message.thinking ? (
+            {hasVisibleThinking ? (
               <details className="message-thinking" open={shouldOpenThinking(message) || undefined}>
                 <summary>{message.streaming ? "思考中" : "思考过程"}</summary>
                 <p>{message.thinking}</p>
@@ -195,11 +220,12 @@ export function MessageList({ messages, onRegenerateMessage, onEditAndRegenerate
                 {message.role === "user" && message.promptInvocations?.length ? (
                   <PromptTokenLinks prompts={message.promptInvocations} ariaLabelPrefix="用户消息提示词" />
                 ) : null}
-                {message.content.trim() ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown> : null}
+                {hasVisibleContent ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown> : null}
               </div>
             )}
             {message.role === "assistant" ? <ToolAttachmentList message={message} /> : null}
-            <div className={`message-regenerate-action message-regenerate-action-${message.role}`}>
+            {!isToolCallTurn ? (
+              <div className={`message-regenerate-action message-regenerate-action-${message.role}`}>
               {message.role === "user" ? (
                 <button
                   className="message-icon-button message-edit-button"
@@ -272,11 +298,24 @@ export function MessageList({ messages, onRegenerateMessage, onEditAndRegenerate
                   {messageActionFeedback.text}
                 </span>
               ) : null}
-            </div>
+              </div>
+            ) : null}
           </div>
         </article>
+        ) : null}
+        {shouldShowToolCallTimeline ? (
+          <ToolCallTimeline
+            records={message.toolCallRecords}
+            attachments={collectRawMessageToolAttachments(message)}
+            activeToolCallId={activeToolCallId}
+            popoverRef={toolCallPopoverRef}
+            panelCentered
+            onToggle={(recordId) => setActiveToolCallId((current) => (current === recordId ? undefined : recordId))}
+          />
+        ) : null}
         </div>
-      ))}
+      );
+      })}
       {previewAttachment ? (
         <>
           <div className="dialog-overlay" aria-hidden="true" />
@@ -297,17 +336,28 @@ function ToolCallTimeline({
   attachments,
   activeToolCallId,
   popoverRef,
+  panelCentered = false,
   onToggle,
 }: {
   records: ChatToolCallRecord[];
   attachments: ChatToolAttachment[];
   activeToolCallId?: string;
   popoverRef: RefObject<HTMLDivElement | null>;
+  panelCentered?: boolean;
   onToggle: (recordId: string) => void;
 }) {
+  const [expanded, setExpanded] = useState(false);
+  const shouldCollapse = records.length > 5;
+  const visibleRecords = shouldCollapse && !expanded ? records.slice(-1) : records;
+
   return (
-    <div className="message-tool-call-list" aria-label="工具调用记录">
-      {records.map((record) => {
+    <div className={panelCentered ? "message-tool-call-list message-tool-call-list-panel-centered" : "message-tool-call-list"} aria-label="工具调用记录">
+      {shouldCollapse ? (
+        <button className="message-tool-call-collapse-toggle" type="button" onClick={() => setExpanded((value) => !value)}>
+          {expanded ? "收起工具调用" : `展开全部工具调用（共 ${records.length} 次）`}
+        </button>
+      ) : null}
+      {visibleRecords.map((record) => {
         const completed = record.status !== "running";
         const relatedAttachments = attachments.filter((attachment) => record.attachmentIds?.includes(attachment.id) || attachment.sourceToolCallId === record.id);
         return (
@@ -557,4 +607,24 @@ function shouldOpenThinking(message: ChatMessage): boolean {
   }
 
   return message.thinking.split(/\r?\n/).length <= 5;
+}
+
+function shouldHideToolTurnContent(message: ChatMessage, displayMode: ToolCallDisplayMode): boolean {
+  return displayMode === "compact" && message.assistantMessageKind === "tool_call_turn";
+}
+
+function shouldShowToolCallTimelineForMessage(
+  message: ChatMessage,
+  displayMode: ToolCallDisplayMode,
+  showToolCallProcessInAssistantMode: boolean,
+): message is ChatMessage & { toolCallRecords: ChatToolCallRecord[] } {
+  if (message.role !== "assistant" || !message.toolCallRecords?.length) {
+    return false;
+  }
+
+  if (message.assistantMessageKind !== "tool_call_turn") {
+    return false;
+  }
+
+  return displayMode === "compact" || showToolCallProcessInAssistantMode;
 }

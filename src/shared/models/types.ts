@@ -67,6 +67,7 @@ export interface ModelResponseData {
   toolCalls?: ModelToolCall[];
   toolCallRecords?: ChatToolCallRecord[];
   toolAttachments?: ChatToolAttachment[];
+  toolTurnMessages?: ChatMessage[];
 }
 
 export interface OpenAIJsonSchemaResponseFormat {

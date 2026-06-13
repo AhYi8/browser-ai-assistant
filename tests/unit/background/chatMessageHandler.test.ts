@@ -725,6 +725,12 @@ describe("聊天模型请求处理", () => {
             },
           ],
         }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          choices: [{ message: { content: "已读取页面结构" } }],
+        }),
       });
 
     const result = await handleChatSendMessage(
@@ -750,14 +756,270 @@ describe("聊天模型请求处理", () => {
       content: "已读取页面结构",
       thinking: undefined,
     });
-    expect(fetcher).toHaveBeenCalledTimes(2);
-    const secondBody = JSON.parse(String(fetcher.mock.calls[1][1]?.body)) as { messages: Array<{ role: string; content?: string }> };
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    const secondBody = JSON.parse(String(fetcher.mock.calls[1][1]?.body)) as {
+      messages: Array<{ role: string; content?: string }>;
+      tools?: unknown[];
+      tool_choice?: unknown;
+      stream?: boolean;
+    };
+    expect(secondBody).toMatchObject({ stream: false });
+    expect(secondBody.tools).toEqual([
+      expect.objectContaining({
+        type: "function",
+        function: expect.objectContaining({ name: "take_snapshot" }),
+      }),
+    ]);
+    expect(secondBody.tool_choice).toBe("auto");
     expect(secondBody.messages).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ role: "assistant", tool_calls: expect.any(Array) }),
         expect.objectContaining({ role: "tool", content: "页面结构快照" }),
       ]),
     );
+    const finalBody = JSON.parse(String(fetcher.mock.calls[2][1]?.body)) as { tools?: unknown[]; tool_choice?: unknown; stream?: boolean };
+    expect(finalBody).toMatchObject({ stream: false });
+    expect(finalBody.tools).toBeUndefined();
+    expect(finalBody.tool_choice).toBeUndefined();
+  });
+
+  it("OpenAI-compatible 正文中的 DSML 工具调用会转成工具调用并移除协议文本", async () => {
+    registeredModelToolsMock.tools = [
+      {
+        id: "browser.take_snapshot",
+        name: "take_snapshot",
+        description: "读取当前页面结构快照",
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+      },
+    ];
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          choices: [
+            {
+              message: {
+                content: [
+                  "<｜tool_calls｜>",
+                  "<｜invoke name=\"take_snapshot\"｜>",
+                  "</｜invoke｜>",
+                  "</｜tool_calls｜>",
+                ].join("\n"),
+              },
+            },
+          ],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          choices: [{ message: { content: "页面已经重新读取。" } }],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          choices: [{ message: { content: "页面已经重新读取。" } }],
+        }),
+      });
+
+    const result = await handleChatSendMessage(
+      {
+        type: "chat.send",
+        model: createModel(),
+        messages: [createMessage("user", "重新获取页面状态")],
+        stream: false,
+        enabledToolIds: ["browser.take_snapshot"],
+        toolChoice: "auto",
+      },
+      fetcher,
+      {},
+      async (toolCall) => ({
+        toolCallId: toolCall.id,
+        name: toolCall.name,
+        content: "页面结构快照",
+      }),
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      content: "页面已经重新读取。",
+      thinking: undefined,
+    });
+    expect(result.ok && result.toolTurnMessages?.[0].content).toBe("");
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    const secondBody = JSON.parse(String(fetcher.mock.calls[1][1]?.body)) as { messages: Array<{ role: string; content?: string; tool_calls?: unknown[] }> };
+    expect(secondBody.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "assistant",
+          content: "",
+          tool_calls: [
+            expect.objectContaining({
+              id: "dsml-tool-call-1",
+              type: "function",
+              function: expect.objectContaining({
+                name: "take_snapshot",
+                arguments: "{}",
+              }),
+            }),
+          ],
+        }),
+        expect.objectContaining({ role: "tool", content: "页面结构快照" }),
+      ]),
+    );
+    expect(JSON.stringify(secondBody.messages)).not.toContain("tool_calls｜");
+    expect(JSON.stringify(secondBody.messages)).not.toContain("invoke name");
+  });
+
+  it("OpenAI-compatible DSML 工具调用参数非法时沿用工具错误回灌", async () => {
+    registeredModelToolsMock.tools = [
+      {
+        id: "browser.take_snapshot",
+        name: "take_snapshot",
+        description: "读取当前页面结构快照",
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+      },
+    ];
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          choices: [
+            {
+              message: {
+                content: [
+                  "<|tool_calls|>",
+                  "<|invoke name=\"take_snapshot\"|>",
+                  "不是 JSON",
+                  "</|invoke|>",
+                  "</|tool_calls|>",
+                ].join("\n"),
+              },
+            },
+          ],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          choices: [{ message: { content: "已说明参数错误。" } }],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          choices: [{ message: { content: "已说明参数错误。" } }],
+        }),
+      });
+
+    const result = await handleChatSendMessage(
+      {
+        type: "chat.send",
+        model: createModel(),
+        messages: [createMessage("user", "重新获取页面状态")],
+        stream: false,
+        enabledToolIds: ["browser.take_snapshot"],
+        toolChoice: "auto",
+      },
+      fetcher,
+    );
+
+    expect(result).toMatchObject({ ok: true, content: "已说明参数错误。" });
+    expect(browserControlManagerMock.takeSnapshot).not.toHaveBeenCalled();
+    const secondBody = JSON.parse(String(fetcher.mock.calls[1][1]?.body)) as { messages: Array<{ role: string; content?: string }> };
+    expect(secondBody.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "tool",
+          content: "工具 take_snapshot 参数无效：工具参数不是合法 JSON",
+        }),
+      ]),
+    );
+  });
+
+  it("OpenAI-compatible 疑似 DSML 工具调用残片会作为错误工具结果回灌给模型继续决策", async () => {
+    registeredModelToolsMock.tools = [
+      {
+        id: "browser.take_snapshot",
+        name: "take_snapshot",
+        description: "读取当前页面结构快照",
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+      },
+    ];
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          choices: [
+            {
+              message: {
+                content: [
+                  "我需要重新读取页面。",
+                  "<｜tool_calls｜>",
+                  "<｜invoke name=\"take_snapshot\"｜>",
+                ].join("\n"),
+              },
+            },
+          ],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          choices: [{ message: { content: "工具调用格式错误，我会改用当前可见信息总结。" } }],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          choices: [{ message: { content: "工具调用格式错误，我会改用当前可见信息总结。" } }],
+        }),
+      });
+
+    const result = await handleChatSendMessage(
+      {
+        type: "chat.send",
+        model: createModel(),
+        messages: [createMessage("user", "重新获取页面状态")],
+        stream: false,
+        enabledToolIds: ["browser.take_snapshot"],
+        toolChoice: "auto",
+      },
+      fetcher,
+    );
+
+    expect(result).toMatchObject({ ok: true, content: "工具调用格式错误，我会改用当前可见信息总结。" });
+    expect(browserControlManagerMock.takeSnapshot).not.toHaveBeenCalled();
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    const secondBody = JSON.parse(String(fetcher.mock.calls[1][1]?.body)) as { messages: Array<{ role: string; content?: string; tool_calls?: unknown[] }> };
+    expect(secondBody.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "assistant",
+          content: "我需要重新读取页面。",
+          tool_calls: [
+            expect.objectContaining({
+              id: "dsml-tool-call-1",
+              type: "function",
+              function: expect.objectContaining({
+                name: "take_snapshot",
+                arguments: "{}",
+              }),
+            }),
+          ],
+        }),
+        expect.objectContaining({
+          role: "tool",
+          content: "工具 take_snapshot 参数无效：工具调用格式不完整",
+          tool_call_id: "dsml-tool-call-1",
+        }),
+      ]),
+    );
+    expect(JSON.stringify(secondBody.messages)).not.toContain("<｜tool_calls｜>");
   });
 
   it("默认 background 执行器会把浏览器快照工具转发给浏览器控制管理器", async () => {
@@ -803,6 +1065,12 @@ describe("聊天模型请求处理", () => {
         json: vi.fn().mockResolvedValue({
           choices: [{ message: { content: "已读取页面结构" } }],
         }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          choices: [{ message: { content: "已读取页面结构" } }],
+        }),
       });
 
     const result = await handleChatSendMessage(
@@ -827,6 +1095,11 @@ describe("聊天模型请求处理", () => {
         expect.objectContaining({ role: "tool", content: "页面结构快照" }),
       ]),
     );
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    const finalBody = JSON.parse(String(fetcher.mock.calls[2][1]?.body)) as { stream?: boolean; tools?: unknown[]; tool_choice?: unknown };
+    expect(finalBody).toMatchObject({ stream: false });
+    expect(finalBody.tools).toBeUndefined();
+    expect(finalBody.tool_choice).toBeUndefined();
   });
 
   it("默认 background 执行器会把阶段三浏览器操作工具转发给浏览器控制管理器", async () => {
@@ -877,6 +1150,12 @@ describe("聊天模型请求处理", () => {
         json: vi.fn().mockResolvedValue({
           choices: [{ message: { content: "按钮已点击" } }],
         }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          choices: [{ message: { content: "按钮已点击" } }],
+        }),
       });
 
     const result = await handleChatSendMessage(
@@ -903,7 +1182,7 @@ describe("聊天模型请求处理", () => {
     );
   });
 
-  it("流式浏览器自动化允许超过普通工具默认轮次后再生成最终回复", async () => {
+  it("流式浏览器自动化允许超过普通工具默认轮次后再用流式最终请求生成回复", async () => {
     registeredModelToolsMock.tools = [
       {
         id: "browser.click",
@@ -944,12 +1223,32 @@ describe("聊天模型请求处理", () => {
         ],
       }),
     }));
+    const encoder = new TextEncoder();
+    const finalStreamChunks = [
+      encoder.encode('data: {"choices":[{"delta":{"content":"最终"}}]}\n\n'),
+      encoder.encode('data: {"choices":[{"delta":{"content":"回复"}}]}\n\n'),
+      encoder.encode("data: [DONE]\n\n"),
+    ];
     const responseQueue = [
       ...toolResponses,
       {
         ok: true,
         json: vi.fn().mockResolvedValue({
-          choices: [{ message: { content: "最终回复" } }],
+          choices: [{ message: { content: "工具决策阶段最终回复" } }],
+        }),
+      },
+      {
+        ok: true,
+        body: new ReadableStream({
+          pull(controller) {
+            const chunk = finalStreamChunks.shift();
+            if (chunk) {
+              controller.enqueue(chunk);
+              return;
+            }
+
+            controller.close();
+          },
         }),
       },
     ];
@@ -969,9 +1268,10 @@ describe("聊天模型请求处理", () => {
 
     expect(result).toMatchObject({ ok: true, content: "最终回复" });
     expect(browserControlManagerMock.executeBrowserTool).toHaveBeenCalledTimes(9);
-    expect(fetcher).toHaveBeenCalledTimes(10);
-    for (const [, init] of fetcher.mock.calls) {
-      const body = JSON.parse(String(init?.body)) as { tools?: unknown[] };
+    expect(fetcher).toHaveBeenCalledTimes(11);
+    for (const [, init] of fetcher.mock.calls.slice(0, -1)) {
+      const body = JSON.parse(String(init?.body)) as { tools?: unknown[]; stream?: boolean; tool_choice?: string };
+      expect(body).toMatchObject({ stream: false, tool_choice: "auto" });
       expect(body.tools).toEqual([
         expect.objectContaining({
           type: "function",
@@ -979,6 +1279,10 @@ describe("聊天模型请求处理", () => {
         }),
       ]);
     }
+    const finalBody = JSON.parse(String(fetcher.mock.calls.at(-1)?.[1]?.body)) as { tools?: unknown[]; stream?: boolean; tool_choice?: string };
+    expect(finalBody).toMatchObject({ stream: true });
+    expect(finalBody.tools).toBeUndefined();
+    expect(finalBody.tool_choice).toBeUndefined();
   });
 
   it("浏览器自动化最大工具轮次使用聊天请求中的偏好值", async () => {
@@ -1138,6 +1442,12 @@ describe("聊天模型请求处理", () => {
               },
             },
           ],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          choices: [{ message: { content: "页面已打开" } }],
         }),
       })
       .mockResolvedValueOnce({
@@ -1430,6 +1740,12 @@ describe("聊天模型请求处理", () => {
         json: vi.fn().mockResolvedValue({
           content: [{ type: "text", text: "页面结构已读取。" }],
         }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          content: [{ type: "text", text: "页面结构已读取。" }],
+        }),
       });
 
     const result = await handleChatSendMessage(
@@ -1458,7 +1774,7 @@ describe("聊天模型请求处理", () => {
       content: "页面结构已读取。",
       thinking: undefined,
     });
-    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher).toHaveBeenCalledTimes(3);
     const firstBody = JSON.parse(String(fetcher.mock.calls[0][1]?.body)) as {
       system?: string;
       tools?: Array<{ name: string; input_schema: unknown }>;
@@ -1485,6 +1801,9 @@ describe("聊天模型请求处理", () => {
         }),
       ]),
     );
+    const finalBody = JSON.parse(String(fetcher.mock.calls[2][1]?.body)) as { tools?: unknown[]; tool_choice?: unknown };
+    expect(finalBody.tools).toBeUndefined();
+    expect(finalBody.tool_choice).toBeUndefined();
   });
 
   it("模型接口失败时返回内部降级诊断但用户提示仍为中文摘要", async () => {

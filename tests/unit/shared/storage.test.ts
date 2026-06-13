@@ -307,6 +307,7 @@ describe("存储仓库", () => {
         {
           id: "message-dirty",
           role: "assistant",
+          assistantMessageKind: "final-answer",
           content: "旧数据",
           createdAt: 1,
           reasoningContent: { text: "not-string" },
@@ -327,6 +328,7 @@ describe("存储仓库", () => {
     expect(message?.toolAttachments).toBeUndefined();
     expect(message && "webSearchContextAttachment" in message).toBe(false);
     expect(message?.reasoningContent).toBeUndefined();
+    expect(message?.assistantMessageKind).toBeUndefined();
   });
 
   it("读取聊天会话时会忽略旧版网络搜索字段但继续保留新工具附件", async () => {

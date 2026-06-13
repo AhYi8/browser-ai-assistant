@@ -1425,6 +1425,7 @@ describe("appStore", () => {
         injectPageContextByDefault: "false",
         extractHtmlByDefault: "true",
         browserAutomationMaxToolIterations: "很多",
+        toolCallDisplayMode: "unknown",
       },
       updatedAt: 2,
     });
@@ -1436,6 +1437,8 @@ describe("appStore", () => {
     expect(useAppStore.getState().chatPreferences.extractHtmlByDefault).toBe(false);
     expect(useAppStore.getState().chatPreferences.aiRequestRetryCount).toBe(5);
     expect(useAppStore.getState().chatPreferences.browserAutomationMaxToolIterations).toBe(32);
+    expect(useAppStore.getState().chatPreferences.toolCallDisplayMode).toBe("assistant_grouped");
+    expect(useAppStore.getState().chatPreferences.showToolCallProcessInAssistantMode).toBe(false);
     expect(useAppStore.getState().browserControlEnabled).toBe(false);
     expect(useAppStore.getState().chatPreferences.networkRelevancePrompt).toBe(DEFAULT_NETWORK_RELEVANCE_PROMPT);
     expect(useAppStore.getState().appendPageContextToSystemPrompt).toBe(true);
@@ -1459,6 +1462,7 @@ describe("appStore", () => {
 
     expect(useAppStore.getState().chatPreferences.toolCallingEnabled).toBe(false);
     expect(useAppStore.getState().chatPreferences.enabledToolIds).toEqual(["page.read_context"]);
+    expect(useAppStore.getState().chatPreferences.showToolCallProcessInAssistantMode).toBe(false);
   });
 
   it("可以保存全局工具调用总开关和单工具启用列表", async () => {
@@ -3166,8 +3170,7 @@ describe("appStore", () => {
     const sendPromise = useAppStore.getState().sendChatMessage("需要搜索");
     await vi.waitFor(() => {
       expect(portMessageListener).toBeTypeOf("function");
-      expect(useAppStore.getState().chatSessions[0]?.messages.map((message) => message.content)).toEqual(["需要搜索", ""]);
-      expect(useAppStore.getState().chatSessions[0]?.messages[1].streaming).toBe(true);
+      expect(useAppStore.getState().chatSessions[0]?.messages.map((message) => message.content)).toEqual(["需要搜索"]);
     });
 
     expect(connect).toHaveBeenCalledWith({ name: "chat.stream" });

@@ -347,6 +347,7 @@ function normalizeChatMessage(message: ChatMessage): ChatMessage {
   const toolAttachments = mergeCompatibleToolAttachments(normalizedToolAttachments, legacyToolAttachments ?? []);
   return {
     ...messageWithoutLegacyWebSearch,
+    assistantMessageKind: message.assistantMessageKind === "tool_call_turn" ? "tool_call_turn" : undefined,
     contextMode: message.contextMode ?? "text",
     reasoningContent: typeof message.reasoningContent === "string" ? message.reasoningContent : undefined,
     toolCallRecords: normalizeChatToolCallRecords(message.toolCallRecords),

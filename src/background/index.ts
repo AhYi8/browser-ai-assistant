@@ -19,7 +19,7 @@ import {
   type PageContextListTabsMessage,
 } from "./pageContextMessageHandler";
 import type { TabCaptureVisibleMessage } from "../shared/tabCapture";
-import type { ChatToolAttachment, ChatToolCallRecord } from "../shared/types";
+import type { ChatMessage, ChatToolAttachment, ChatToolCallRecord } from "../shared/types";
 import { handleSyncAlarm, handleSyncBackupMessage, restoreSyncAlarmFromSettings, type SyncBackupMessage } from "./syncBackupHandler";
 import { handleTabCaptureVisibleMessage } from "./tabCaptureMessageHandler";
 import {
@@ -220,6 +220,7 @@ chrome.runtime.onConnect.addListener((port) => {
     void handleChatSendMessage(message.payload, fetch, {
       onContentChunk: (content) => port.postMessage({ type: "chunk", content }),
       onThinkingChunk: (content) => port.postMessage({ type: "thinking", content }),
+      onToolTurnMessage: (assistantMessage: ChatMessage) => port.postMessage({ type: "assistant:tool-turn", message: assistantMessage }),
       onToolCallStart: (record: ChatToolCallRecord) => port.postMessage({ type: "tool:start", record }),
       onToolCallComplete: (record: ChatToolCallRecord, attachments: ChatToolAttachment[]) => port.postMessage({ type: "tool:complete", record, attachments }),
     })

@@ -1,4 +1,4 @@
-import type { ChatToolAttachment, ChatToolCallRecord } from "../../shared/types";
+import type { ChatMessage, ChatToolAttachment, ChatToolCallRecord } from "../../shared/types";
 import type { ModelRequestMessage, ModelResponseData, ModelToolCall, ModelToolExecutor, ModelToolRegistryEntry, ModelToolResultMessage } from "../../shared/models/types";
 import { truncateText } from "../../shared/utils/text";
 
@@ -11,6 +11,7 @@ export interface RunModelToolLoopInput {
   requestModel: (messages: ModelRequestMessage[]) => Promise<ModelToolLoopResponse>;
   requestFinalModel?: (messages: ModelRequestMessage[]) => Promise<ModelToolLoopResponse>;
   executeTool: ModelToolExecutor;
+  onToolTurnMessage?: (message: ChatMessage) => void;
   onToolCallStart?: (record: ChatToolCallRecord) => void;
   onToolCallComplete?: (record: ChatToolCallRecord, attachments: ChatToolAttachment[]) => void;
   maxIterations?: number;
@@ -29,6 +30,7 @@ export async function runModelToolLoop(input: RunModelToolLoopInput): Promise<Mo
   let messages = [...input.initialMessages];
   const toolCallRecords: ChatToolCallRecord[] = [];
   const toolAttachments: ChatToolAttachment[] = [];
+  const toolTurnMessages: ChatMessage[] = [];
   let lastResponse: ModelToolLoopResponse | undefined;
 
   for (let iteration = 0; iteration < maxIterations; iteration += 1) {
@@ -43,17 +45,29 @@ export async function runModelToolLoop(input: RunModelToolLoopInput): Promise<Mo
         content: response.content,
         thinking: response.thinking,
         ...(response.reasoningContent ? { reasoningContent: response.reasoningContent } : {}),
-        ...(toolCallRecords.length ? { toolCallRecords } : {}),
-        ...(toolAttachments.length ? { toolAttachments } : {}),
+        ...(toolTurnMessages.length ? { toolTurnMessages } : {}),
       };
       break;
     }
 
+    const currentTurnRecords: ChatToolCallRecord[] = [];
+    const currentTurnAttachments: ChatToolAttachment[] = [];
+    const toolTurnMessageId = createToolTurnMessageId(response.toolCalls[0]?.id);
+    input.onToolTurnMessage?.(
+      createToolTurnMessage({
+        id: toolTurnMessageId,
+        initialMessages: input.initialMessages,
+        response,
+        toolCallRecords: [],
+        toolAttachments: [],
+      }),
+    );
     const toolResultMessages = await Promise.all(
       response.toolCalls.map((toolCall) =>
         executeAllowedTool(toolCall, input.tools, enabledToolIds, input.executeTool, {
           onStart: (record) => {
             toolCallRecords.push(record);
+            currentTurnRecords.push(record);
             input.onToolCallStart?.(record);
           },
           onComplete: (record, attachments) => {
@@ -63,7 +77,14 @@ export async function runModelToolLoop(input: RunModelToolLoopInput): Promise<Mo
             } else {
               toolCallRecords.push(record);
             }
+            const currentTurnExistingIndex = currentTurnRecords.findIndex((item) => item.id === record.id);
+            if (currentTurnExistingIndex >= 0) {
+              currentTurnRecords[currentTurnExistingIndex] = record;
+            } else {
+              currentTurnRecords.push(record);
+            }
             appendUniqueToolAttachments(toolAttachments, attachments);
+            appendUniqueToolAttachments(currentTurnAttachments, attachments);
             input.onToolCallComplete?.(record, attachments);
           },
         }),
@@ -71,7 +92,16 @@ export async function runModelToolLoop(input: RunModelToolLoopInput): Promise<Mo
     );
     for (const toolResultMessage of toolResultMessages) {
       appendUniqueToolAttachments(toolAttachments, toolResultMessage.toolAttachments ?? []);
+      appendUniqueToolAttachments(currentTurnAttachments, toolResultMessage.toolAttachments ?? []);
     }
+    const toolTurnMessage = createToolTurnMessage({
+        id: toolTurnMessageId,
+        initialMessages: input.initialMessages,
+        response,
+        toolCallRecords: currentTurnRecords,
+        toolAttachments: currentTurnAttachments,
+      });
+    toolTurnMessages.push(toolTurnMessage);
 
     messages = [
       ...messages,
@@ -96,12 +126,44 @@ export async function runModelToolLoop(input: RunModelToolLoopInput): Promise<Mo
       content: finalResponse.content,
       thinking: finalResponse.thinking,
       ...(finalResponse.reasoningContent ? { reasoningContent: finalResponse.reasoningContent } : {}),
-      ...(toolCallRecords.length ? { toolCallRecords } : {}),
-      ...(toolAttachments.length ? { toolAttachments } : {}),
+      ...(toolTurnMessages.length ? { toolTurnMessages } : {}),
     };
   }
 
   return lastResponse ?? { ok: false, message: "工具调用超过最大轮次，已停止本次请求。" };
+}
+
+function createToolTurnMessage(input: {
+  id: string;
+  initialMessages: ModelRequestMessage[];
+  response: Extract<ModelToolLoopResponse, { ok: true }>;
+  toolCallRecords: ChatToolCallRecord[];
+  toolAttachments: ChatToolAttachment[];
+}): ChatMessage {
+  const createdAt = Date.now();
+  const baseMessage = input.initialMessages.find((message): message is ChatMessage => "id" in message && "modelId" in message);
+  return {
+    id: input.id,
+    role: "assistant",
+    assistantMessageKind: "tool_call_turn",
+    content: input.response.content,
+    thinking: input.response.thinking,
+    reasoningContent: input.response.reasoningContent,
+    createdAt,
+    modelId: baseMessage?.modelId ?? "",
+    endpointType: baseMessage?.endpointType ?? "openai_chat",
+    streamMode: baseMessage?.streamMode ?? false,
+    systemPrompt: baseMessage?.systemPrompt ?? "",
+    contextPrompt: baseMessage?.contextPrompt ?? "",
+    contextMode: baseMessage?.contextMode ?? "text",
+    matchedRuleId: baseMessage?.matchedRuleId,
+    toolCallRecords: input.toolCallRecords,
+    toolAttachments: input.toolAttachments.length ? input.toolAttachments : undefined,
+  };
+}
+
+function createToolTurnMessageId(firstToolCallId: string | undefined): string {
+  return `message-${Date.now()}-tool-turn-${firstToolCallId ?? "unknown"}`;
 }
 
 async function executeAllowedTool(
