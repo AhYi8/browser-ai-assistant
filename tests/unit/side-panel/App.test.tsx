@@ -468,6 +468,7 @@ describe("App", () => {
         chatPreferenceOverrides: {
           networkRelevanceBatchSize: 20,
           networkRequestTypeFilters: ["img"],
+          browserAutomationMaxToolIterations: 44,
         },
       }),
     );
@@ -477,6 +478,7 @@ describe("App", () => {
         ...useAppStore.getState().chatPreferences,
         networkRelevanceBatchSize: 50,
         networkRequestTypeFilters: ["all"],
+        browserAutomationMaxToolIterations: 32,
       },
     });
 
@@ -486,11 +488,20 @@ describe("App", () => {
     const batchInput = screen.getByRole("spinbutton", { name: "当前聊天 Network 筛选每组请求数" });
     expect(batchInput).toHaveDisplayValue("20");
     expect(batchInput).toHaveAttribute("placeholder", "50");
+    const browserIterationsInput = screen.getByRole("spinbutton", { name: "当前聊天 浏览器自动化最大工具轮次" });
+    expect(browserIterationsInput).toHaveDisplayValue("44");
+    expect(browserIterationsInput).toHaveAttribute("placeholder", "32");
+    expect(browserIterationsInput).not.toHaveAttribute("min");
+    expect(browserIterationsInput).not.toHaveAttribute("max");
     expect(screen.getByRole("checkbox", { name: "当前聊天采集 Img" })).toBeChecked();
 
     await user.clear(batchInput);
     await user.type(batchInput, "12");
     expect(updateActiveSessionChatPreferences).toHaveBeenLastCalledWith({ networkRelevanceBatchSize: 12 });
+
+    await user.clear(browserIterationsInput);
+    await user.type(browserIterationsInput, "18");
+    expect(updateActiveSessionChatPreferences).toHaveBeenLastCalledWith({ browserAutomationMaxToolIterations: 18 });
 
     await user.click(screen.getByRole("checkbox", { name: "当前聊天采集 Fetch/XHR" }));
     expect(updateActiveSessionChatPreferences).toHaveBeenLastCalledWith({ networkRequestTypeFilters: ["img", "fetch_xhr"] });
@@ -856,6 +867,7 @@ describe("App", () => {
         networkRelevanceBatchSize: 50,
         networkRequestTypeFilters: ["all"],
         aiRequestRetryCount: 5,
+        browserAutomationMaxToolIterations: 32,
         toolCallingEnabled: false,
         enabledToolIds: [],
         temperature: 0.7,
@@ -887,6 +899,7 @@ describe("App", () => {
         networkRelevanceBatchSize: 50,
         networkRequestTypeFilters: ["all"],
         aiRequestRetryCount: 5,
+        browserAutomationMaxToolIterations: 32,
         toolCallingEnabled: false,
         enabledToolIds: [],
         temperature: 0.7,
@@ -910,6 +923,42 @@ describe("App", () => {
     expect(updateChatPreferences).toHaveBeenCalledWith({ toolCallingEnabled: true });
   });
 
+  it("聊天偏好可以保存浏览器自动化最大工具轮次", async () => {
+    const user = userEvent.setup();
+    const updateChatPreferences = vi.fn(async () => undefined);
+    useAppStore.setState({
+      chatPreferences: {
+        systemPrompt: "你是网页助手",
+        networkRelevancePrompt: DEFAULT_NETWORK_RELEVANCE_PROMPT,
+        networkRelevanceBatchSize: 50,
+        networkRequestTypeFilters: ["all"],
+        aiRequestRetryCount: 5,
+        browserAutomationMaxToolIterations: 32,
+        toolCallingEnabled: false,
+        enabledToolIds: [],
+        temperature: 0.7,
+        maxTokens: 1024,
+        sendShortcut: "enter",
+        historyDrawerDefaultOpen: true,
+        injectPageContextByDefault: true,
+        extractHtmlByDefault: false,
+      },
+      updateChatPreferences,
+    });
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("tab", { name: "聊天偏好" }));
+    const input = screen.getByRole("spinbutton", { name: "全局 浏览器自动化最大工具轮次" });
+    expect(input).not.toHaveAttribute("min");
+    expect(input).not.toHaveAttribute("max");
+
+    fireEvent.change(input, { target: { value: "48" } });
+
+    expect(updateChatPreferences).toHaveBeenLastCalledWith({ browserAutomationMaxToolIterations: 48 });
+  });
+
   it("聊天偏好可以保存新对话默认注入页面上下文", async () => {
     const user = userEvent.setup();
     const updateChatPreferences = vi.fn(async () => undefined);
@@ -920,6 +969,7 @@ describe("App", () => {
         networkRelevanceBatchSize: 50,
         networkRequestTypeFilters: ["all"],
         aiRequestRetryCount: 5,
+        browserAutomationMaxToolIterations: 32,
         toolCallingEnabled: false,
         enabledToolIds: [],
         temperature: 0.7,
@@ -951,6 +1001,7 @@ describe("App", () => {
         networkRelevanceBatchSize: 50,
         networkRequestTypeFilters: ["all"],
         aiRequestRetryCount: 5,
+        browserAutomationMaxToolIterations: 32,
         toolCallingEnabled: false,
         enabledToolIds: [],
         temperature: 0.7,

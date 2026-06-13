@@ -396,6 +396,7 @@ describe("存储仓库", () => {
         toolCallingEnabled: true,
         enabledToolIds: ["web_search.tavily"],
         networkRelevanceBatchSize: 25,
+        browserAutomationMaxToolIterations: 77,
         networkRequestTypeFilters: ["fetch_xhr", "invalid"],
       },
       messages: [],
@@ -407,6 +408,7 @@ describe("存储仓库", () => {
       toolCallingEnabled: true,
       enabledToolIds: ["web_search.tavily"],
       networkRelevanceBatchSize: 25,
+      browserAutomationMaxToolIterations: 77,
       networkRequestTypeFilters: ["fetch_xhr"],
     });
   });

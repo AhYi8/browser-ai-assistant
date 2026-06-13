@@ -1077,6 +1077,12 @@ function ChatPreferenceSettings() {
           onChange={(value) => void updateChatPreferences({ aiRequestRetryCount: value })}
         />
         <GlobalPreferenceNumberInput
+          label="浏览器自动化最大工具轮次"
+          value={chatPreferences.browserAutomationMaxToolIterations}
+          step={1}
+          onChange={(value) => void updateChatPreferences({ browserAutomationMaxToolIterations: value })}
+        />
+        <GlobalPreferenceNumberInput
           label="temperature"
           value={chatPreferences.temperature}
           min={0}
@@ -1215,7 +1221,7 @@ function ChatPreferenceSettings() {
 interface GlobalPreferenceNumberInputProps {
   label: string;
   value?: number;
-  min: number;
+  min?: number;
   max?: number;
   step: number;
   onChange: (value: number | undefined) => void;

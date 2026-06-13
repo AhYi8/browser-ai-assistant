@@ -43,4 +43,30 @@ describe("AI 回复解析", () => {
       thinking: "先思考",
     });
   });
+
+  it("剥离模型误输出到正文中的 DSML 工具调用标记", () => {
+    const rawContent = [
+      "高级设置中没有额外的分组选项。我先保存默认分组的密钥。",
+      "< | | DSML | | tool_calls>",
+      "< | | DSML | | invoke name=\"click\">",
+      "< | | DSML | | parameter name=\"uid\" string=\"true\">4_64</ | | DSML | | parameter>",
+      "< | | DSML | | parameter name=\"includeSnapshot\" string=\"false\">true</ | | DSML | | parameter>",
+      "</ | | DSML | | invoke>",
+    ].join("\n");
+
+    expect(parseAssistantResponse(rawContent)).toEqual({
+      content: "高级设置中没有额外的分组选项。我先保存默认分组的密钥。",
+      thinking: undefined,
+    });
+  });
+
+  it("剥离同行 DSML 工具调用标记时保留可见正文", () => {
+    const rawContent =
+      "我先继续操作页面。< | | DSML | | invoke name=\"click\">< | | DSML | | parameter name=\"uid\">4_64</ | | DSML | | parameter></ | | DSML | | invoke>";
+
+    expect(parseAssistantResponse(rawContent)).toEqual({
+      content: "我先继续操作页面。",
+      thinking: undefined,
+    });
+  });
 });

@@ -94,6 +94,13 @@ export function ChatPreferenceDrawer({ open, onOpenChange }: ChatPreferenceDrawe
                 step={1}
                 onChange={(value) => void updateActiveSessionChatPreferences({ aiRequestRetryCount: value })}
               />
+              <PreferenceNumberInput
+                label="浏览器自动化最大工具轮次"
+                value={overrides.browserAutomationMaxToolIterations}
+                placeholder={chatPreferences.browserAutomationMaxToolIterations}
+                step={1}
+                onChange={(value) => void updateActiveSessionChatPreferences({ browserAutomationMaxToolIterations: value })}
+              />
             </div>
             <fieldset className="chat-preference-network-types">
               <legend className="text-sm">当前聊天默认采集 Network 请求类型</legend>
@@ -135,7 +142,7 @@ interface PreferenceNumberInputProps {
   label: string;
   value?: number;
   placeholder: string | number;
-  min: number;
+  min?: number;
   max?: number;
   step: number;
   onChange: (value: number | undefined) => void;

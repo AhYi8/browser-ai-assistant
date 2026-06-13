@@ -288,6 +288,7 @@ const DEFAULT_CHAT_PREFERENCES: ChatPreferenceValues = {
   networkRelevanceBatchSize: 50,
   networkRequestTypeFilters: DEFAULT_NETWORK_REQUEST_TYPE_FILTERS,
   aiRequestRetryCount: DEFAULT_MODEL_REQUEST_RETRY_COUNT,
+  browserAutomationMaxToolIterations: 32,
   toolCallingEnabled: false,
   enabledToolIds: [],
   temperature: 0.7,
@@ -1610,6 +1611,10 @@ function normalizeChatPreferences(value?: Partial<ChatPreferenceValues>): ChatPr
     networkRelevanceBatchSize: Math.round(normalizeNumber(value?.networkRelevanceBatchSize, DEFAULT_CHAT_PREFERENCES.networkRelevanceBatchSize, 1, 10_000)),
     networkRequestTypeFilters: normalizeNetworkRequestTypeFilters(value?.networkRequestTypeFilters),
     aiRequestRetryCount: normalizeModelRequestRetryCount(value?.aiRequestRetryCount, DEFAULT_CHAT_PREFERENCES.aiRequestRetryCount),
+    browserAutomationMaxToolIterations: normalizeIntegerWithoutRange(
+      value?.browserAutomationMaxToolIterations,
+      DEFAULT_CHAT_PREFERENCES.browserAutomationMaxToolIterations,
+    ),
     toolCallingEnabled: normalizeBoolean(value?.toolCallingEnabled, DEFAULT_CHAT_PREFERENCES.toolCallingEnabled),
     enabledToolIds: normalizeUserEditableToolIds(value?.enabledToolIds),
     temperature: normalizeNumber(value?.temperature, DEFAULT_CHAT_PREFERENCES.temperature, 0, 2),
@@ -1665,6 +1670,12 @@ function normalizeChatPreferenceOverrides(value?: ChatSessionPreferenceOverrides
   if (value?.aiRequestRetryCount !== undefined) {
     overrides.aiRequestRetryCount = normalizeModelRequestRetryCount(value.aiRequestRetryCount, DEFAULT_CHAT_PREFERENCES.aiRequestRetryCount);
   }
+  if (value?.browserAutomationMaxToolIterations !== undefined) {
+    overrides.browserAutomationMaxToolIterations = normalizeIntegerWithoutRange(
+      value.browserAutomationMaxToolIterations,
+      DEFAULT_CHAT_PREFERENCES.browserAutomationMaxToolIterations,
+    );
+  }
   if (value?.toolCallingEnabled !== undefined) {
     overrides.toolCallingEnabled = normalizeBoolean(value.toolCallingEnabled, DEFAULT_CHAT_PREFERENCES.toolCallingEnabled);
   }
@@ -1693,6 +1704,7 @@ function resolveEffectiveChatPreferences(
     networkRelevanceBatchSize: overrides?.networkRelevanceBatchSize ?? preferences.networkRelevanceBatchSize,
     networkRequestTypeFilters: overrides?.networkRequestTypeFilters ?? preferences.networkRequestTypeFilters,
     aiRequestRetryCount: overrides?.aiRequestRetryCount ?? preferences.aiRequestRetryCount,
+    browserAutomationMaxToolIterations: overrides?.browserAutomationMaxToolIterations ?? preferences.browserAutomationMaxToolIterations,
     toolCallingEnabled: overrides?.toolCallingEnabled ?? preferences.toolCallingEnabled,
     enabledToolIds: overrides?.enabledToolIds ?? preferences.enabledToolIds,
     temperature: overrides?.temperature ?? preferences.temperature,
@@ -1705,6 +1717,7 @@ function resolveEffectiveChatPreferences(
     networkRelevanceBatchSize: normalizedOverrides.networkRelevanceBatchSize ?? preferences.networkRelevanceBatchSize,
     networkRequestTypeFilters: normalizedOverrides.networkRequestTypeFilters ?? preferences.networkRequestTypeFilters,
     aiRequestRetryCount: normalizedOverrides.aiRequestRetryCount ?? preferences.aiRequestRetryCount,
+    browserAutomationMaxToolIterations: normalizedOverrides.browserAutomationMaxToolIterations ?? preferences.browserAutomationMaxToolIterations,
     toolCallingEnabled: normalizedOverrides.toolCallingEnabled ?? preferences.toolCallingEnabled,
     enabledToolIds: normalizedOverrides.enabledToolIds ?? preferences.enabledToolIds,
     temperature: normalizedOverrides.temperature ?? preferences.temperature,
@@ -1738,6 +1751,16 @@ function normalizeNumber(value: unknown, fallback: number, min: number, max: num
   }
 
   return Math.min(max, Math.max(min, numberValue));
+}
+
+function normalizeIntegerWithoutRange(value: unknown, fallback: number): number {
+  const numberValue = typeof value === "number" ? value : Number(value);
+
+  if (!Number.isFinite(numberValue)) {
+    return fallback;
+  }
+
+  return Math.round(numberValue);
 }
 
 function normalizeOptionalInteger(value: unknown, min: number, max: number): number | undefined {
@@ -1804,6 +1827,7 @@ type AppChatSendMessage = {
   toolChoice?: ModelToolChoice;
   tavily?: TavilySearchOptions;
   retryCount?: number;
+  browserAutomationMaxToolIterations?: number;
 };
 
 type NetworkContextSnapshotResponse =
@@ -1876,6 +1900,7 @@ type EffectiveChatPreferences = Required<
     | "networkRelevanceBatchSize"
     | "networkRequestTypeFilters"
     | "aiRequestRetryCount"
+    | "browserAutomationMaxToolIterations"
     | "toolCallingEnabled"
     | "enabledToolIds"
     | "temperature"
@@ -2184,6 +2209,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
       }),
       stream: requestStreamMode,
       retryCount: effectiveChatPreferences.aiRequestRetryCount,
+      browserAutomationMaxToolIterations: effectiveChatPreferences.browserAutomationMaxToolIterations,
       tavily: {
         includeAnswer: input.state.webSearchSettings.tavily.includeAnswer,
         includeRawContent: input.state.webSearchSettings.tavily.includeRawContent,
@@ -2992,8 +3018,9 @@ async function sendStreamingChatMessage(input: StreamingChatInput): Promise<Stre
         return;
       }
 
-      input.set({ failure: { message: STREAM_FAILURE_MESSAGE } });
-      void enqueueWrite(() => failAssistantMessage(input.sessionId, assistantMessage.id, STREAM_FAILURE_MESSAGE, input.set, input.privateMode)).then(() =>
+      const failureMessage = resolveStreamPortFailureMessage(message);
+      input.set({ failure: { message: failureMessage } });
+      void enqueueWrite(() => failAssistantMessage(input.sessionId, assistantMessage.id, failureMessage, input.set, input.privateMode)).then(() =>
         finish({ completed: true }),
       );
     });
@@ -3015,6 +3042,24 @@ async function sendStreamingChatMessage(input: StreamingChatInput): Promise<Stre
       payload: input.request,
     });
   });
+}
+
+function resolveStreamPortFailureMessage(message: ChatStreamPortMessage): string {
+  if (message.type !== "error" || typeof message.message !== "string") {
+    return STREAM_FAILURE_MESSAGE;
+  }
+
+  const failureMessage = message.message.trim();
+  if (!failureMessage || containsSensitiveErrorFragment(failureMessage)) {
+    return STREAM_FAILURE_MESSAGE;
+  }
+
+  return failureMessage;
+}
+
+function containsSensitiveErrorFragment(message: string): boolean {
+  // 端口消息异常时仍按外部输入处理，避免模型供应商原始报文把密钥、鉴权头或连接串带到用户可见错误里。
+  return /(?:\bsk-[A-Za-z0-9_-]+|authorization|bearer\s+[A-Za-z0-9._~+/-]+|\btoken\b|secret|password)/i.test(message);
 }
 
 async function failAssistantMessage(

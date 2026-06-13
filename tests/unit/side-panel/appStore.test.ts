@@ -1424,6 +1424,7 @@ describe("appStore", () => {
         historyDrawerDefaultOpen: "false",
         injectPageContextByDefault: "false",
         extractHtmlByDefault: "true",
+        browserAutomationMaxToolIterations: "很多",
       },
       updatedAt: 2,
     });
@@ -1434,6 +1435,7 @@ describe("appStore", () => {
     expect(useAppStore.getState().chatPreferences.injectPageContextByDefault).toBe(true);
     expect(useAppStore.getState().chatPreferences.extractHtmlByDefault).toBe(false);
     expect(useAppStore.getState().chatPreferences.aiRequestRetryCount).toBe(5);
+    expect(useAppStore.getState().chatPreferences.browserAutomationMaxToolIterations).toBe(32);
     expect(useAppStore.getState().browserControlEnabled).toBe(false);
     expect(useAppStore.getState().chatPreferences.networkRelevancePrompt).toBe(DEFAULT_NETWORK_RELEVANCE_PROMPT);
     expect(useAppStore.getState().appendPageContextToSystemPrompt).toBe(true);
@@ -1491,6 +1493,65 @@ describe("appStore", () => {
     expect(session?.chatPreferenceOverrides).toMatchObject({
       toolCallingEnabled: true,
       enabledToolIds: ["page.read_context"],
+    });
+  });
+
+  it("发送聊天时携带当前有效的浏览器自动化最大工具轮次", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    let postedMessage: unknown;
+    let portMessageListener: ((message: unknown) => void) | undefined;
+    const port = {
+      postMessage: vi.fn((message: unknown) => {
+        postedMessage = message;
+      }),
+      disconnect: vi.fn(),
+      onMessage: {
+        addListener: vi.fn((listener: (message: unknown) => void) => {
+          portMessageListener = listener;
+        }),
+      },
+      onDisconnect: {
+        addListener: vi.fn(),
+      },
+    };
+    vi.stubGlobal("chrome", {
+      runtime: {
+        connect: vi.fn(() => port),
+        sendMessage: vi.fn((_message: unknown, callback: (response: unknown) => void) => {
+          callback({ ok: true });
+          return undefined;
+        }),
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    await useAppStore.getState().updateChatPreferences({ browserAutomationMaxToolIterations: 64 });
+    await useAppStore.getState().updateActiveSessionChatPreferences({ browserAutomationMaxToolIterations: 12 });
+    useAppStore.setState((state) => ({
+      browserControlEnabled: true,
+      chatPreferences: {
+        ...state.chatPreferences,
+        toolCallingEnabled: true,
+      },
+    }));
+
+    const sendPromise = useAppStore.getState().sendChatMessage("需要浏览器自动化");
+    await vi.waitFor(() => {
+      expect(portMessageListener).toBeTypeOf("function");
+    });
+    portMessageListener?.({ type: "complete", content: "AI 回复" });
+    await sendPromise;
+
+    expect(postedMessage).toMatchObject({
+      type: "chat.stream.start",
+      payload: expect.objectContaining({
+        browserAutomationMaxToolIterations: 12,
+        enabledToolIds: expect.arrayContaining(["browser.click"]),
+      }),
     });
   });
 
@@ -3150,6 +3211,54 @@ describe("appStore", () => {
       }),
     ]);
     expect(activeSession.messages[1].reasoningContent).toBe("DeepSeek 工具调用思考原文");
+  });
+
+  it("流式端口返回明确错误时保留 background 错误原因", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    let portMessageListener: ((message: unknown) => void) | undefined;
+    const port = {
+      postMessage: vi.fn(),
+      disconnect: vi.fn(),
+      onMessage: {
+        addListener: vi.fn((listener: (message: unknown) => void) => {
+          portMessageListener = listener;
+        }),
+      },
+      onDisconnect: {
+        addListener: vi.fn(),
+      },
+    };
+    vi.stubGlobal("chrome", {
+      runtime: {
+        connect: vi.fn(() => port),
+        sendMessage: vi.fn((_message: unknown, callback: (response: unknown) => void) => {
+          callback({ ok: true });
+          return undefined;
+        }),
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+
+    const sendPromise = useAppStore.getState().sendChatMessage("需要工具调用");
+    await vi.waitFor(() => {
+      expect(portMessageListener).toBeTypeOf("function");
+    });
+
+    portMessageListener?.({ type: "error", message: "模型响应中没有可用内容" });
+    await sendPromise;
+
+    const activeSession = useAppStore.getState().chatSessions[0];
+    expect(useAppStore.getState().failure?.message).toBe("模型响应中没有可用内容");
+    expect(activeSession.messages[1]).toMatchObject({
+      role: "assistant",
+      content: "模型响应中没有可用内容",
+      streaming: false,
+    });
   });
 
   it("流式响应先逐段更新思考过程，再逐段更新正文", async () => {

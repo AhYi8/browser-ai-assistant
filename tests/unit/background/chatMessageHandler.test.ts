@@ -903,6 +903,200 @@ describe("聊天模型请求处理", () => {
     );
   });
 
+  it("流式浏览器自动化允许超过普通工具默认轮次后再生成最终回复", async () => {
+    registeredModelToolsMock.tools = [
+      {
+        id: "browser.click",
+        name: "click",
+        description: "点击当前页面元素",
+        parameters: {
+          type: "object",
+          properties: { uid: { type: "string" }, includeSnapshot: { type: "boolean" } },
+          required: ["uid"],
+          additionalProperties: false,
+        },
+      },
+    ];
+    browserControlManagerMock.executeBrowserTool.mockImplementation(async (call) => ({
+      toolCallId: call.id,
+      name: call.name,
+      content: `已点击元素 ${call.arguments.uid}。`,
+    }));
+    const toolResponses = Array.from({ length: 9 }, (_, index) => ({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        choices: [
+          {
+            message: {
+              content: "",
+              tool_calls: [
+                {
+                  id: `call-${index + 1}`,
+                  type: "function",
+                  function: {
+                    name: "click",
+                    arguments: JSON.stringify({ uid: `1_${index + 1}` }),
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    }));
+    const responseQueue = [
+      ...toolResponses,
+      {
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          choices: [{ message: { content: "最终回复" } }],
+        }),
+      },
+    ];
+    const fetcher = vi.fn().mockImplementation(() => Promise.resolve(responseQueue.shift()));
+
+    const result = await handleChatSendMessage(
+      {
+        type: "chat.send",
+        model: createModel(),
+        messages: [createMessage("user", "连续操作页面")],
+        stream: true,
+        enabledToolIds: ["browser.click"],
+        toolChoice: "auto",
+      },
+      fetcher,
+    );
+
+    expect(result).toMatchObject({ ok: true, content: "最终回复" });
+    expect(browserControlManagerMock.executeBrowserTool).toHaveBeenCalledTimes(9);
+    expect(fetcher).toHaveBeenCalledTimes(10);
+    for (const [, init] of fetcher.mock.calls) {
+      const body = JSON.parse(String(init?.body)) as { tools?: unknown[] };
+      expect(body.tools).toEqual([
+        expect.objectContaining({
+          type: "function",
+          function: expect.objectContaining({ name: "click" }),
+        }),
+      ]);
+    }
+  });
+
+  it("浏览器自动化最大工具轮次使用聊天请求中的偏好值", async () => {
+    registeredModelToolsMock.tools = [
+      {
+        id: "browser.click",
+        name: "click",
+        description: "点击当前页面元素",
+        parameters: {
+          type: "object",
+          properties: { uid: { type: "string" } },
+          required: ["uid"],
+          additionalProperties: false,
+        },
+      },
+    ];
+    browserControlManagerMock.executeBrowserTool.mockImplementation(async (call) => ({
+      toolCallId: call.id,
+      name: call.name,
+      content: `已点击元素 ${call.arguments.uid}。`,
+    }));
+    const fetcher = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        choices: [
+          {
+            message: {
+              content: "",
+              tool_calls: [
+                {
+                  id: "call-loop",
+                  type: "function",
+                  function: {
+                    name: "click",
+                    arguments: '{"uid":"1_1"}',
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    });
+    const request = {
+      type: "chat.send",
+      model: createModel(),
+      messages: [createMessage("user", "连续操作页面")],
+      stream: false,
+      enabledToolIds: ["browser.click"],
+      toolChoice: "auto",
+      browserAutomationMaxToolIterations: 2,
+    } as unknown as Parameters<typeof handleChatSendMessage>[0];
+
+    const result = await handleChatSendMessage(request, fetcher);
+
+    expect(result).toEqual({ ok: false, message: "工具调用超过最大轮次，已停止本次请求。" });
+    expect(browserControlManagerMock.executeBrowserTool).toHaveBeenCalledTimes(2);
+  });
+
+  it("浏览器自动化最大工具轮次默认使用 32 轮保护", async () => {
+    registeredModelToolsMock.tools = [
+      {
+        id: "browser.click",
+        name: "click",
+        description: "点击当前页面元素",
+        parameters: {
+          type: "object",
+          properties: { uid: { type: "string" } },
+          required: ["uid"],
+          additionalProperties: false,
+        },
+      },
+    ];
+    browserControlManagerMock.executeBrowserTool.mockImplementation(async (call) => ({
+      toolCallId: call.id,
+      name: call.name,
+      content: `已点击元素 ${call.arguments.uid}。`,
+    }));
+    const fetcher = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        choices: [
+          {
+            message: {
+              content: "",
+              tool_calls: [
+                {
+                  id: "call-loop",
+                  type: "function",
+                  function: {
+                    name: "click",
+                    arguments: '{"uid":"1_1"}',
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    });
+
+    const result = await handleChatSendMessage(
+      {
+        type: "chat.send",
+        model: createModel(),
+        messages: [createMessage("user", "连续操作页面")],
+        stream: false,
+        enabledToolIds: ["browser.click"],
+        toolChoice: "auto",
+      },
+      fetcher,
+    );
+
+    expect(result).toEqual({ ok: false, message: "工具调用超过最大轮次，已停止本次请求。" });
+    expect(browserControlManagerMock.executeBrowserTool).toHaveBeenCalledTimes(32);
+    expect(fetcher).toHaveBeenCalledTimes(32);
+  });
+
   it("默认 background 执行器会把阶段四浏览器导航工具转发给浏览器控制管理器", async () => {
     registeredModelToolsMock.tools = [
       {

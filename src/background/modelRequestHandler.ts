@@ -2,7 +2,7 @@ import { parseAssistantResponse } from "../shared/chat/parseAssistantResponse";
 import { createModelRequestPayload } from "../shared/models/modelRequestPayload";
 import { shouldPassDeepSeekReasoningContent } from "../shared/models/openaiChatAdapter";
 import { normalizeModelRequestRetryCount, shouldRetryModelResponse, withModelRequestRetry } from "../shared/models/modelRequestRetry";
-import { BROWSER_TAKE_SNAPSHOT_TOOL_ID, BROWSER_TAKE_SNAPSHOT_TOOL_NAME, CURRENT_TIME_TOOL_NAME, TAVILY_SEARCH_TOOL_NAME, getRegisteredModelTools, resolveEnabledModelTools } from "../shared/models/toolRegistry";
+import { BROWSER_TAKE_SNAPSHOT_TOOL_ID, BROWSER_TAKE_SNAPSHOT_TOOL_NAME, CURRENT_TIME_TOOL_NAME, TAVILY_SEARCH_TOOL_NAME, getRegisteredModelTools, isBrowserAutomationToolId, resolveEnabledModelTools } from "../shared/models/toolRegistry";
 import type { ModelRequestMessage, ModelSystemMessage, ModelToolCall, ModelToolChoice, ModelToolDefinition, ModelToolExecutor, ModelToolRegistryEntry, OpenAIStructuredOutputFormat } from "../shared/models/types";
 import type { ChatToolAttachment, ChatToolCallRecord, ModelConfig } from "../shared/types";
 import type { TavilySearchOptions } from "../shared/webSearch/tavily";
@@ -22,6 +22,7 @@ export interface ChatSendMessage {
   toolChoice?: ModelToolChoice;
   tavily?: TavilySearchOptions;
   retryCount?: number;
+  browserAutomationMaxToolIterations?: number;
 }
 
 type PreparedChatSendMessage = ChatSendMessage & {
@@ -47,6 +48,8 @@ export type ChatSendResponse =
 
 type Fetcher = typeof fetch;
 
+const DEFAULT_BROWSER_AUTOMATION_MAX_TOOL_ITERATIONS = 32;
+
 interface ChatStreamCallbacks {
   onContentChunk?: (content: string) => void;
   onThinkingChunk?: (content: string) => void;
@@ -65,6 +68,7 @@ export async function handleChatSendMessage(
   const toolExecutor = executeTool ?? createBackgroundToolExecutor(message, fetcher);
   const initialMessages = appendBrowserControlPromptIfNeeded(message.messages, exposedTools);
   const exposedToolIds = exposedTools.map((tool) => tool.id);
+  const usesBrowserAutomationTools = exposedTools.some((tool) => isBrowserAutomationToolId(tool.id));
   const toolOptions = exposedTools.length > 0
     ? {
         tools: exposedTools.map(createModelToolDefinition),
@@ -79,7 +83,7 @@ export async function handleChatSendMessage(
       enabledToolIds: exposedToolIds,
       requestModel: (messages) =>
         requestModelOnce({ ...message, messages, stream: false, tools: toolOptions.tools, toolChoice: toolOptions.toolChoice }, fetcher),
-      ...(message.stream
+      ...(message.stream && !usesBrowserAutomationTools
         ? {
             requestFinalModel: (messages: ModelRequestMessage[]) =>
               requestModelOnce({ ...message, messages, stream: true, tools: undefined, toolChoice: undefined }, fetcher, callbacks),
@@ -88,10 +92,18 @@ export async function handleChatSendMessage(
       executeTool: toolExecutor,
       onToolCallStart: callbacks.onToolCallStart,
       onToolCallComplete: callbacks.onToolCallComplete,
+      ...(usesBrowserAutomationTools
+        ? { maxIterations: normalizeBrowserAutomationMaxToolIterations(message.browserAutomationMaxToolIterations) }
+        : {}),
     });
   }
 
   return requestModelOnce({ ...message, messages: initialMessages, tools: toolOptions.tools, toolChoice: toolOptions.toolChoice }, fetcher, callbacks);
+}
+
+function normalizeBrowserAutomationMaxToolIterations(value: unknown): number {
+  const numberValue = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(numberValue) ? Math.round(numberValue) : DEFAULT_BROWSER_AUTOMATION_MAX_TOOL_ITERATIONS;
 }
 
 function shouldExposeTool(tool: ModelToolRegistryEntry): boolean {
