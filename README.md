@@ -10,6 +10,10 @@ Browser AI Assistant 是一个基于 Chrome Manifest V3 的浏览器侧边栏 AI
 
 ## 产品预览
 
+### 浏览器自动化
+
+![浏览器自动化](./docs/assets/product-preview/浏览器自动化.mp4)
+
 ### AI 多标签页对话
 
 ![AI 多标签页对话](./docs/assets/product-preview/AI多标签页对话.gif)
