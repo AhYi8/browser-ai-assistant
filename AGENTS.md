@@ -232,6 +232,7 @@
 * 文档或配置之外的代码改动，最小验证通常至少包括 `npm run typecheck` 和相关 `vitest` 文件；涉及构建、content script、background 或 manifest 时还必须执行 `npm run build:extension`。
 * 项目级综合验证统一使用 `npm run check`；新增质量门禁时优先挂入该脚本，避免不同任务各自维护零散命令。
 * 本地可分发扩展目录统一通过 `npm run package:extension` 生成到 `artifacts/chrome-extension`；该命令必须先执行 `npm run build:extension`，再复制 `dist`、校验 HTML 引用的本地相对或根相对资源并写入 `build-info.json`。
+* 发布新版本时必须同步更新 `package.json`、`package-lock.json` 和 `public/manifest.json` 的版本号；若包含多项功能提交，应补充 `CHANGELOG.md` 发布范围与主要变化，并运行 `npm run check` 生成可验证的本地可分发扩展目录。
 * HTML 资源引用校验必须先解析到打包目录内再检查存在性；遇到 `../` 或归一化后会跳出 `artifacts/chrome-extension` 的路径时，必须按缺失资源处理，不能读取项目其他目录来让校验通过。
 * 修改打包脚本、Vite 入口、manifest 运行时路径、HTML 资源引用校验或扩展加载目录文档时，必须运行 `npm run check:package`；该脚本应先执行打包脚本单元测试，再生成真实本地扩展目录，并纳入 `npm run check` 综合验证。
 * `artifacts/` 属于本地生成产物，必须加入 `.gitignore`，不得手动编辑或提交；需要复现问题时应重新运行打包命令生成。
