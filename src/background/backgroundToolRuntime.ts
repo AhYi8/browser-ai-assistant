@@ -70,12 +70,18 @@ export function appendBrowserControlPromptIfNeeded(messages: ModelRequestMessage
 
   const browserPrompt = [
     "浏览器控制工具使用规则：",
+    "- 仅当用户明确要求读取、分析、操作当前页面、已打开页面，或明确依赖登录后页面信息时，优先使用当前受控页面和浏览器登录态，而不是先要求用户提供 URL。",
+    "- 一般知识、开发建议或未指向当前浏览器现场的问题不要调用浏览器工具。",
+    ...(enabledTools.some((tool) => tool.name === TAVILY_SEARCH_TOOL_NAME)
+      ? ["- 用户请求读取登录后才能看到的信息时，优先使用当前受控页面；Tavily 搜索只作为公开资料或当前页面无法访问时的兜底。"]
+      : []),
     "- 需要当前页面结构时先调用 take_snapshot。",
     "- 不要猜测 UID；只能使用 take_snapshot 返回的 UID。",
     "- click、fill 和 press_key 成功后可按需设置 includeSnapshot=true 获取最新快照；失败时不要编造页面结构或操作结果。",
     "- press_key 只能用于白名单按键，并且应确认正确页面或元素已有焦点。",
     "- wait_for 只等待页面可见文本；超时后应重新 take_snapshot 或向用户说明等待失败。",
     "- 导航、切换或新建页面后旧 UID 会失效；继续操作前必须重新 take_snapshot。",
+    "- 当前页面信息不足时，先使用 list_pages 或 select_page 确认受控页面，再决定是否 new_page；不要跳过现有已打开页面。",
     "- 多页面操作只能使用 list_pages 返回的 index，不要猜测页面序号。",
     "- 遇到网页 JS 弹窗时会等待用户手动处理；不要编造用户选择或弹窗处理结果。",
   ].join("\n");

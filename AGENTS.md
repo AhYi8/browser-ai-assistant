@@ -231,6 +231,11 @@
 * `src/side-panel/state/appStore.ts` 应保持为 Zustand store 壳层和 action 绑定入口；聊天请求链路中的 Network 上下文准备、流式消息写入、标题生成、runtime message 封装，以及提取规则、Prompt 模板、页面上下文、同步设置、会话文件夹和会话生命周期小动作等独立动作，应放在同目录相邻模块中，避免重新堆回单个超大 store 文件。
 * 文档或配置之外的代码改动，最小验证通常至少包括 `npm run typecheck` 和相关 `vitest` 文件；涉及构建、content script、background 或 manifest 时还必须执行 `npm run build:extension`。
 * 项目级综合验证统一使用 `npm run check`；新增质量门禁时优先挂入该脚本，避免不同任务各自维护零散命令。
+* 本地可分发扩展目录统一通过 `npm run package:extension` 生成到 `artifacts/chrome-extension`；该命令必须先执行 `npm run build:extension`，再复制 `dist`、校验 HTML 引用的本地相对或根相对资源并写入 `build-info.json`。
+* HTML 资源引用校验必须先解析到打包目录内再检查存在性；遇到 `../` 或归一化后会跳出 `artifacts/chrome-extension` 的路径时，必须按缺失资源处理，不能读取项目其他目录来让校验通过。
+* 修改打包脚本、Vite 入口、manifest 运行时路径、HTML 资源引用校验或扩展加载目录文档时，必须运行 `npm run check:package`；该脚本应先执行打包脚本单元测试，再生成真实本地扩展目录，并纳入 `npm run check` 综合验证。
+* `artifacts/` 属于本地生成产物，必须加入 `.gitignore`，不得手动编辑或提交；需要复现问题时应重新运行打包命令生成。
+* Chrome Web Store 自动发布暂不实现，仅作为后续 TODO；未单独设计凭据存储、上传、审核提交、失败回滚和敏感信息保护前，不得新增 `publish:chrome-webstore` 脚本或提交发布凭据示例。
 * 涉及侧边栏关键交互、响应式布局、扩展加载、页面提取或导出菜单时，除单元测试外应补充 `npm run test:e2e` 或等价 Playwright 冒烟验证。
 * 修改 `public/manifest.json`、background、content script、side panel 入口或 Playwright 扩展 fixture 时，应运行 `npx playwright test --project=chrome-extension` 验证真实 Chrome/Edge 扩展加载；fixture 可优先读取 `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`、`CHROME_PATH`、`EDGE_PATH` 或本机 Chrome/Edge 路径，运行前必须能找到 `dist/manifest.json`，缺失时返回明确中文构建提示。
 * `SettingsPanel` 只作为设置页签壳层；渠道管理、提取规则、聊天偏好、提示词和同步设置应继续放在 `src/side-panel/components/settings/*` 独立组件中，共享表单控件优先沉到同目录小组件，避免重新堆回单个超大文件。
@@ -249,6 +254,7 @@
 * Network URL 脱敏不能只依赖标准绝对 URL 解析；相对 URL、缺少协议的 URL 或旧快照脏数据也必须尽量脱敏 query 中的敏感参数。DevTools port 返回的快照和详情结构属于外部输入，必须校验数组和必要字段，异常时 fail closed 返回固定中文错误，不能让监听器抛错或让详情请求永久等待。
 * DevTools 未连接、没有请求、筛选为空或详情部分读取失败时，必须返回明确中文提示，且不得发送空详情正式分析请求。
 * 当前标签页刷新时必须通过 `chrome.tabs.onUpdated` 显式记录刷新状态，并配合 DevTools recorder 的 `chrome.devtools.network.onNavigated` 清空旧请求缓存、重新读取 HAR、重新上报连接；刷新中不得使用旧快照分析，应返回明确中文提示。
+* DevTools Network 上下文后续可规划为显式工具，但在独立设计工具暴露条件、请求 ID 参数校验、统一脱敏、附件保存、历史注入和失败提示前，仍保持当前内部预处理流程，不得临时接入通用工具注册表。
 * background 对 DevTools port 短暂断开应保留最近快照一小段时间，避免刷新期间立即误报未连接；同 tab 重连后必须取消旧清理并用新快照覆盖。
 * DevTools recorder 不能只在脚本加载时 `chrome.runtime.connect` 一次；必须监听 port disconnect，自动重连，并在每次重连后重新读取 HAR、上报当前 inspected tab 的快照，避免“先打开 DevTools，稍后打开 Side Panel”时 service worker 已重启导致连接丢失。
 * Background 转发 Network 详情请求给 DevTools 后必须设置超时并清理 pending 记录；DevTools 崩溃、不响应或端口异常时不得让聊天发送流程永久等待。

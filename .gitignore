@@ -8,3 +8,4 @@ playwright-report/
 .superpowers/
 .claude
 release/
+artifacts/

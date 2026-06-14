@@ -152,7 +152,8 @@ Browser AI Assistant 是一个基于 Chrome Manifest V3 的浏览器侧边栏 AI
 ├── tests/e2e/                  # Playwright 端到端冒烟测试
 ├── docs/                       # 安装、验收、设计规格、实施计划和文档资产
 ├── doc/                        # 需求设计文档
-└── dist/                       # 构建产物，本地生成，不建议手动编辑
+├── dist/                       # 构建产物，本地生成，不建议手动编辑
+└── artifacts/                  # 本地打包产物，本地生成，不提交版本库
 ```
 
 ## 环境要求
@@ -183,12 +184,22 @@ npm run build:extension
 
 构建完成后，在浏览器扩展管理页使用“加载已解压的扩展程序”，选择项目下的 `dist` 目录。
 
+生成本地可分发扩展目录：
+
+```powershell
+npm run package:extension
+```
+
+打包完成后会生成 `artifacts/chrome-extension`，其中包含 `build-info.json`，用于追踪本次本地构建来源。当前项目暂不实现 Chrome Web Store 自动发布；如需后续发布自动化，应作为独立 TODO 设计凭据存储、上传、审核提交和回滚流程。
+
 ## 常用命令
 
 ```powershell
 npm run dev              # 启动 Vite 开发服务
 npm run build            # 构建生产产物
 npm run build:extension  # 构建 Chrome 扩展产物
+npm run package:extension # 生成本地可分发扩展目录
+npm run check:package    # 验证并生成本地可分发扩展目录
 npm run preview          # 预览构建结果
 npm run test             # 运行 Vitest 单元测试
 npm run test:watch       # 以 watch 模式运行单元测试
@@ -210,6 +221,8 @@ npm run typecheck        # 执行 TypeScript 类型检查
 5. 选择项目中的 `dist` 目录。
 
 注意：不要直接选择项目根目录。扩展清单文件在构建后才会输出到 `dist/manifest.json`。
+
+如果需要把扩展目录交给其他本地环境测试，可以执行 `npm run package:extension`，再选择 `artifacts/chrome-extension`。该目录是由 `dist` 复制并校验生成的本地产物，不应手动编辑，也不应提交到 Git。
 
 ## 首次使用
 
@@ -312,6 +325,10 @@ npm run test:e2e
 - Vite 构建会额外把 `src/content/index.ts` 打包为 IIFE 输出到 `dist/content/index.js`。
 - `background/index.ts` 作为 MV3 service worker 以 module 形式输出。
 - `dist` 是构建产物，不建议手动编辑。
+- `npm run package:extension` 会先执行 `npm run build:extension`，再把 `dist` 复制到 `artifacts/chrome-extension`，检查 HTML 中引用的本地相对或根相对资源是否存在并写入 `build-info.json`。
+- 修改打包脚本、Vite 入口、manifest 运行时路径或扩展加载目录说明时，应运行 `npm run check:package`。
+- Chrome Web Store 自动发布暂列 TODO，当前不在本地打包脚本中处理发布凭据、上传或提交审核。
+- DevTools Network 上下文后续可规划为显式工具，但当前仍保持内部预处理流程；工具化前必须单独设计暴露条件、参数校验、脱敏、附件保存和历史注入边界。
 
 ## 安全注意事项
 
@@ -326,7 +343,7 @@ npm run test:e2e
 
 ## 开发状态
 
-项目处于快速迭代阶段，已具备可用的网页上下文聊天、模型渠道管理、提取规则、视觉输入、提示词模板、历史会话、隐私模式、多格式导出和数据同步能力。后续仍可继续完善更多模型协议、浏览器端兼容性验证、同步冲突策略和端到端测试覆盖。
+项目处于快速迭代阶段，已具备可用的网页上下文聊天、模型渠道管理、提取规则、视觉输入、提示词模板、历史会话、隐私模式、多格式导出、数据同步和本地扩展打包能力。后续仍可继续完善更多模型协议、浏览器端兼容性验证、同步冲突策略、端到端测试覆盖和 Chrome Web Store 发布自动化。
 
 ## 致谢
 

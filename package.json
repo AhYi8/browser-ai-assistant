@@ -8,11 +8,13 @@
     "build": "vite build",
     "build:extension": "vite build",
     "preview": "vite preview --host 127.0.0.1 --port 4173",
+    "package:extension": "npm run build:extension && node scripts/package-extension.mjs",
+    "check:package": "vitest run scripts/package-extension.test.ts && npm run package:extension",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "typecheck": "tsc --noEmit",
-    "check": "npm run typecheck && npm run build:extension && npm run test"
+    "check": "npm run typecheck && npm run build:extension && npm run test && npm run check:package"
   },
   "keywords": [],
   "author": "",

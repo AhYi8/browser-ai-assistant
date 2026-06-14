@@ -96,6 +96,14 @@ describe("background 工具运行时封装", () => {
     expect(shouldExposeTool({ id: "system.current_time", name: "get_current_time", parameters: {} })).toBe(true);
   });
 
+  it("浏览器控制未授权时不暴露浏览器操作工具", () => {
+    browserControlManagerMock.canExposeTakeSnapshotTool.mockReturnValue(false);
+    browserControlManagerMock.canExposeBrowserTool.mockReturnValue(false);
+
+    expect(shouldExposeTool({ id: "browser.take_snapshot", name: "take_snapshot", parameters: {} })).toBe(false);
+    expect(shouldExposeTool({ id: "browser.click", name: "click", parameters: {} })).toBe(false);
+  });
+
   it("生成模型工具定义时只透传模型需要的 schema 字段", () => {
     const tool: ModelToolRegistryEntry = {
       id: "browser.click",
@@ -125,6 +133,45 @@ describe("background 工具运行时封装", () => {
     });
     expect(result[0]).toMatchObject({
       content: expect.stringContaining("遇到网页 JS 弹窗时会等待用户手动处理"),
+    });
+    expect(result[0]).toMatchObject({
+      content: expect.stringContaining("仅当用户明确要求读取、分析、操作当前页面"),
+    });
+    expect(result[0]).toMatchObject({
+      content: expect.stringContaining("优先使用当前受控页面"),
+    });
+    expect(result[0]).toMatchObject({
+      content: expect.stringContaining("一般知识、开发建议或未指向当前浏览器现场的问题不要调用浏览器工具"),
+    });
+    expect(result[0]).toMatchObject({
+      content: expect.stringContaining("当前页面信息不足时，先使用 list_pages 或 select_page"),
+    });
+    expect(result[0]).toMatchObject({
+      content: expect.not.stringContaining("Tavily 搜索"),
+    });
+  });
+
+  it("浏览器工具和 Tavily 同时可用时才提示网络搜索兜底", () => {
+    const result = appendBrowserControlPromptIfNeeded(
+      [createMessage("system", "你是网页助手"), createMessage("user", "读取页面")],
+      [
+        { id: "browser.take_snapshot", name: "take_snapshot", parameters: {} },
+        { id: "web_search.tavily", name: "tavily_search", parameters: {} },
+      ],
+    );
+
+    expect(result[0]).toMatchObject({
+      content: expect.stringContaining("Tavily 搜索只作为公开资料或当前页面无法访问时的兜底"),
+    });
+  });
+
+  it("未启用浏览器工具时不追加浏览器控制调度提示", () => {
+    const messages = [createMessage("system", "你是网页助手"), createMessage("user", "读取页面")];
+    const result = appendBrowserControlPromptIfNeeded(messages, [{ id: "web_search.tavily", name: "tavily_search", parameters: {} }]);
+
+    expect(result).toBe(messages);
+    expect(result[0]).toMatchObject({
+      content: expect.not.stringContaining("优先使用当前受控页面"),
     });
   });
 
