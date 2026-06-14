@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { formatNetworkAttachmentSummary, redactNetworkRequestDetail } from "../../shared/networkContext";
@@ -35,6 +35,10 @@ export function MessageList({
   const [activeToolCallId, setActiveToolCallId] = useState<string | undefined>();
   const regeneratePopoverRef = useRef<HTMLDivElement>(null);
   const toolCallPopoverRef = useRef<HTMLDivElement>(null);
+  const displayAttachmentGroups = useMemo(
+    () => createDisplayAttachmentGroups(messages, toolCallDisplayMode),
+    [messages, toolCallDisplayMode],
+  );
 
   useEffect(() => {
     if (!pendingRegenerateMessageId) {
@@ -118,23 +122,31 @@ export function MessageList({
         const isToolCallTurn = message.role === "assistant" && message.assistantMessageKind === "tool_call_turn";
         const shouldShowToolCallTimeline = shouldShowToolCallTimelineForMessage(message, toolCallDisplayMode, showToolCallProcessInAssistantMode);
         const hideToolTurnContent = shouldHideToolTurnContent(message, toolCallDisplayMode);
+        const toolCallRecords = message.toolCallRecords ?? [];
         const hasVisibleThinking = message.role === "assistant" && !isToolCallTurn && Boolean(message.thinking) && !hideToolTurnContent;
         const hasVisibleContent = Boolean(message.content.trim()) && !hideToolTurnContent;
         const hasPromptTokens = message.role === "user" && Boolean(message.promptInvocations?.length);
         const shouldRenderMessageBubble = hasVisibleContent || hasPromptTokens;
+        const displayAttachments = displayAttachmentGroups.get(message.id) ?? [];
         const hasVisibleArticle =
           message.role !== "assistant" ||
           !isToolCallTurn ||
           hasVisibleThinking ||
           hasVisibleContent ||
           Boolean(message.attachments?.length) ||
-          Boolean(collectMessageToolAttachments(message).length);
+          Boolean(displayAttachments.length);
+        const shouldShowPreArticleToolTimeline =
+          message.role === "assistant" && toolCallRecords.length > 0 && message.assistantMessageKind !== "tool_call_turn";
+
+        if (!shouldShowPreArticleToolTimeline && !hasVisibleArticle && !shouldShowToolCallTimeline) {
+          return null;
+        }
 
         return (
         <div key={message.id} className="message-entry">
-          {message.role === "assistant" && message.toolCallRecords?.length && message.assistantMessageKind !== "tool_call_turn" ? (
+          {shouldShowPreArticleToolTimeline ? (
             <ToolCallTimeline
-              records={message.toolCallRecords}
+              records={toolCallRecords}
               attachments={collectRawMessageToolAttachments(message)}
               activeToolCallId={activeToolCallId}
               popoverRef={toolCallPopoverRef}
@@ -225,7 +237,7 @@ export function MessageList({
                 {hasVisibleContent ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown> : null}
               </div>
             ) : null}
-            {message.role === "assistant" ? <ToolAttachmentList message={message} /> : null}
+            {message.role === "assistant" ? <ToolAttachmentList attachments={displayAttachments} /> : null}
             {!isToolCallTurn ? (
               <div className={`message-regenerate-action message-regenerate-action-${message.role}`}>
               {message.role === "user" ? (
@@ -415,8 +427,7 @@ function ToolCallTimeline({
   );
 }
 
-function ToolAttachmentList({ message }: { message: ChatMessage }) {
-  const attachments = collectMessageToolAttachments(message);
+function ToolAttachmentList({ attachments }: { attachments: ChatToolAttachment[] }) {
   if (attachments.length === 0) {
     return null;
   }
@@ -428,6 +439,152 @@ function ToolAttachmentList({ message }: { message: ChatMessage }) {
       ))}
     </>
   );
+}
+
+function createDisplayAttachmentGroups(messages: ChatMessage[], toolCallDisplayMode: ToolCallDisplayMode): Map<string, ChatToolAttachment[]> {
+  const groups = new Map<string, ChatToolAttachment[]>();
+  let lastAssistantBubbleMessageId: string | undefined;
+  for (const message of messages) {
+    const isAssistant = message.role === "assistant";
+    const isToolCallTurn = isAssistant && message.assistantMessageKind === "tool_call_turn";
+    const hideToolTurnContent = shouldHideToolTurnContent(message, toolCallDisplayMode);
+    const hasVisibleAssistantBubble = isAssistant && Boolean(message.content.trim()) && !hideToolTurnContent;
+    const attachments = isAssistant ? collectMessageToolAttachments(message) : [];
+    const targetMessageId = isToolCallTurn && !hasVisibleAssistantBubble && attachments.length > 0 && lastAssistantBubbleMessageId ? lastAssistantBubbleMessageId : message.id;
+
+    if (attachments.length > 0) {
+      groups.set(targetMessageId, aggregateDisplayAttachmentsByKind([...(groups.get(targetMessageId) ?? []), ...attachments]));
+    }
+    if (hasVisibleAssistantBubble) {
+      lastAssistantBubbleMessageId = message.id;
+    }
+  }
+  return groups;
+}
+
+function aggregateDisplayAttachmentsByKind(attachments: ChatToolAttachment[]): ChatToolAttachment[] {
+  const groups = new Map<string, ChatToolAttachment[]>();
+  const order: string[] = [];
+  for (const attachment of attachments) {
+    if (!groups.has(attachment.kind)) {
+      groups.set(attachment.kind, []);
+      order.push(attachment.kind);
+    }
+    groups.get(attachment.kind)?.push(attachment);
+  }
+
+  return order.map((kind) => aggregateDisplayAttachmentKindGroup(kind, groups.get(kind) ?? [])).filter((attachment): attachment is ChatToolAttachment => Boolean(attachment));
+}
+
+function aggregateDisplayAttachmentKindGroup(kind: string, attachments: ChatToolAttachment[]): ChatToolAttachment | undefined {
+  if (attachments.length === 0) {
+    return undefined;
+  }
+  if (attachments.length === 1) {
+    return attachments[0];
+  }
+
+  if (kind === "network") {
+    const networkAttachments = attachments.filter(isNetworkToolAttachment);
+    const requests = uniqueDisplayItems(
+      networkAttachments.flatMap((attachment) => attachment.requests.map(redactNetworkRequestDetail)),
+      (request) => request.id.trim() || `${request.method}\u0000${request.url}\u0000${request.status ?? ""}`,
+    );
+    return {
+      id: `message-display-network-${attachments.map((attachment) => attachment.id).join("-")}`,
+      kind: "network",
+      title: "Network 请求详情",
+      summary: formatNetworkAttachmentSummary(requests),
+      createdAt: getMaxCreatedAt(networkAttachments),
+      redacted: true,
+      truncated: networkAttachments.some((attachment) => attachment.truncated || attachment.requests.some((request) => request.truncated)),
+      requests,
+    };
+  }
+
+  if (kind === "web-search") {
+    const webSearchAttachments = attachments.filter(isWebSearchToolAttachment);
+    const first = webSearchAttachments[0];
+    if (!first) {
+      return attachments[0];
+    }
+    const results = uniqueDisplayItems(
+      webSearchAttachments.flatMap((attachment) => attachment.results),
+      (result) => result.url.trim() || result.title.trim(),
+    );
+    const aggregated = {
+      ...first,
+      id: `message-display-web-search-${attachments.map((attachment) => attachment.id).join("-")}`,
+      query: [...new Set(webSearchAttachments.map((attachment) => attachment.query).filter(Boolean))].join("；"),
+      answer: webSearchAttachments.map((attachment) => attachment.answer).filter(Boolean).join("\n\n") || undefined,
+      results,
+      createdAt: getMaxCreatedAt(webSearchAttachments),
+      truncated: webSearchAttachments.some((attachment) => attachment.truncated),
+    };
+    return {
+      ...aggregated,
+      summary: formatTavilySearchAttachmentSummary(aggregated),
+    };
+  }
+
+  return aggregateGenericDisplayAttachments(kind, attachments);
+}
+
+function getMaxCreatedAt(attachments: ChatToolAttachment[]): number {
+  const values = attachments.map((attachment) => attachment.createdAt).filter(Number.isFinite);
+  return values.length > 0 ? Math.max(...values) : 0;
+}
+
+function aggregateGenericDisplayAttachments(kind: string, attachments: ChatToolAttachment[]): ChatToolAttachment {
+  const first = attachments[0];
+  if (attachments.length === 1) {
+    return first;
+  }
+
+  const details = uniqueNonEmptyStrings(
+    attachments.map((attachment) => ("details" in attachment && typeof attachment.details === "string" ? attachment.details : undefined)),
+  ).join("\n\n");
+
+  return {
+    id: `message-display-${kind}-${attachments.map((attachment) => attachment.id).join("-")}`,
+    kind,
+    title: `${first.title}（${attachments.length} 项）`,
+    summary: uniqueNonEmptyStrings(attachments.map((attachment) => attachment.summary)).join("\n"),
+    createdAt: getMaxCreatedAt(attachments),
+    redacted: attachments.every((attachment) => attachment.redacted),
+    truncated: attachments.some((attachment) => attachment.truncated),
+    details: details || undefined,
+  };
+}
+
+function uniqueDisplayItems<T>(items: T[], getKey: (item: T) => string): T[] {
+  const seen = new Set<string>();
+  const result: T[] = [];
+  for (const item of items) {
+    const key = getKey(item);
+    if (key && seen.has(key)) {
+      continue;
+    }
+    if (key) {
+      seen.add(key);
+    }
+    result.push(item);
+  }
+  return result;
+}
+
+function uniqueNonEmptyStrings(values: Array<string | undefined>): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const normalized = value?.trim();
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    result.push(normalized);
+  }
+  return result;
 }
 
 function ToolAttachmentView({ attachment }: { attachment: ChatToolAttachment }) {

@@ -786,10 +786,19 @@ describe("聊天模型请求处理", () => {
   it("OpenAI-compatible 正文中的 DSML 工具调用会转成工具调用并移除协议文本", async () => {
     registeredModelToolsMock.tools = [
       {
-        id: "browser.take_snapshot",
-        name: "take_snapshot",
-        description: "读取当前页面结构快照",
-        parameters: { type: "object", properties: {}, additionalProperties: false },
+        id: "browser.navigate_page",
+        name: "navigate_page",
+        description: "导航页面",
+        parameters: {
+          type: "object",
+          properties: {
+            action: { type: "string" },
+            url: { type: "string" },
+            includeSnapshot: { type: "boolean" },
+          },
+          required: ["action"],
+          additionalProperties: false,
+        },
       },
     ];
     const fetcher = vi
@@ -801,10 +810,14 @@ describe("聊天模型请求处理", () => {
             {
               message: {
                 content: [
-                  "<｜tool_calls｜>",
-                  "<｜invoke name=\"take_snapshot\"｜>",
-                  "</｜invoke｜>",
-                  "</｜tool_calls｜>",
+                  "现在让我也看一下单个帖子详情接口：",
+                  "< | | DSML | | tool_calls>",
+                  '< | | DSML | | invoke name="navigate_page">',
+                  '< | | DSML | | parameter name="action" string="true">goto</ | | DSML | | parameter>',
+                  '< | | DSML | | parameter name="url" string="true">https://linux.do/t/2385713.json</ | | DSML | | parameter>',
+                  '< | | DSML | | parameter name="includeSnapshot" string="false">false</ | | DSML | | parameter>',
+                  "</ | | DSML | | invoke>",
+                  "</ | | DSML | | tool_calls>",
                 ].join("\n"),
               },
             },
@@ -830,7 +843,7 @@ describe("聊天模型请求处理", () => {
         model: createModel(),
         messages: [createMessage("user", "重新获取页面状态")],
         stream: false,
-        enabledToolIds: ["browser.take_snapshot"],
+        enabledToolIds: ["browser.navigate_page"],
         toolChoice: "auto",
       },
       fetcher,
@@ -838,7 +851,7 @@ describe("聊天模型请求处理", () => {
       async (toolCall) => ({
         toolCallId: toolCall.id,
         name: toolCall.name,
-        content: "页面结构快照",
+        content: "已导航到帖子详情",
       }),
     );
 
@@ -847,29 +860,29 @@ describe("聊天模型请求处理", () => {
       content: "页面已经重新读取。",
       thinking: undefined,
     });
-    expect(result.ok && result.toolTurnMessages?.[0].content).toBe("");
+    expect(result.ok && result.toolTurnMessages?.[0].content).toBe("现在让我也看一下单个帖子详情接口：");
     expect(fetcher).toHaveBeenCalledTimes(3);
     const secondBody = JSON.parse(String(fetcher.mock.calls[1][1]?.body)) as { messages: Array<{ role: string; content?: string; tool_calls?: unknown[] }> };
     expect(secondBody.messages).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           role: "assistant",
-          content: "",
+          content: "现在让我也看一下单个帖子详情接口：",
           tool_calls: [
             expect.objectContaining({
               id: "dsml-tool-call-1",
               type: "function",
               function: expect.objectContaining({
-                name: "take_snapshot",
-                arguments: "{}",
+                name: "navigate_page",
+                arguments: "{\"action\":\"goto\",\"url\":\"https://linux.do/t/2385713.json\",\"includeSnapshot\":false}",
               }),
             }),
           ],
         }),
-        expect.objectContaining({ role: "tool", content: "页面结构快照" }),
+        expect.objectContaining({ role: "tool", content: "已导航到帖子详情" }),
       ]),
     );
-    expect(JSON.stringify(secondBody.messages)).not.toContain("tool_calls｜");
+    expect(JSON.stringify(secondBody.messages)).not.toContain("DSML");
     expect(JSON.stringify(secondBody.messages)).not.toContain("invoke name");
   });
 

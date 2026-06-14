@@ -55,6 +55,97 @@ describe("模型响应工具调用解析", () => {
     ]);
   });
 
+  it("解析带 DSML 命名空间和 parameter 标签的工具块", () => {
+    const result = extractDsmlToolCallsFromContent(
+      [
+        "现在让我也看一下单个帖子详情接口：",
+        "< | | DSML | | tool_calls>",
+        '< | | DSML | | invoke name="navigate_page">',
+        '< | | DSML | | parameter name="action" string="true">goto</ | | DSML | | parameter>',
+        '< | | DSML | | parameter name="url" string="true">https://linux.do/t/2385713.json</ | | DSML | | parameter>',
+        '< | | DSML | | parameter name="includeSnapshot" string="false">false</ | | DSML | | parameter>',
+        "</ | | DSML | | invoke>",
+        "</ | | DSML | | tool_calls>",
+      ].join("\n"),
+    );
+
+    expect(result.content).toBe("现在让我也看一下单个帖子详情接口：");
+    expect(result.toolCalls).toEqual([
+      {
+        id: "dsml-tool-call-1",
+        name: "navigate_page",
+        arguments: {
+          action: "goto",
+          url: "https://linux.do/t/2385713.json",
+          includeSnapshot: false,
+        },
+      },
+    ]);
+  });
+
+  it("DSML parameter 标签和裸 JSON 混用时优先采用 parameter 参数", () => {
+    const result = extractDsmlToolCallsFromContent(
+      [
+        "< | | DSML | | tool_calls>",
+        '< | | DSML | | invoke name="fill">',
+        '< | | DSML | | parameter name="uid" string="true">4_64</ | | DSML | | parameter>',
+        '{"uid":"json-uid","value":"json-value"}',
+        "</ | | DSML | | invoke>",
+        "</ | | DSML | | tool_calls>",
+      ].join("\n"),
+    );
+
+    expect(result.content).toBe("");
+    expect(result.toolCalls).toEqual([
+      {
+        id: "dsml-tool-call-1",
+        name: "fill",
+        arguments: { uid: "4_64" },
+      },
+    ]);
+  });
+
+  it("DSML 空 parameter 值会解析为空字符串", () => {
+    const result = extractDsmlToolCallsFromContent(
+      [
+        "< | | DSML | | tool_calls>",
+        '< | | DSML | | invoke name="fill">',
+        '< | | DSML | | parameter name="value" string="true"></ | | DSML | | parameter>',
+        "</ | | DSML | | invoke>",
+        "</ | | DSML | | tool_calls>",
+      ].join("\n"),
+    );
+
+    expect(result.content).toBe("");
+    expect(result.toolCalls).toEqual([
+      {
+        id: "dsml-tool-call-1",
+        name: "fill",
+        arguments: { value: "" },
+      },
+    ]);
+  });
+
+  it("带 DSML 命名空间的不完整 invoke 会作为错误工具调用回灌", () => {
+    const result = extractDsmlToolCallsFromContent(
+      [
+        "准备打开帖子详情。",
+        "< | | DSML | | tool_calls>",
+        '< | | DSML | | invoke name="navigate_page">',
+      ].join("\n"),
+    );
+
+    expect(result.content).toBe("准备打开帖子详情。");
+    expect(result.toolCalls).toEqual([
+      {
+        id: "dsml-tool-call-1",
+        name: "navigate_page",
+        arguments: {},
+        parseError: "工具调用格式不完整",
+      },
+    ]);
+  });
+
   it("DSML 非法 JSON 参数会产生 parseError", () => {
     const result = extractDsmlToolCallsFromContent(
       [

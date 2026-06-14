@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -3769,6 +3769,10 @@ describe("App", () => {
     expect(await screen.findByRole("table")).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "阶段" })).toBeInTheDocument();
     expect(screen.getByRole("cell", { name: "合并到 main" })).toBeInTheDocument();
+    const styles = readFileSync(resolve(process.cwd(), "src/side-panel/styles.css"), "utf8");
+    const tableRule = styles.match(/\.message-bubble table \{[\s\S]*?\}/)?.[0] ?? "";
+    expect(tableRule).toContain("max-w-full");
+    expect(tableRule).toContain("width: fit-content;");
   });
 
   it("发送中继续输入不会被响应完成清空", async () => {
@@ -4439,6 +4443,11 @@ describe("App", () => {
         title: "空工具轮 Network 附件",
         messages: [
           createChatMessage({
+            id: "message-before-empty-tool-turn-network-attachment",
+            role: "assistant",
+            content: "让我试试不同的分类参数格式：",
+          }),
+          createChatMessage({
             id: "message-empty-tool-turn-network-attachment",
             role: "assistant",
             assistantMessageKind: "tool_call_turn",
@@ -4488,13 +4497,168 @@ describe("App", () => {
 
     const toolButton = await screen.findByRole("button", { name: "已调用 Network 请求详情" });
     const attachment = await screen.findByText("Network 请求详情");
+    const previousBubble = (await screen.findByText("让我试试不同的分类参数格式：")).closest(".message-bubble-wrap");
     const entry = toolButton.closest(".message-entry");
 
     expect(attachment.closest(".message-network-attachment")).toBeInTheDocument();
-    expect(entry?.querySelector("article")).not.toBeNull();
+    expect(previousBubble?.contains(attachment.closest(".message-network-attachment") as HTMLElement)).toBe(true);
+    expect(entry?.querySelector("article")).toBeNull();
     expect(entry?.querySelector(".message-bubble")).toBeNull();
     expect(entry?.querySelector(".message-regenerate-action")).toBeNull();
     expect(toolButton.closest(".message-tool-call-list")).toHaveClass("message-tool-call-list-panel-centered");
+  });
+
+  it("连续空正文 Network 附件会上移到上一条非空助手气泡并按类型聚合", async () => {
+    await saveAppSetting({
+      key: "chatPreferences",
+      value: {
+        ...useAppStore.getState().chatPreferences,
+        toolCallDisplayMode: "assistant_grouped",
+        showToolCallProcessInAssistantMode: true,
+      },
+      updatedAt: 2,
+    });
+    const createNetworkAttachment = (id: string, callId: string, count: number) => ({
+      id,
+      kind: "network" as const,
+      title: "Network 请求详情",
+      summary: `已注入 ${count} 个 Network 请求`,
+      sourceToolCallId: callId,
+      createdAt: 2,
+      redacted: true,
+      truncated: false,
+      requests: Array.from({ length: count }, (_, index) => ({
+        id: `${id}-req-${index + 1}`,
+        url: `https://api.example.com/categories/${id}/${index + 1}.json`,
+        method: "GET",
+        status: 200,
+        redacted: true,
+        truncated: false,
+      })),
+    });
+    await saveChatSession(
+      createChatSession({
+        id: "session-merged-empty-network-attachments",
+        title: "空工具轮 Network 附件聚合",
+        messages: [
+          createChatMessage({
+            id: "message-category-params",
+            role: "assistant",
+            content: "让我试试不同的分类参数格式：",
+          }),
+          createChatMessage({
+            id: "message-network-five",
+            role: "assistant",
+            assistantMessageKind: "tool_call_turn",
+            content: "",
+            toolCallRecords: [
+              {
+                id: "call-network-five",
+                toolId: "network.get_request_details",
+                name: "network_get_request_details",
+                displayName: "Network 请求详情",
+                arguments: { requestIds: ["req-1"] },
+                status: "success",
+                startedAt: 1,
+                completedAt: 2,
+                resultSummary: "返回 5 个请求详情",
+                attachmentIds: ["network-attachment-five"],
+              },
+            ],
+            toolAttachments: [createNetworkAttachment("network-attachment-five", "call-network-five", 5)],
+          }),
+          createChatMessage({
+            id: "message-network-one",
+            role: "assistant",
+            assistantMessageKind: "tool_call_turn",
+            content: "",
+            toolCallRecords: [
+              {
+                id: "call-network-one",
+                toolId: "network.get_request_details",
+                name: "network_get_request_details",
+                displayName: "Network 请求详情",
+                arguments: { requestIds: ["req-6"] },
+                status: "success",
+                startedAt: 3,
+                completedAt: 4,
+                resultSummary: "返回 1 个请求详情",
+                attachmentIds: ["network-attachment-one"],
+              },
+            ],
+            toolAttachments: [createNetworkAttachment("network-attachment-one", "call-network-one", 1)],
+          }),
+        ],
+      }),
+    );
+
+    render(<App />);
+
+    const bubbleWrap = (await screen.findByText("让我试试不同的分类参数格式：")).closest(".message-bubble-wrap");
+    const networkAttachments = document.querySelectorAll(".message-network-attachment");
+    expect(networkAttachments).toHaveLength(1);
+    expect(bubbleWrap?.contains(networkAttachments[0])).toBe(true);
+    expect(within(networkAttachments[0] as HTMLElement).getByText("6")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "已调用 Network 请求详情" })).toHaveLength(2);
+    for (const toolButton of screen.getAllByRole("button", { name: "已调用 Network 请求详情" })) {
+      const entry = toolButton.closest(".message-entry");
+      expect(entry?.querySelector("article") || entry?.querySelector(".message-tool-call-list") || entry?.querySelector(".message-regenerate-action")).toBeTruthy();
+    }
+  });
+
+  it("未知类型附件上移聚合时不会丢弃后续附件", async () => {
+    await saveChatSession(
+      createChatSession({
+        id: "session-merged-generic-attachments",
+        title: "未知附件聚合",
+        messages: [
+          createChatMessage({
+            id: "message-before-generic-attachments",
+            role: "assistant",
+            content: "我会整理工具附件。",
+          }),
+          createChatMessage({
+            id: "message-generic-attachments",
+            role: "assistant",
+            assistantMessageKind: "tool_call_turn",
+            content: "",
+            toolAttachments: [
+              {
+                id: "generic-attachment-one",
+                kind: "custom-result",
+                title: "自定义结果",
+                summary: "第一段摘要",
+                createdAt: 1,
+                redacted: true,
+                truncated: false,
+                details: "第一段详情",
+              },
+              {
+                id: "generic-attachment-two",
+                kind: "custom-result",
+                title: "自定义结果",
+                summary: "第二段摘要",
+                createdAt: 2,
+                redacted: true,
+                truncated: true,
+                details: "第二段详情",
+              },
+            ],
+          }),
+        ],
+      }),
+    );
+
+    render(<App />);
+
+    const previousBubble = (await screen.findByText("我会整理工具附件。")).closest(".message-bubble-wrap");
+    const attachment = screen.getByText("自定义结果").closest(".message-custom-result-attachment");
+    expect(attachment).toBeInTheDocument();
+    expect(previousBubble?.contains(attachment as HTMLElement)).toBe(true);
+    expect(attachment).toHaveTextContent("第一段摘要");
+    expect(attachment).toHaveTextContent("第二段摘要");
+    expect(attachment).toHaveTextContent("第一段详情");
+    expect(attachment).toHaveTextContent("第二段详情");
   });
 
   it("空正文但有思考的工具轮也只显示工具调用过程", async () => {

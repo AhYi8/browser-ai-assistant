@@ -30,17 +30,18 @@ export function extractOpenAIToolCalls(message: object): ModelToolCall[] {
 }
 
 export function extractDsmlToolCallsFromContent(content: string): { content: string; toolCalls: ModelToolCall[] } {
+  const normalizedContent = normalizeDsmlToolMarkup(content);
   const toolCalls: ModelToolCall[] = [];
   let cleanedContent = "";
   let cursor = 0;
   let toolCallIndex = 0;
   const toolCallBlockPattern = /<\s*[|｜]\s*tool_calls\s*[|｜]\s*>([\s\S]*?)<\s*\/\s*[|｜]\s*tool_calls\s*[|｜]\s*>/gi;
 
-  for (const blockMatch of content.matchAll(toolCallBlockPattern)) {
+  for (const blockMatch of normalizedContent.matchAll(toolCallBlockPattern)) {
     const fullMatch = blockMatch[0];
     const blockContent = blockMatch[1] ?? "";
     const matchIndex = blockMatch.index ?? 0;
-    cleanedContent += content.slice(cursor, matchIndex);
+    cleanedContent += normalizedContent.slice(cursor, matchIndex);
     cursor = matchIndex + fullMatch.length;
 
     const invokePattern = /<\s*[|｜]\s*invoke\s+name\s*=\s*["']([^"']+)["']\s*[|｜]\s*>([\s\S]*?)<\s*\/\s*[|｜]\s*invoke\s*[|｜]\s*>/gi;
@@ -56,7 +57,7 @@ export function extractDsmlToolCallsFromContent(content: string): { content: str
       cleanedBlockContent += blockContent.slice(blockCursor, invokeIndex);
       blockCursor = invokeIndex + invokeMatch[0].length;
       toolCallIndex += 1;
-      const parsedArguments = parseToolArguments((invokeMatch[2] ?? "").trim());
+      const parsedArguments = parseDsmlInvokeArguments((invokeMatch[2] ?? "").trim());
       toolCalls.push({
         id: `dsml-tool-call-${toolCallIndex}`,
         name,
@@ -74,7 +75,7 @@ export function extractDsmlToolCallsFromContent(content: string): { content: str
     }
   }
 
-  cleanedContent += content.slice(cursor);
+  cleanedContent += normalizedContent.slice(cursor);
   if (looksLikeDsmlToolCallContent(cleanedContent)) {
     const incompleteToolCall = extractIncompleteDsmlToolCall(cleanedContent, toolCallIndex + 1);
     if (incompleteToolCall) {
@@ -160,4 +161,48 @@ function removeDsmlToolCallRemainder(content: string): string {
   }
 
   return content.slice(0, markerMatch.index);
+}
+
+function parseDsmlInvokeArguments(content: string): { arguments: Record<string, unknown>; parseError?: string } {
+  const parameterPattern =
+    /<\s*[|｜]\s*parameter\s+name\s*=\s*["']([^"']+)["'](?:\s+string\s*=\s*["'](true|false)["'])?\s*[|｜]\s*>([\s\S]*?)<\s*\/\s*[|｜]\s*parameter\s*[|｜]\s*>/gi;
+  const parameters: Record<string, unknown> = {};
+  let matchedParameter = false;
+  for (const parameterMatch of content.matchAll(parameterPattern)) {
+    const name = parameterMatch[1]?.trim();
+    if (!name) {
+      continue;
+    }
+    matchedParameter = true;
+    parameters[name] = parseDsmlParameterValue(parameterMatch[3] ?? "", parameterMatch[2] === "true");
+  }
+
+  // DSML parameter 标签比裸 JSON 更贴近模型显式工具协议；混用时只采纳标签参数，避免重复来源互相覆盖。
+  return matchedParameter ? { arguments: parameters } : parseToolArguments(content);
+}
+
+function parseDsmlParameterValue(value: string, forceString: boolean): unknown {
+  const trimmedValue = value.trim();
+  if (forceString) {
+    return trimmedValue;
+  }
+  if (trimmedValue === "true") {
+    return true;
+  }
+  if (trimmedValue === "false") {
+    return false;
+  }
+  if (trimmedValue === "null") {
+    return null;
+  }
+  if (/^-?\d+(?:\.\d+)?$/.test(trimmedValue)) {
+    return Number(trimmedValue);
+  }
+  return trimmedValue;
+}
+
+function normalizeDsmlToolMarkup(content: string): string {
+  return content.replace(/<\s*(\/?)\s*[|｜]\s*[|｜]\s*DSML\s*[|｜]\s*[|｜]\s*([a-z_:-]+)([^>]*)>/gi, (_match, closing: string, tagName: string, attributes: string) =>
+    `<${closing ? "/" : ""}|${tagName}${attributes ?? ""}|>`,
+  );
 }

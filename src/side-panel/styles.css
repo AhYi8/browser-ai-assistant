@@ -814,6 +814,7 @@ body {
 
   .message-bubble table {
     @apply my-2 block max-w-full overflow-x-auto rounded-md text-left text-xs;
+    width: fit-content;
     border-collapse: collapse;
     border: 1px solid var(--color-hairline);
   }

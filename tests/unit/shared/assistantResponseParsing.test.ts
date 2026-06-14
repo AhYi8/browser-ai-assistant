@@ -60,6 +60,23 @@ describe("AI 回复解析", () => {
     });
   });
 
+  it("剥离闭合的 DSML tool_calls 工具调用块", () => {
+    const rawContent = [
+      "现在让我也看一下单个帖子详情接口：",
+      "< | | DSML | | tool_calls>",
+      '< | | DSML | | invoke name="navigate_page">',
+      '< | | DSML | | parameter name="action" string="true">goto</ | | DSML | | parameter>',
+      '< | | DSML | | parameter name="url" string="true">https://linux.do/t/2385713.json</ | | DSML | | parameter>',
+      "</ | | DSML | | invoke>",
+      "</ | | DSML | | tool_calls>",
+    ].join("\n");
+
+    expect(parseAssistantResponse(rawContent)).toEqual({
+      content: "现在让我也看一下单个帖子详情接口：",
+      thinking: undefined,
+    });
+  });
+
   it("剥离同行 DSML 工具调用标记时保留可见正文", () => {
     const rawContent =
       "我先继续操作页面。< | | DSML | | invoke name=\"click\">< | | DSML | | parameter name=\"uid\">4_64</ | | DSML | | parameter></ | | DSML | | invoke>";
