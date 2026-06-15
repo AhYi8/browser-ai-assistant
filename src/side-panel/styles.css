@@ -791,17 +791,106 @@ body {
     @apply my-0 whitespace-pre-wrap break-words;
   }
 
-  .message-bubble pre {
-    @apply my-2 max-w-full rounded-md p-2;
-    overflow-x: auto;
-    text-align: left;
-    background: var(--color-surface-dark-soft);
-    color: var(--color-on-dark);
-  }
-
   .message-bubble code {
     @apply font-mono text-xs;
+  }
+
+  .markdown-code-block {
+    @apply my-2 min-w-0 max-w-full overflow-hidden rounded-md text-left;
+    background: var(--color-canvas);
+    border: 1px solid var(--color-hairline);
+    color: var(--color-body-strong);
+  }
+
+  .markdown-code-block-toolbar {
+    @apply flex min-w-0 items-center justify-between gap-3 px-3;
+    background: color-mix(in srgb, var(--color-surface-cream-strong) 82%, var(--color-canvas));
+    border-bottom: 1px solid var(--color-hairline-soft);
+  }
+
+  .markdown-code-block-language {
+    @apply min-w-0 truncate font-mono text-xs font-semibold;
+    color: var(--color-ink);
+  }
+
+  .markdown-code-block-actions {
+    @apply flex shrink-0 items-center gap-1;
+  }
+
+  .markdown-code-block-icon-button {
+    @apply grid h-7 w-7 place-items-center rounded-md p-0 transition;
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--color-muted);
+  }
+
+  .markdown-code-block-icon-button:hover {
+    color: var(--color-ink);
+  }
+
+  .markdown-code-block-icon-button:focus-visible {
+    outline: 3px solid color-mix(in srgb, var(--color-primary) 16%, transparent);
+    outline-offset: 1px;
+  }
+
+  .markdown-code-block-icon-button svg {
+    @apply h-4 w-4;
+    display: block;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.7;
+  }
+
+  .markdown-code-block-copy-action {
+    @apply inline-flex h-7 items-center gap-1;
+  }
+
+  .markdown-code-block-copy-feedback {
+    @apply pointer-events-none whitespace-nowrap rounded px-1.5 py-0.5 text-xs font-medium;
+    background: color-mix(in srgb, var(--color-canvas) 72%, transparent);
+    border: 1px solid var(--color-hairline);
+    color: var(--color-ink);
+  }
+
+  .markdown-code-block-copy-feedback-error {
+    color: var(--color-error);
+  }
+
+  .markdown-code-block-body {
+    @apply min-w-0 max-w-full overflow-auto;
+    background: color-mix(in srgb, var(--color-canvas) 92%, var(--color-surface-soft));
+  }
+
+  .markdown-code-block-expanded .markdown-code-block-body {
+    overflow-y: visible;
+  }
+
+  .markdown-code-block-body pre {
+    @apply m-0 min-w-0 p-3;
+    text-align: left;
+  }
+
+  .markdown-code-block-code {
+    @apply block font-mono text-xs;
+    color: var(--color-body-strong);
+    line-height: 1.65;
+    overflow-wrap: normal;
+    tab-size: 2;
+  }
+
+  .markdown-code-block-nowrap .markdown-code-block-code {
     white-space: pre;
+  }
+
+  .markdown-code-block-wrap .markdown-code-block-body {
+    overflow-x: hidden;
+  }
+
+  .markdown-code-block-wrap .markdown-code-block-code {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
   }
 
   .message-bubble :not(pre) > code {

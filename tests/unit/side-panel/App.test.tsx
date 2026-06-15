@@ -302,6 +302,29 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "Browser AI Assistant" })).toBeInTheDocument();
   });
 
+  it("聊天 Markdown 代码块显示类型和快捷操作栏", async () => {
+    await saveChatSession(
+      createChatSession({
+        id: "session-markdown-code-block",
+        title: "代码块会话",
+        messages: [
+          createChatMessage({
+            id: "message-markdown-code-block",
+            role: "assistant",
+            content: "```json\n{\"name\":\"demo\"}\n```",
+          }),
+        ],
+      }),
+    );
+
+    render(<App />);
+
+    expect(await screen.findByLabelText("代码类型 json")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "切换为换行" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "展开代码块" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "复制源码" })).toBeInTheDocument();
+  });
+
   it("设置中提供全局聊天偏好入口", async () => {
     const styles = readFileSync(resolve(process.cwd(), "src/side-panel/styles.css"), "utf8");
 
@@ -1022,6 +1045,7 @@ describe("App", () => {
   });
 
   it("聊天消息中的长代码不会撑出消息容器", async () => {
+    const user = userEvent.setup();
     await saveChatSession(
       createChatSession({
         id: "session-long-code",
@@ -1039,14 +1063,20 @@ describe("App", () => {
 
     const messageList = await screen.findByLabelText("消息列表");
     const codeText = await screen.findByText((content) => content.includes("box_annotator"));
+    const codeBlock = codeText.closest(".markdown-code-block");
     const bubbleWrap = codeText.closest(".message-bubble-wrap");
     const styles = readFileSync(resolve(process.cwd(), "src/side-panel/styles.css"), "utf8");
 
     expect(messageList).toContainElement(bubbleWrap as HTMLElement | null);
+    expect(codeBlock).toHaveClass("markdown-code-block-nowrap");
+    expect(codeBlock).toHaveClass("markdown-code-block-collapsed");
     expect(styles).toContain(".message-bubble-wrap");
     expect(styles).toContain("min-width: 0;");
-    expect(styles).toContain(".message-bubble pre");
-    expect(styles).toContain("overflow-x: auto;");
+    expect(styles).toContain(".markdown-code-block-body");
+    expect(styles).toContain("@apply min-w-0 max-w-full overflow-auto;");
+
+    await user.click(screen.getByRole("button", { name: "展开代码块" }));
+    expect(codeBlock).toHaveClass("markdown-code-block-expanded");
   });
 
   it("助手消息旁展示可展开的 Network 请求详情附件", async () => {
@@ -1627,7 +1657,7 @@ describe("App", () => {
     expect(await screen.findByText(/需要两端对齐的聊天正文/)).toBeInTheDocument();
     expect(styles).toContain("text-align: justify;");
     expect(styles).toContain("text-align-last: left;");
-    expect(styles).toContain(".message-bubble pre");
+    expect(styles).toContain(".markdown-code-block-body pre");
     expect(styles).toContain("text-align: left;");
   });
 

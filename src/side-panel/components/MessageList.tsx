@@ -7,6 +7,7 @@ import { collectMessageToolAttachments, collectRawMessageToolAttachments, isNetw
 import { createChatMessageMarkdown } from "../utils/chatMarkdownExport";
 import { copyOrDownloadMessageImage, copyTextToClipboard } from "../utils/messageClipboard";
 import type { ChatImageAttachment, ChatMessage, ChatPromptInvocation, ChatToolAttachment, ChatToolCallRecord, ToolCallDisplayMode } from "../../shared/types";
+import { MarkdownCodeBlock, MarkdownCodePre } from "./MarkdownCodeBlock";
 import { PromptInlineEditor, PromptTokenContent } from "./PromptInlineEditor";
 
 interface MessageListProps {
@@ -234,7 +235,7 @@ export function MessageList({
                 {message.role === "user" && message.promptInvocations?.length ? (
                   <PromptTokenLinks prompts={message.promptInvocations} ariaLabelPrefix="用户消息提示词" />
                 ) : null}
-                {hasVisibleContent ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown> : null}
+                {hasVisibleContent ? <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ code: MarkdownCodeBlock, pre: MarkdownCodePre }}>{message.content}</ReactMarkdown> : null}
               </div>
             ) : null}
             {message.role === "assistant" ? <ToolAttachmentList attachments={displayAttachments} /> : null}
