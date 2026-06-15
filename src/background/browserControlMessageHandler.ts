@@ -15,6 +15,7 @@ import {
 } from "./browserControl/actions";
 import { BrowserNetworkRecorder } from "./browserControl/networkRecorder";
 import { BrowserNetworkToolExecutor } from "./browserControl/networkToolExecutor";
+import { JsSourceToolExecutor } from "./browserControl/jsSourceToolExecutor";
 
 type Debuggee = chrome.debugger.Debuggee;
 type ChromeApi = typeof chrome;
@@ -629,6 +630,7 @@ export class BrowserControlManager {
   private readonly actionExecutor: BrowserControlActionExecutor;
   private readonly networkRecorder: BrowserNetworkRecorder;
   private readonly networkToolExecutor: BrowserNetworkToolExecutor;
+  private readonly jsSourceToolExecutor: JsSourceToolExecutor;
 
   constructor(
     private readonly connection = new BrowserDebuggerConnection(),
@@ -639,6 +641,10 @@ export class BrowserControlManager {
     this.actionExecutor = new BrowserControlActionExecutor(this.connection, this.snapshotManager);
     this.networkRecorder = new BrowserNetworkRecorder(this.connection);
     this.networkToolExecutor = new BrowserNetworkToolExecutor(this.networkRecorder);
+    this.jsSourceToolExecutor = new JsSourceToolExecutor({
+      recorder: this.networkRecorder,
+      getCurrentPageUrl: async () => (await this.getTargetTabInfo()).url,
+    });
     this.connection.installDetachListener((tabId, reason) => {
       if (this.suppressNextDetachTabId === tabId) {
         this.suppressNextDetachTabId = undefined;
@@ -649,7 +655,7 @@ export class BrowserControlManager {
       this.desiredEnabled = false;
       this.controlledTabIds.clear();
       this.snapshotManager.clearSnapshotCache();
-      this.networkRecorder.stop();
+      this.stopNetworkAnalysis();
       this.notifyDetached(tabId, normalizeDetachReason(reason));
     });
     this.connection.installEventListener();
@@ -663,7 +669,7 @@ export class BrowserControlManager {
     this.targetTabId = undefined;
     this.controlledTabIds.delete(tabId);
     this.snapshotManager.clearSnapshotCache();
-    this.networkRecorder.stop();
+    this.stopNetworkAnalysis();
     this.notifyDetached(tabId, "tab_removed");
     void this.connection.detach(tabId).catch(() => {
       // 标签页关闭期间 detach 只是尽力清理；异常不能冒泡成未处理 Promise。
@@ -680,7 +686,7 @@ export class BrowserControlManager {
       this.targetTabId = undefined;
       this.controlledTabIds.clear();
       this.snapshotManager.clearSnapshotCache();
-      this.networkRecorder.stop();
+      this.stopNetworkAnalysis();
       this.notifyDetached(detachedTabId, "disabled_by_user");
       return { ok: true, attached: false, message: "浏览器控制已关闭。" };
     }
@@ -711,9 +717,9 @@ export class BrowserControlManager {
     if (!attachResult.ok) {
       this.targetTabId = undefined;
       this.controlledTabIds.clear();
-      this.networkRecorder.stop();
+      this.stopNetworkAnalysis();
     } else if (this.connection.attachedTabId) {
-      this.networkRecorder.start(this.connection.attachedTabId);
+      this.startNetworkAnalysis(this.connection.attachedTabId);
     }
 
     return attachResult;
@@ -733,6 +739,10 @@ export class BrowserControlManager {
 
   async executeNetworkTool(toolCall: ModelToolCall): Promise<ModelToolResult> {
     return this.networkToolExecutor.execute(toolCall);
+  }
+
+  async executeJsSourceTool(toolCall: ModelToolCall): Promise<ModelToolResult> {
+    return this.jsSourceToolExecutor.execute(toolCall);
   }
 
   async takeSnapshot(toolCall: ModelToolCall): Promise<ModelToolResult> {
@@ -829,10 +839,12 @@ export class BrowserControlManager {
       }
       await this.connection.navigate(urlResult.url);
       this.snapshotManager.clearSnapshotCache();
+      this.jsSourceToolExecutor.clear();
       content = `已导航到 ${urlResult.url}。`;
     } else if (action === "reload") {
       await this.connection.reload();
       this.snapshotManager.clearSnapshotCache();
+      this.jsSourceToolExecutor.clear();
       content = "已刷新当前页面。";
     } else {
       const history = normalizeNavigationHistory(await this.connection.getNavigationHistory());
@@ -843,6 +855,7 @@ export class BrowserControlManager {
       }
       await this.connection.navigateToHistoryEntry(target.id);
       this.snapshotManager.clearSnapshotCache();
+      this.jsSourceToolExecutor.clear();
       content = action === "back" ? "已后退到上一页。" : "已前进到下一页。";
     }
 
@@ -922,7 +935,7 @@ export class BrowserControlManager {
       this.targetTabId = undefined;
       this.controlledTabIds.clear();
       this.snapshotManager.clearSnapshotCache();
-      this.networkRecorder.stop();
+      this.stopNetworkAnalysis();
       this.notifyDetached(detachedTabId, "tab_removed");
       return `已关闭当前受控页面 ${index}，浏览器控制后台受控列表内没有其他可控页面。`;
     }
@@ -934,15 +947,26 @@ export class BrowserControlManager {
   private async switchToTab(tabId: number): Promise<void> {
     await this.chromeApi?.tabs.update?.(tabId, { active: true });
     this.snapshotManager.clearSnapshotCache();
+    this.jsSourceToolExecutor.clear();
     this.targetTabId = tabId;
     this.controlledTabIds.add(tabId);
     const attachResult = await this.connection.attach(tabId);
     if (!attachResult.ok) {
       this.targetTabId = undefined;
-      this.networkRecorder.stop();
+      this.stopNetworkAnalysis();
       throw new Error(attachResult.message);
     }
+    this.startNetworkAnalysis(tabId);
+  }
+
+  private startNetworkAnalysis(tabId: number): void {
+    this.jsSourceToolExecutor.clear();
     this.networkRecorder.start(tabId);
+  }
+
+  private stopNetworkAnalysis(): void {
+    this.jsSourceToolExecutor.clear();
+    this.networkRecorder.stop();
   }
 
   private async waitAfterPageChange(content: string): Promise<string> {

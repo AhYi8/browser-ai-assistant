@@ -153,6 +153,7 @@
 * 工具调用链路中，工具决策请求可以强制非流式以稳定收集 `tool_calls`；但工具完成后的最终回答请求必须继承用户当前流式偏好，且不得携带 `tools/tool_choice`。浏览器自动化工具只允许影响最大工具轮次和工具暴露条件，不能让最终总结请求退回非流式。
 * OpenAI-compatible 工具决策响应除标准 `message.tool_calls` 外，还必须兼容模型把工具调用写进正文里的 DSML `<｜tool_calls｜><｜invoke name="..."｜>...` 块；解析后必须转成 `ModelToolCall` 并从 assistant 正文移除，禁止把协议文本展示给用户或写入后续上下文。疑似 DSML 工具调用但格式不完整时，也必须转成带 `parseError` 的错误工具结果回灌给模型，由模型决定继续调用工具或输出最终总结，而不是在本地直接中断工具循环或固定总结。
 * DSML 工具调用解析必须同时兼容 `<｜tool_calls｜>`、`<|tool_calls|>` 和 `< | | DSML | | tool_calls>` 这类命名空间格式；带 `< | | DSML | | parameter name="..." string="...">` 的参数块必须在 background 转成结构化工具参数，不能只依赖 Side Panel 展示层剥离。当前命名空间兼容范围固定为 `DSML` 前后各两个半角或全角竖线，不为未知三竖线等变体静默扩宽协议。
+* 流式响应增量写入 UI 前也必须过滤 DSML 工具块，不能只依赖最终 `complete` 消息覆盖；过滤器必须保持普通文本、`<think>` 块和 reasoning 增量的原有分段回调行为，避免为隐藏协议文本牺牲正常流式体验。
 * 模型响应中的工具调用解析必须集中在 `src/background/modelResponseToolParser.ts`；非流式 assistant 响应抽取必须集中在 `src/background/modelAssistantResponseParser.ts`；流式 SSE 响应解析必须集中在 `src/background/modelStreamResponseParser.ts`；`modelRequestHandler.ts` 只负责请求编排和响应分派，不得继续内联堆叠 OpenAI、Anthropic、DSML 或供应商私有格式解析分支。新增或调整私有工具格式时，必须先补充 parser 单元测试覆盖标准调用、非法参数、残缺协议和普通正文不误解析。
 * 流式响应只有收到 OpenAI-compatible `[DONE]` 或 Anthropic `message_stop` 等明确完成信号后才算成功；如果连接 EOF 前已有增量但未收到完成信号，必须返回固定中文中断错误，不能把半截正文当成完整回答。
 * 非流式工具链在模型返回“无工具调用”的阶段性正文后，也必须再发起一次不携带 `tools/tool_choice` 的最终回答请求；该最终请求用于隔离工具决策上下文和最终用户可见回答，不能让最终回答继续暴露工具 schema。
@@ -258,8 +259,16 @@
 * Network 工具结果如需用户可见详情，只能写入通用 `toolAttachments`，附件 kind 固定为 `network`；旧字段 `networkContextAttachment` 仅作为历史兼容读取入口，不得再生成新数据。
 * 历史 Network 附件展示、导出和后续上下文使用前必须重新脱敏并重新生成固定标题和摘要，不能信任 IndexedDB、同步恢复、导入或旧版本保存的 `title`、`summary` 与请求明细。
 * `network.compare_requests`、`network.find_parameter_candidates`、`network.extract_js_candidates` 只做启发式辅助分析，不得自动解锁或回传 Cookie、Authorization、Token 等原文敏感字段。
+* `js.list_resources`、`js.search_sources`、`js.extract_context` 属于浏览器自动化工具组，必须与 `network.*` 使用相同暴露条件；JS 源码索引、同源补位和工具执行器必须拆成独立模块，禁止继续堆入 `BrowserNetworkRecorder`、`BrowserNetworkToolExecutor` 或 `browserControlMessageHandler.ts` 主流程。
+* `js-source` 工具附件必须通过通用 `toolAttachments` 保存、展示、导出和后续上下文注入；历史归一化和聚合必须保留 `redacted`、`truncated`、资源来源、命中位置和同源补位失败摘要。
+* `js-source` 空结果附件如果仍包含合法 `kind`、标题、摘要或 `sourceToolCallId`，归一化时必须保留，避免工具调用完成但没有资源、命中、上下文或失败项时 UI 丢失结果；展示层聚合必须复用共享层结构化聚合并基于去重后的结构重新生成摘要，不能拼接旧 `summary`。
+* JS 同源补位只允许读取当前受控页面同源的 `http`/`https` JS 静态文本资源；不得携带 Cookie、Authorization 或浏览器存储凭据，不得用于 API 请求、请求重放、批量探测或跨域重定向跟随。
+* JS 源码索引必须跟随受控页面生命周期清理：执行 `network.clear_requests`、关闭浏览器控制、导航、刷新、历史前进后退、切换受控标签页时，都不得继续暴露旧页面的 JS 命中或上下文。
+* JS 资源判定只能基于 URL `pathname` 的 `.js/.mjs` 后缀、`resourceType=Script` 或可信 JavaScript MIME；不得被 query/hash 中的 `.js`、JSON/HTML MIME 或非脚本资源误导。
+* 同源 JS 补位响应必须使用可信 JavaScript MIME 白名单，并在读取正文前基于 `Content-Length` 等可用头信息拦截超大响应；禁止把 JSON、HTML 或未知文本响应当作 JS 源码读入内存。
 * Source map 处理、受控只读 `Runtime.evaluate`、请求重放沙箱、敏感字段解锁等高风险 Web 逆向能力默认关闭；未单独完成权限、确认、沙箱、脱敏、审计和测试设计前不得实现或暗中启用。
 * 修改 Network 工具、浏览器控制 debugger allow-list、manifest、background 入口或工具注册时，最小验证必须覆盖相关 vitest、`npm run typecheck` 和 `npm run build:extension`；涉及真实扩展加载路径时还应运行 `npx playwright test --project=chrome-extension`。
+* Network 工具化与完整 Web 逆向路线的主规划文档统一维护在 `docs/Network工具化与Web逆向自动化规划.md`；该文档必须与当前实现保持一致，旧版 DevTools Network 手动连接方案只可作为历史背景，不得作为当前操作说明继续传播。
 
 ### 10.14 网络搜索上下文
 

@@ -112,6 +112,61 @@ describe("Network 工具执行器", () => {
     });
   });
 
+  it("Network 兼容入口使用统一 JS 判定，避免把 json_data 误识别为 JS", async () => {
+    const recorder = {
+      isEnabled: vi.fn(() => true),
+      listRequests: vi.fn(() => [
+        createDetail({
+          id: "json-data",
+          url: "https://example.com/api/json_data",
+          resourceType: "XHR",
+          mimeType: "application/json",
+          responseBody: "{\"sign\":\"not-js\"}",
+        }),
+      ]),
+      getDetails: vi.fn(async (ids: string[]) => ids.includes("json-data") ? [
+        createDetail({
+          id: "json-data",
+          url: "https://example.com/api/json_data",
+          resourceType: "XHR",
+          mimeType: "application/json",
+          responseBody: "{\"sign\":\"not-js\"}",
+        }),
+      ] : []),
+      clear: vi.fn(),
+      waitForRequests: vi.fn(),
+    };
+    const executor = new BrowserNetworkToolExecutor(recorder);
+
+    const result = await executor.execute(createToolCall("network_extract_js_candidates", { keywords: ["sign"] }));
+
+    expect(result.content).toBe("未找到匹配的 JS 源码片段。");
+    expect(result.toolAttachments).toBeUndefined();
+  });
+
+  it("指定 requestIds 提取 JS 候选时也不误判非 JS 扩展名响应", async () => {
+    const recorder = {
+      isEnabled: vi.fn(() => true),
+      listRequests: vi.fn(),
+      getDetails: vi.fn(async () => [
+        createDetail({
+          id: "json-data",
+          url: "https://example.com/api/data.json",
+          resourceType: "XHR",
+          mimeType: "application/json",
+          responseBody: "{\"sign\":\"not-js\"}",
+        }),
+      ]),
+      clear: vi.fn(),
+      waitForRequests: vi.fn(),
+    };
+    const executor = new BrowserNetworkToolExecutor(recorder);
+
+    const result = await executor.execute(createToolCall("network_extract_js_candidates", { requestIds: ["json-data"], keywords: ["sign"] }));
+
+    expect(result.content).toBe("未找到匹配的 JS 候选资源。");
+  });
+
   it("非 JSON 且非表单请求体作为整体字段分析，避免 URLSearchParams 误拆纯文本", async () => {
     const recorder = {
       isEnabled: vi.fn(() => true),
@@ -211,5 +266,34 @@ describe("Network 工具执行器", () => {
       isError: true,
       content: "requestIds 必须是包含 1 到 100 个非空字符串的数组。",
     });
+  });
+
+  it("network_clear_requests 之后不应继续暴露旧的 JS 索引结果", async () => {
+    const jsDetail = createDetail({
+      id: "js-1",
+      url: "https://example.com/assets/app.js",
+      resourceType: "Script",
+      mimeType: "application/javascript",
+      responseBody: "function makeSign(){ return 'old'; }",
+    });
+    const recorder = {
+      isEnabled: vi.fn(() => true),
+      listRequests: vi.fn(() => [jsDetail]),
+      getDetails: vi.fn(async () => [jsDetail]),
+      clear: vi.fn(),
+      waitForRequests: vi.fn(),
+    };
+    const executor = new BrowserNetworkToolExecutor(recorder);
+
+    const beforeClear = await executor.execute(createToolCall("network_extract_js_candidates", { keywords: ["makeSign"] }));
+    expect(beforeClear.content).toContain("app.js");
+
+    recorder.listRequests.mockReturnValue([]);
+    recorder.getDetails.mockResolvedValue([]);
+    await executor.execute(createToolCall("network_clear_requests"));
+
+    const afterClear = await executor.execute(createToolCall("network_extract_js_candidates", { keywords: ["makeSign"] }));
+    expect(afterClear.content).toBe("未找到匹配的 JS 源码片段。");
+    expect(recorder.clear).toHaveBeenCalled();
   });
 });

@@ -23,8 +23,10 @@ export async function readModelStreamResponse(
   const decoder = new TextDecoder();
   let buffer = "";
   let rawContent = "";
+  let visibleContent = "";
   let rawThinking = "";
   let sawDone = false;
+  const dsmlChunkFilter = new DsmlStreamChunkFilter();
 
   while (true) {
     const { done, value } = await reader.read();
@@ -37,7 +39,11 @@ export async function readModelStreamResponse(
     buffer = parsed.remaining;
     for (const chunk of parsed.contentChunks) {
       rawContent += chunk;
-      callbacks.onContentChunk?.(chunk);
+      const visibleChunk = dsmlChunkFilter.push(chunk);
+      if (visibleChunk) {
+        visibleContent += visibleChunk;
+        callbacks.onContentChunk?.(visibleChunk);
+      }
     }
     for (const chunk of parsed.thinkingChunks) {
       rawThinking += chunk;
@@ -56,7 +62,11 @@ export async function readModelStreamResponse(
   sawDone = sawDone || tail.done;
   for (const chunk of tail.contentChunks) {
     rawContent += chunk;
-    callbacks.onContentChunk?.(chunk);
+    const visibleChunk = dsmlChunkFilter.push(chunk);
+    if (visibleChunk) {
+      visibleContent += visibleChunk;
+      callbacks.onContentChunk?.(visibleChunk);
+    }
   }
   for (const chunk of tail.thinkingChunks) {
     rawThinking += chunk;
@@ -71,13 +81,135 @@ export async function readModelStreamResponse(
     return { ok: false, message: STREAM_INTERRUPTED_MESSAGE };
   }
 
-  const parsedContent = parseAssistantResponse(rawContent);
+  const finalVisibleChunk = dsmlChunkFilter.flush();
+  if (finalVisibleChunk) {
+    visibleContent += finalVisibleChunk;
+    callbacks.onContentChunk?.(finalVisibleChunk);
+  }
+
+  const parsedContent = parseAssistantResponse(visibleContent || rawContent);
   return {
     ok: true,
     content: parsedContent.content,
     thinking: rawThinking || parsedContent.thinking,
     ...(shouldPassDeepSeekReasoningContent(model) && rawThinking ? { reasoningContent: rawThinking } : {}),
   };
+}
+
+class DsmlStreamChunkFilter {
+  private static readonly markerTailLength = 96;
+
+  private buffer = "";
+  private suppressingToolBlock = false;
+  private lastOutputEndsWithNewline = false;
+
+  push(chunk: string): string {
+    this.buffer += chunk;
+    let output = "";
+
+    while (this.buffer) {
+      if (this.suppressingToolBlock) {
+        const endMatch = matchDsmlToolCallEnd(this.buffer);
+        if (!endMatch) {
+          this.buffer = this.buffer.slice(-DsmlStreamChunkFilter.markerTailLength);
+          break;
+        }
+
+        this.buffer = this.buffer.slice(endMatch.index + endMatch.text.length);
+        if (this.lastOutputEndsWithNewline) {
+          this.buffer = this.buffer.replace(/^\r?\n/, "");
+        }
+        this.suppressingToolBlock = false;
+        continue;
+      }
+
+      const startMatch = matchDsmlToolCallStart(this.buffer);
+      if (!startMatch) {
+        const safeLength = getSafeVisibleLengthBeforePotentialDsmlStart(this.buffer);
+        if (safeLength === 0) {
+          break;
+        }
+        output += this.takeVisiblePrefix(safeLength);
+        continue;
+      }
+
+      output += this.takeVisiblePrefix(startMatch.index);
+      this.buffer = this.buffer.slice(startMatch.index + startMatch.text.length);
+      this.suppressingToolBlock = true;
+    }
+
+    return output;
+  }
+
+  flush(): string {
+    if (this.suppressingToolBlock) {
+      this.buffer = "";
+      this.suppressingToolBlock = false;
+      return "";
+    }
+
+    return this.takeVisiblePrefix(this.buffer.length);
+  }
+
+  private takeVisiblePrefix(length: number): string {
+    const text = this.buffer.slice(0, length);
+    this.buffer = this.buffer.slice(length);
+    if (text) {
+      this.lastOutputEndsWithNewline = /\r?\n$/.test(text);
+    }
+    return text;
+  }
+}
+
+function matchDsmlToolCallStart(content: string): { index: number; text: string } | undefined {
+  return findFirstPatternMatch(content, [
+    /<\s*[|｜]\s*[|｜]\s*DSML\s*[|｜]\s*[|｜]\s*tool_calls\s*>/i,
+    /<\s*[|｜]\s*tool_calls\s*[|｜]\s*>/i,
+  ]);
+}
+
+function matchDsmlToolCallEnd(content: string): { index: number; text: string } | undefined {
+  return findFirstPatternMatch(content, [
+    /<\s*\/\s*[|｜]\s*[|｜]\s*DSML\s*[|｜]\s*[|｜]\s*tool_calls\s*>/i,
+    /<\s*\/\s*[|｜]\s*tool_calls\s*[|｜]\s*>/i,
+  ]);
+}
+
+function findFirstPatternMatch(content: string, patterns: RegExp[]): { index: number; text: string } | undefined {
+  let firstMatch: { index: number; text: string } | undefined;
+  for (const pattern of patterns) {
+    const match = pattern.exec(content);
+    if (!match || match.index === undefined) {
+      continue;
+    }
+    if (!firstMatch || match.index < firstMatch.index) {
+      firstMatch = { index: match.index, text: match[0] };
+    }
+  }
+  return firstMatch;
+}
+
+function getSafeVisibleLengthBeforePotentialDsmlStart(content: string): number {
+  const scanStart = Math.max(0, content.length - DsmlStreamChunkFilterMarkerWindow);
+  for (let index = content.length - 1; index >= scanStart; index -= 1) {
+    if (content[index] !== "<") {
+      continue;
+    }
+    const suffix = content.slice(index);
+    if (isPotentialDsmlToolCallStartPrefix(suffix)) {
+      return index;
+    }
+    return content.length;
+  }
+  return content.length;
+}
+
+const DsmlStreamChunkFilterMarkerWindow = 64;
+
+function isPotentialDsmlToolCallStartPrefix(value: string): boolean {
+  const compact = value.replace(/\s+/g, "").toLowerCase();
+  const candidates = ["<|tool_calls|>", "<｜tool_calls｜>", "<||dsml||tool_calls>"];
+  return candidates.some((candidate) => candidate.startsWith(compact));
 }
 
 function consumeSseBuffer(

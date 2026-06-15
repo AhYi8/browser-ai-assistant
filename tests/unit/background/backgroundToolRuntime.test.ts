@@ -16,6 +16,7 @@ const browserControlManagerMock = vi.hoisted(() => ({
   takeSnapshot: vi.fn(),
   executeBrowserTool: vi.fn(),
   executeNetworkTool: vi.fn(),
+  executeJsSourceTool: vi.fn(),
 }));
 
 const executeTavilySearchFromSettingsMock = vi.hoisted(() => vi.fn());
@@ -88,6 +89,7 @@ describe("background 工具运行时封装", () => {
     browserControlManagerMock.takeSnapshot.mockReset();
     browserControlManagerMock.executeBrowserTool.mockReset();
     browserControlManagerMock.executeNetworkTool.mockReset();
+    browserControlManagerMock.executeJsSourceTool.mockReset();
     executeTavilySearchFromSettingsMock.mockReset();
   });
 
@@ -99,6 +101,7 @@ describe("background 工具运行时封装", () => {
     expect(shouldExposeTool({ id: "browser.take_snapshot", name: "take_snapshot", parameters: {} })).toBe(false);
     expect(shouldExposeTool({ id: "browser.click", name: "click", parameters: {} })).toBe(true);
     expect(shouldExposeTool({ id: "network.list_requests", name: "network_list_requests", parameters: {} })).toBe(true);
+    expect(shouldExposeTool({ id: "js.search_sources", name: "js_search_sources", parameters: {} })).toBe(true);
     expect(shouldExposeTool({ id: "system.current_time", name: "get_current_time", parameters: {} })).toBe(true);
   });
 
@@ -110,6 +113,7 @@ describe("background 工具运行时封装", () => {
     expect(shouldExposeTool({ id: "browser.take_snapshot", name: "take_snapshot", parameters: {} })).toBe(false);
     expect(shouldExposeTool({ id: "browser.click", name: "click", parameters: {} })).toBe(false);
     expect(shouldExposeTool({ id: "network.list_requests", name: "network_list_requests", parameters: {} })).toBe(false);
+    expect(shouldExposeTool({ id: "js.search_sources", name: "js_search_sources", parameters: {} })).toBe(false);
   });
 
   it("生成模型工具定义时只透传模型需要的 schema 字段", () => {
@@ -193,6 +197,7 @@ describe("background 工具运行时封装", () => {
     browserControlManagerMock.takeSnapshot.mockResolvedValue({ toolCallId: "call-take_snapshot", name: "take_snapshot", content: "快照" });
     browserControlManagerMock.executeBrowserTool.mockResolvedValue({ toolCallId: "call-click", name: "click", content: "已点击" });
     browserControlManagerMock.executeNetworkTool.mockResolvedValue({ toolCallId: "call-network_list_requests", name: "network_list_requests", content: "Network 列表" });
+    browserControlManagerMock.executeJsSourceTool.mockResolvedValue({ toolCallId: "call-js_search_sources", name: "js_search_sources", content: "JS 搜索" });
     executeTavilySearchFromSettingsMock.mockResolvedValue({
       ok: true,
       attachment: {
@@ -218,6 +223,9 @@ describe("background 工具运行时封装", () => {
     });
     await expect(executor(createToolCall("network_list_requests"), { id: "network.list_requests", name: "network_list_requests", parameters: {} })).resolves.toMatchObject({
       content: "Network 列表",
+    });
+    await expect(executor(createToolCall("js_search_sources", { keywords: ["sign"] }), { id: "js.search_sources", name: "js_search_sources", parameters: {} })).resolves.toMatchObject({
+      content: "JS 搜索",
     });
     await expect(executor(createToolCall("get_current_time"), { id: "system.current_time", name: "get_current_time", parameters: {} })).resolves.toMatchObject({
       content: expect.stringContaining("当前系统时间："),

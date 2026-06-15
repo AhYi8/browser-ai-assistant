@@ -89,6 +89,32 @@ describe("模型流式响应解析", () => {
     expect(onThinkingChunk).toHaveBeenCalledWith("先分析");
   });
 
+  it("OpenAI-compatible SSE 流式增量不会把 DSML 工具块透传到 UI", async () => {
+    const onContentChunk = vi.fn();
+    const result = await readModelStreamResponse(
+      new Response(
+        createStream([
+          'data: {"choices":[{"delta":{"content":"分析已经非常清晰了。让我再确认 serializeObject：\\n< | | DSML | | tool_calls>\\n"}}]}\n\n',
+          'data: {"choices":[{"delta":{"content":"< | | DSML | | invoke name=\\"evaluate_script\\">\\n< | | DSML | | parameter name=\\"function\\" string=\\"true\\">() => {\\n"}}]}\n\n',
+          'data: {"choices":[{"delta":{"content":"var testForm = $(\\"<form><input name=\\\\\\"user\\\\\\" value=\\\\\\"test\\\\\\"><input type=\\\\\\"password\\\\\\" name=\\\\\\"pass\\\\\\" value=\\\\\\"123456\\\\\\"></form>\\");\\n"}}]}\n\n',
+          'data: {"choices":[{"delta":{"content":"return JSON.stringify(testForm.serializeObject());\\n}</ | | DSML | | parameter>\\n</ | | DSML | | invoke>\\n</ | | DSML | | tool_calls>\\n后续结论。"}}]}\n\n',
+          "data: [DONE]\n\n",
+        ]),
+      ),
+      createModel(),
+      { onContentChunk },
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      content: "分析已经非常清晰了。让我再确认 serializeObject：\n后续结论。",
+      thinking: undefined,
+    });
+    expect(onContentChunk.mock.calls.map((call) => call[0]).join("")).toBe("分析已经非常清晰了。让我再确认 serializeObject：\n后续结论。");
+    expect(onContentChunk.mock.calls.map((call) => call[0]).join("")).not.toContain("DSML");
+    expect(onContentChunk.mock.calls.map((call) => call[0]).join("")).not.toContain("evaluate_script");
+  });
+
   it("Anthropic SSE 只拼接 text_delta 并忽略畸形 JSON 片段", async () => {
     const onContentChunk = vi.fn();
     const result = await readModelStreamResponse(

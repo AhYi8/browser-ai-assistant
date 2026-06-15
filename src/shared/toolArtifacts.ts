@@ -1,5 +1,6 @@
 import type {
   ChatGenericToolAttachment,
+  ChatJsSourceToolAttachment,
   ChatMessage,
   ChatNetworkContextAttachment,
   ChatNetworkToolAttachment,
@@ -8,6 +9,10 @@ import type {
   ChatWebSearchResult,
   ChatWebSearchPayload,
   ChatWebSearchToolAttachment,
+  JsSourceContext,
+  JsSourceFetchFailure,
+  JsSourceMatch,
+  JsSourceResource,
 } from "./types";
 import { formatNetworkAttachmentForExport, formatNetworkAttachmentSummary, redactNetworkRequestDetail } from "./networkContext";
 import { createTavilySearchContextPrompt, formatTavilySearchAttachmentSummary } from "./webSearch/tavily";
@@ -101,6 +106,10 @@ export function formatToolAttachmentForPrompt(attachment: ChatToolAttachment): s
     return ["后续追问需要继续参考以下历史 Network 请求详情：", formatNetworkAttachmentForExport(requests)].join("\n");
   }
 
+  if (isJsSourceToolAttachment(attachment)) {
+    return ["后续追问需要继续参考以下历史 JS 源码片段：", formatJsSourceAttachmentForText(attachment)].join("\n");
+  }
+
   if (attachment.details?.trim()) {
     return [`后续追问需要继续参考以下历史工具附件：${attachment.title}`, attachment.details.trim()].join("\n");
   }
@@ -116,6 +125,10 @@ export function formatToolAttachmentForExport(attachment: ChatToolAttachment): s
   if (isNetworkToolAttachment(attachment)) {
     const requests = attachment.requests.map(redactNetworkRequestDetail);
     return ["# Network 请求详情附件", "", formatNetworkAttachmentSummary(requests), "", formatNetworkAttachmentForExport(requests)].join("\n");
+  }
+
+  if (isJsSourceToolAttachment(attachment)) {
+    return ["# JS 源码片段附件", "", formatJsSourceAttachmentSummary(attachment), "", formatJsSourceAttachmentForText(attachment)].join("\n");
   }
 
   return ["# 工具结果附件", "", attachment.summary, "", attachment.details ?? ""].join("\n").trim();
@@ -140,6 +153,10 @@ export function normalizeToolAttachment(value: unknown): ChatToolAttachment | un
     return normalizeNetworkToolAttachment(source);
   }
 
+  if (kind === "js-source") {
+    return normalizeJsSourceToolAttachment(source);
+  }
+
   return normalizeGenericToolAttachment(source, kind);
 }
 
@@ -149,6 +166,10 @@ export function isWebSearchToolAttachment(attachment: ChatToolAttachment): attac
 
 export function isNetworkToolAttachment(attachment: ChatToolAttachment): attachment is ChatNetworkToolAttachment {
   return attachment.kind === "network" && "requests" in attachment;
+}
+
+export function isJsSourceToolAttachment(attachment: ChatToolAttachment): attachment is ChatJsSourceToolAttachment {
+  return attachment.kind === "js-source" && "resources" in attachment && "jsMatches" in attachment && "contexts" in attachment;
 }
 
 export function uniqueToolAttachmentsById(attachments: ChatToolAttachment[]): ChatToolAttachment[] {
@@ -192,6 +213,16 @@ function createToolAttachmentContentKey(attachment: ChatToolAttachment): string 
     ].join("\u0000");
   }
 
+  if (isJsSourceToolAttachment(attachment)) {
+    return [
+      attachment.kind,
+      normalizeComparableText(attachment.query?.join(" ") ?? ""),
+      ...attachment.resources.map((resource) => [resource.id, resource.source, normalizeComparableText(resource.url)].join("\u0001")),
+      ...attachment.jsMatches.map((match) => [match.resourceId, String(match.position), normalizeComparableText(match.term)].join("\u0001")),
+      ...attachment.contexts.map((context) => [context.resourceId, String(context.position)].join("\u0001")),
+    ].join("\u0000");
+  }
+
   return [attachment.kind, normalizeComparableText(attachment.title), normalizeComparableText(attachment.summary), normalizeComparableText(attachment.details ?? "")].join("\u0000");
 }
 
@@ -226,6 +257,13 @@ function createToolAttachmentAggregateTarget(
   return { key: `${attachment.kind}\u0000legacy` };
 }
 
+export function aggregateToolAttachmentGroupByKind(attachments: ChatToolAttachment[]): ChatToolAttachment | undefined {
+  if (attachments.length === 0) {
+    return undefined;
+  }
+  return aggregateToolAttachmentGroup({ attachments });
+}
+
 function aggregateToolAttachmentGroup(group: ToolAttachmentAggregateGroup): ChatToolAttachment | undefined {
   const { attachments } = group;
   if (attachments.length === 0) {
@@ -248,6 +286,10 @@ function aggregateToolAttachmentGroup(group: ToolAttachmentAggregateGroup): Chat
 
   if (kind === "network") {
     return aggregateNetworkToolAttachments(attachments.filter(isNetworkToolAttachment));
+  }
+
+  if (kind === "js-source") {
+    return aggregateJsSourceToolAttachments(attachments.filter(isJsSourceToolAttachment));
   }
 
   return aggregateGenericToolAttachments(kind, attachments);
@@ -314,6 +356,36 @@ function aggregateNetworkToolAttachments(attachments: ChatNetworkToolAttachment[
     redacted: true,
     truncated: attachments.some((attachment) => attachment.truncated || attachment.requests.some((request) => request.truncated)),
     requests,
+  };
+}
+
+function aggregateJsSourceToolAttachments(attachments: ChatJsSourceToolAttachment[]): ChatJsSourceToolAttachment | undefined {
+  if (attachments.length === 0) {
+    return undefined;
+  }
+
+  const resources = uniqueBy(attachments.flatMap((attachment) => attachment.resources), (resource) => resource.id.trim() || resource.url.trim());
+  const jsMatches = uniqueBy(attachments.flatMap((attachment) => attachment.jsMatches), (match) => `${match.resourceId}\u0000${match.position}\u0000${match.term}`);
+  const contexts = uniqueBy(attachments.flatMap((attachment) => attachment.contexts), (context) => `${context.resourceId}\u0000${context.position}`);
+  const failedFetches = uniqueBy(attachments.flatMap((attachment) => attachment.failedFetches), (failure) => `${failure.url}\u0000${failure.message}`);
+  const createdAt = Math.max(...attachments.map((attachment) => attachment.createdAt));
+  const aggregated: ChatJsSourceToolAttachment = {
+    id: `tool-attachment-js-source-aggregated-${attachments.map((attachment) => attachment.id).join("-")}`,
+    kind: "js-source",
+    title: "JS 源码片段",
+    summary: "",
+    createdAt,
+    redacted: true,
+    truncated: attachments.some((attachment) => attachment.truncated),
+    query: uniqueNonEmptyStrings(attachments.flatMap((attachment) => attachment.query)).slice(0, 20),
+    resources,
+    jsMatches,
+    contexts,
+    failedFetches,
+  };
+  return {
+    ...aggregated,
+    summary: formatJsSourceAttachmentSummary(aggregated),
   };
 }
 
@@ -439,6 +511,52 @@ function normalizeNetworkToolAttachment(source: Partial<ChatToolAttachment>): Ch
   };
 }
 
+function normalizeJsSourceToolAttachment(source: Partial<ChatToolAttachment>): ChatJsSourceToolAttachment | undefined {
+  const resources = "resources" in source && Array.isArray(source.resources)
+    ? source.resources.map(normalizeJsSourceResource).filter((item): item is JsSourceResource => Boolean(item))
+    : [];
+  const jsMatches = "jsMatches" in source && Array.isArray(source.jsMatches)
+    ? source.jsMatches.map(normalizeJsSourceMatch).filter((item): item is JsSourceMatch => Boolean(item))
+    : [];
+  const contexts = "contexts" in source && Array.isArray(source.contexts)
+    ? source.contexts.map(normalizeJsSourceContext).filter((item): item is JsSourceContext => Boolean(item))
+    : [];
+  const failedFetches = "failedFetches" in source && Array.isArray(source.failedFetches)
+    ? source.failedFetches.map(normalizeJsSourceFetchFailure).filter((item): item is JsSourceFetchFailure => Boolean(item))
+    : [];
+  if (
+    !resources.length &&
+    !jsMatches.length &&
+    !contexts.length &&
+    !failedFetches.length &&
+    !normalizeOptionalString(source.title) &&
+    !normalizeOptionalString(source.summary) &&
+    !normalizeOptionalString(source.sourceToolCallId)
+  ) {
+    return undefined;
+  }
+
+  const attachment: ChatJsSourceToolAttachment = {
+    id: normalizeId(source.id, `tool-attachment-js-source-${normalizeTimestamp(source.createdAt)}`),
+    kind: "js-source",
+    title: "JS 源码片段",
+    summary: "",
+    sourceToolCallId: normalizeOptionalString(source.sourceToolCallId),
+    createdAt: normalizeTimestamp(source.createdAt),
+    redacted: true,
+    truncated: source.truncated === true || resources.some((resource) => resource.truncated) || jsMatches.some((match) => match.truncated) || contexts.some((context) => context.truncated),
+    query: "query" in source && Array.isArray(source.query) ? uniqueNonEmptyStrings(source.query.filter((item): item is string => typeof item === "string")) : undefined,
+    resources,
+    jsMatches,
+    contexts,
+    failedFetches,
+  };
+  return {
+    ...attachment,
+    summary: normalizeOptionalString(source.summary) ?? formatJsSourceAttachmentSummary(attachment),
+  };
+}
+
 function normalizeGenericToolAttachment(source: Partial<ChatToolAttachment>, kind: string): ChatGenericToolAttachment | undefined {
   const title = normalizeOptionalString(source.title);
   const summary = normalizeOptionalString(source.summary);
@@ -458,6 +576,122 @@ function normalizeGenericToolAttachment(source: Partial<ChatToolAttachment>, kin
     truncated: source.truncated === true || Boolean(truncatedDetails?.truncated),
     details: truncatedDetails?.text,
   };
+}
+
+function normalizeJsSourceResource(value: unknown): JsSourceResource | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const source = value as Partial<JsSourceResource>;
+  const id = normalizeOptionalString(source.id);
+  const url = normalizeOptionalString(source.url);
+  if (!id || !url || (source.source !== "network" && source.source !== "same-origin-fetch")) {
+    return undefined;
+  }
+  return {
+    id,
+    source: source.source,
+    url,
+    mimeType: normalizeOptionalString(source.mimeType),
+    size: typeof source.size === "number" && Number.isFinite(source.size) ? Math.max(0, Math.floor(source.size)) : 0,
+    searchable: source.searchable !== false,
+    fetchedAt: typeof source.fetchedAt === "number" && Number.isFinite(source.fetchedAt) ? source.fetchedAt : undefined,
+    // redacted 表示历史数据重新进入统一脱敏/归一化管道，不代表该资源一定发生过替换。
+    redacted: true,
+    truncated: source.truncated === true,
+  };
+}
+
+function normalizeJsSourceMatch(value: unknown): JsSourceMatch | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const source = value as Partial<JsSourceMatch>;
+  const resourceId = normalizeOptionalString(source.resourceId);
+  const url = normalizeOptionalString(source.url);
+  const term = normalizeOptionalString(source.term);
+  const snippet = normalizeOptionalString(source.snippet);
+  if (!resourceId || !url || !term || !snippet || (source.source !== "network" && source.source !== "same-origin-fetch")) {
+    return undefined;
+  }
+  return {
+    resourceId,
+    source: source.source,
+    url,
+    term,
+    position: normalizeNonNegativeNumber(source.position),
+    line: normalizePositiveNumber(source.line),
+    column: normalizePositiveNumber(source.column),
+    snippet,
+    redacted: true,
+    truncated: source.truncated === true,
+  };
+}
+
+function normalizeJsSourceContext(value: unknown): JsSourceContext | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const source = value as Partial<JsSourceContext>;
+  const resourceId = normalizeOptionalString(source.resourceId);
+  const url = normalizeOptionalString(source.url);
+  const snippet = normalizeOptionalString(source.snippet);
+  if (!resourceId || !url || !snippet || (source.source !== "network" && source.source !== "same-origin-fetch")) {
+    return undefined;
+  }
+  return {
+    resourceId,
+    source: source.source,
+    url,
+    position: normalizeNonNegativeNumber(source.position),
+    line: normalizePositiveNumber(source.line),
+    column: normalizePositiveNumber(source.column),
+    snippet,
+    redacted: true,
+    truncated: source.truncated === true,
+  };
+}
+
+function normalizeJsSourceFetchFailure(value: unknown): JsSourceFetchFailure | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const source = value as Partial<JsSourceFetchFailure>;
+  const url = normalizeOptionalString(source.url);
+  const message = normalizeOptionalString(source.message);
+  return url && message ? { url, message } : undefined;
+}
+
+export function formatJsSourceAttachmentSummary(attachment: ChatJsSourceToolAttachment): string {
+  return `JS 资源 ${attachment.resources.length} 个，命中 ${attachment.jsMatches.length} 个，上下文 ${attachment.contexts.length} 个，补位失败 ${attachment.failedFetches.length} 个。`;
+}
+
+function formatJsSourceAttachmentForText(attachment: ChatJsSourceToolAttachment): string {
+  const sections: string[] = [];
+  if (attachment.query?.length) {
+    sections.push(`查询关键词：${attachment.query.join("、")}`);
+  }
+  if (attachment.resources.length) {
+    sections.push(["资源：", ...attachment.resources.map((resource) => `- ${resource.id} | ${resource.source} | ${resource.url}`)].join("\n"));
+  }
+  if (attachment.jsMatches.length) {
+    sections.push(["命中：", ...attachment.jsMatches.map((match) => `- ${match.resourceId}:${match.line}:${match.column} ${match.term}: ${match.snippet}`)].join("\n"));
+  }
+  if (attachment.contexts.length) {
+    sections.push(["上下文：", ...attachment.contexts.map((context) => `- ${context.resourceId}:${context.line}:${context.column}\n${context.snippet}`)].join("\n"));
+  }
+  if (attachment.failedFetches.length) {
+    sections.push(["同源补位失败：", ...attachment.failedFetches.map((failure) => `- ${failure.url}: ${failure.message}`)].join("\n"));
+  }
+  return sections.join("\n\n").trim();
+}
+
+function normalizeNonNegativeNumber(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+}
+
+function normalizePositiveNumber(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(1, Math.floor(value)) : 1;
 }
 
 function normalizeId(value: unknown, fallback: string): string {

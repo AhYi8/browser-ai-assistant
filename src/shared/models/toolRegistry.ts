@@ -38,6 +38,12 @@ export const NETWORK_FIND_PARAMETER_CANDIDATES_TOOL_ID = "network.find_parameter
 export const NETWORK_FIND_PARAMETER_CANDIDATES_TOOL_NAME = "network_find_parameter_candidates";
 export const NETWORK_EXTRACT_JS_CANDIDATES_TOOL_ID = "network.extract_js_candidates";
 export const NETWORK_EXTRACT_JS_CANDIDATES_TOOL_NAME = "network_extract_js_candidates";
+export const JS_LIST_RESOURCES_TOOL_ID = "js.list_resources";
+export const JS_LIST_RESOURCES_TOOL_NAME = "js_list_resources";
+export const JS_SEARCH_SOURCES_TOOL_ID = "js.search_sources";
+export const JS_SEARCH_SOURCES_TOOL_NAME = "js_search_sources";
+export const JS_EXTRACT_CONTEXT_TOOL_ID = "js.extract_context";
+export const JS_EXTRACT_CONTEXT_TOOL_NAME = "js_extract_context";
 
 export const MODEL_TOOL_GROUP_SYSTEM_ID = "system";
 export const MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID = "browser_automation";
@@ -389,6 +395,79 @@ export const AVAILABLE_MODEL_TOOLS: ModelToolRegistryEntry[] = [
       additionalProperties: false,
     },
   },
+  {
+    id: JS_LIST_RESOURCES_TOOL_ID,
+    name: JS_LIST_RESOURCES_TOOL_NAME,
+    groupId: MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
+    displayName: "列出 JS 资源",
+    description: "列出当前受控页面已采集和已同源补位的 JS 资源，供后续源码检索使用。",
+    parameters: {
+      type: "object",
+      properties: {},
+      required: [],
+      additionalProperties: false,
+    },
+  },
+  {
+    id: JS_SEARCH_SOURCES_TOOL_ID,
+    name: JS_SEARCH_SOURCES_TOOL_NAME,
+    groupId: MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
+    displayName: "搜索 JS 源码",
+    description: "按接口路径、参数名或关键词搜索已采集 JS 源码；必要时可在严格同源限制下补位读取 JS 静态文本资源。",
+    parameters: {
+      type: "object",
+      properties: {
+        keywords: {
+          type: "array",
+          items: { type: "string" },
+          minItems: 1,
+          maxItems: 20,
+          description: "要搜索的关键词、接口路径或参数名。",
+        },
+        urls: {
+          type: "array",
+          items: { type: "string" },
+          maxItems: 20,
+          description: "可选，同源 JS URL 候选；只有 allowSameOriginFetch 为 true 时才会尝试读取。",
+        },
+        allowSameOriginFetch: {
+          type: "boolean",
+          description: "是否允许本次工具调用按严格同源规则补位读取 JS 静态文本资源。",
+        },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 50,
+          description: "最多返回的命中数量。",
+        },
+      },
+      required: ["keywords"],
+      additionalProperties: false,
+    },
+  },
+  {
+    id: JS_EXTRACT_CONTEXT_TOOL_ID,
+    name: JS_EXTRACT_CONTEXT_TOOL_NAME,
+    groupId: MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
+    displayName: "提取 JS 上下文",
+    description: "按 JS 资源 ID 和字符位置提取更大的源码上下文片段。",
+    parameters: {
+      type: "object",
+      properties: {
+        resourceId: {
+          type: "string",
+          description: "由 js.list_resources 或 js.search_sources 返回的 JS 资源 ID。",
+        },
+        position: {
+          type: "integer",
+          minimum: 0,
+          description: "命中的字符位置。",
+        },
+      },
+      required: ["resourceId", "position"],
+      additionalProperties: false,
+    },
+  },
 ];
 
 const TOOL_ID_PATTERN = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/;
@@ -416,7 +495,7 @@ export function getModelToolGroups(tools: ModelToolRegistryEntry[] = getRegister
 }
 
 export function isBrowserAutomationToolId(toolId: string): boolean {
-  return toolId.startsWith("browser.") || toolId.startsWith("network.");
+  return toolId.startsWith("browser.") || toolId.startsWith("network.") || toolId.startsWith("js.");
 }
 
 function createNetworkRequestIdsSchema(): Record<string, unknown> {

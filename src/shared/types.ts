@@ -189,12 +189,65 @@ export interface ChatNetworkToolAttachment extends ChatToolAttachmentBase {
   requests: NetworkRequestDetail[];
 }
 
+export type JsSourceResourceSource = "network" | "same-origin-fetch";
+
+export interface JsSourceResource {
+  id: string;
+  source: JsSourceResourceSource;
+  url: string;
+  mimeType?: string;
+  size: number;
+  searchable: boolean;
+  fetchedAt?: number;
+  redacted: boolean;
+  truncated: boolean;
+}
+
+export interface JsSourceMatch {
+  resourceId: string;
+  source: JsSourceResourceSource;
+  url: string;
+  term: string;
+  position: number;
+  line: number;
+  column: number;
+  snippet: string;
+  redacted: boolean;
+  truncated: boolean;
+}
+
+export interface JsSourceContext {
+  resourceId: string;
+  source: JsSourceResourceSource;
+  url: string;
+  position: number;
+  line: number;
+  column: number;
+  snippet: string;
+  redacted: boolean;
+  truncated: boolean;
+}
+
+export interface JsSourceFetchFailure {
+  url: string;
+  message: string;
+}
+
+export interface ChatJsSourceToolAttachment extends ChatToolAttachmentBase {
+  kind: "js-source";
+  query?: string[];
+  resources: JsSourceResource[];
+  jsMatches: JsSourceMatch[];
+  contexts: JsSourceContext[];
+  failedFetches: JsSourceFetchFailure[];
+}
+
 export interface ChatGenericToolAttachment extends ChatToolAttachmentBase {
   kind: string;
   details?: string;
 }
 
-export type ChatToolAttachment = ChatWebSearchToolAttachment | ChatNetworkToolAttachment | ChatGenericToolAttachment;
+export type ChatToolAttachment = ChatWebSearchToolAttachment | ChatNetworkToolAttachment | ChatJsSourceToolAttachment | ChatGenericToolAttachment;
 
 export interface PromptTemplate {
   id: string;

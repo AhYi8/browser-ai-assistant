@@ -3,7 +3,14 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { formatNetworkAttachmentSummary, redactNetworkRequestDetail } from "../../shared/networkContext";
 import { formatTavilySearchAttachmentSummary } from "../../shared/webSearch/tavily";
-import { collectMessageToolAttachments, collectRawMessageToolAttachments, isNetworkToolAttachment, isWebSearchToolAttachment } from "../../shared/toolArtifacts";
+import {
+  aggregateToolAttachmentGroupByKind,
+  collectMessageToolAttachments,
+  collectRawMessageToolAttachments,
+  isJsSourceToolAttachment,
+  isNetworkToolAttachment,
+  isWebSearchToolAttachment,
+} from "../../shared/toolArtifacts";
 import { createChatMessageMarkdown } from "../utils/chatMarkdownExport";
 import { copyOrDownloadMessageImage, copyTextToClipboard } from "../utils/messageClipboard";
 import type { ChatImageAttachment, ChatMessage, ChatPromptInvocation, ChatToolAttachment, ChatToolCallRecord, ToolCallDisplayMode } from "../../shared/types";
@@ -463,7 +470,7 @@ function createDisplayAttachmentGroups(messages: ChatMessage[], toolCallDisplayM
   return groups;
 }
 
-function aggregateDisplayAttachmentsByKind(attachments: ChatToolAttachment[]): ChatToolAttachment[] {
+export function aggregateDisplayAttachmentsByKind(attachments: ChatToolAttachment[]): ChatToolAttachment[] {
   const groups = new Map<string, ChatToolAttachment[]>();
   const order: string[] = [];
   for (const attachment of attachments) {
@@ -525,6 +532,17 @@ function aggregateDisplayAttachmentKindGroup(kind: string, attachments: ChatTool
     return {
       ...aggregated,
       summary: formatTavilySearchAttachmentSummary(aggregated),
+    };
+  }
+
+  if (kind === "js-source") {
+    const aggregated = aggregateToolAttachmentGroupByKind(attachments.filter(isJsSourceToolAttachment));
+    if (!aggregated) {
+      return attachments[0];
+    }
+    return {
+      ...aggregated,
+      id: `message-display-js-source-${attachments.map((attachment) => attachment.id).join("-")}`,
     };
   }
 
@@ -595,6 +613,10 @@ function ToolAttachmentView({ attachment }: { attachment: ChatToolAttachment }) 
 
   if (isWebSearchToolAttachment(attachment)) {
     return <WebSearchToolAttachmentView attachment={attachment} />;
+  }
+
+  if (isJsSourceToolAttachment(attachment)) {
+    return <JsSourceToolAttachmentView attachment={attachment} />;
   }
 
   return (
@@ -670,6 +692,52 @@ function WebSearchToolAttachmentView({ attachment }: { attachment: ChatToolAttac
           </li>
         ))}
       </ul>
+    </details>
+  );
+}
+
+function JsSourceToolAttachmentView({ attachment }: { attachment: ChatToolAttachment }) {
+  if (!isJsSourceToolAttachment(attachment)) {
+    return null;
+  }
+
+  return (
+    <details className="message-tool-attachment message-js-source-attachment">
+      <summary>
+        <span>JS 源码片段</span>
+        <span className="message-js-source-count">{attachment.jsMatches.length + attachment.contexts.length}</span>
+      </summary>
+      <p className="message-tool-attachment-summary">{attachment.summary}</p>
+      {attachment.resources.length ? (
+        <ul className="message-js-source-resource-list">
+          {attachment.resources.map((resource) => (
+            <li key={resource.id}>
+              {resource.source} | {resource.id} | {resource.url}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {attachment.jsMatches.map((match, index) => (
+        <details key={`${match.resourceId}-${match.position}-${index}`}>
+          <summary>
+            <span>
+              {match.resourceId}:{match.line}:{match.column} 命中 {match.term}
+            </span>
+          </summary>
+          <pre>{match.snippet}</pre>
+        </details>
+      ))}
+      {attachment.contexts.map((context, index) => (
+        <details key={`${context.resourceId}-${context.position}-${index}`}>
+          <summary>
+            <span>
+              {context.resourceId}:{context.line}:{context.column} 上下文
+            </span>
+          </summary>
+          <pre>{context.snippet}</pre>
+        </details>
+      ))}
+      {attachment.failedFetches.length ? <pre>{attachment.failedFetches.map((failure) => `${failure.url}: ${failure.message}`).join("\n")}</pre> : null}
     </details>
   );
 }

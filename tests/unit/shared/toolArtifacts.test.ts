@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { collectMessageToolAttachments, collectRawMessageToolAttachments, normalizeToolAttachment } from "../../../src/shared/toolArtifacts";
+import { collectMessageToolAttachments, collectRawMessageToolAttachments, formatToolAttachmentForExport, formatToolAttachmentForPrompt, normalizeToolAttachment } from "../../../src/shared/toolArtifacts";
 import type { ChatMessage } from "../../../src/shared/types";
 
 function createAssistantMessage(partial: Partial<ChatMessage>): ChatMessage {
@@ -427,5 +427,204 @@ describe("通用工具附件聚合", () => {
       truncated: true,
     });
     expect("details" in attachment && attachment.details?.length).toBeLessThan(longDetails.length);
+  });
+
+  it("归一化并聚合 JS 源码附件，导出和后续追问保留片段上下文", () => {
+    const message = createAssistantMessage({
+      toolCallRecords: [
+        {
+          id: "call-js-1",
+          toolId: "js.search_sources",
+          name: "js_search_sources",
+          displayName: "搜索 JS 源码",
+          arguments: { keywords: ["/api/search"] },
+          status: "success",
+          startedAt: 1,
+          completedAt: 2,
+        },
+        {
+          id: "call-js-2",
+          toolId: "js.search_sources",
+          name: "js_search_sources",
+          displayName: "搜索 JS 源码",
+          arguments: { keywords: ["sign"] },
+          status: "success",
+          startedAt: 3,
+          completedAt: 4,
+        },
+      ],
+      toolAttachments: [
+        {
+          id: "attachment-js-1",
+          kind: "js-source",
+          title: "JS 源码片段",
+          summary: "JS 资源 1 个",
+          sourceToolCallId: "call-js-1",
+          createdAt: 2,
+          redacted: true,
+          truncated: false,
+          query: ["/api/search"],
+          resources: [
+            {
+              id: "script-1",
+              source: "network",
+              url: "https://example.com/app.js",
+              mimeType: "application/javascript",
+              size: 120,
+              searchable: true,
+              redacted: true,
+              truncated: false,
+            },
+          ],
+          jsMatches: [
+            {
+              resourceId: "script-1",
+              source: "network",
+              url: "https://example.com/app.js",
+              term: "/api/search",
+              position: 10,
+              line: 1,
+              column: 11,
+              snippet: "fetch('/api/search')",
+              redacted: true,
+              truncated: false,
+            },
+          ],
+          contexts: [],
+          failedFetches: [],
+        },
+        {
+          id: "attachment-js-2",
+          kind: "js-source",
+          title: "JS 源码片段",
+          summary: "JS 上下文 1 个",
+          sourceToolCallId: "call-js-2",
+          createdAt: 4,
+          redacted: true,
+          truncated: true,
+          query: ["sign"],
+          resources: [],
+          jsMatches: [],
+          contexts: [
+            {
+              resourceId: "script-1",
+              source: "network",
+              url: "https://example.com/app.js",
+              position: 20,
+              line: 2,
+              column: 5,
+              snippet: "function sign(){ return '[已脱敏]'; }",
+              redacted: true,
+              truncated: true,
+            },
+          ],
+          failedFetches: [{ url: "https://example.com/missing.js", message: "同源 JS 补位读取失败。" }],
+        },
+      ],
+    });
+
+    const [attachment] = collectMessageToolAttachments(message);
+
+    expect(attachment).toMatchObject({
+      kind: "js-source",
+      title: "JS 源码片段",
+      truncated: true,
+      query: ["/api/search", "sign"],
+    });
+    expect(formatToolAttachmentForPrompt(attachment)).toContain("后续追问需要继续参考以下历史 JS 源码片段");
+    expect(formatToolAttachmentForExport(attachment)).toContain("fetch('/api/search')");
+    expect(formatToolAttachmentForExport(attachment)).toContain("同源 JS 补位读取失败");
+  });
+
+  it("同一消息内多个 JS 源码附件按结构化数据聚合，不降级为通用附件", () => {
+    const message = createAssistantMessage({
+      toolAttachments: [
+        {
+          id: "attachment-js-a",
+          kind: "js-source",
+          title: "JS 源码片段",
+          summary: "a",
+          createdAt: 1,
+          redacted: true,
+          truncated: false,
+          resources: [
+            {
+              id: "script-a",
+              source: "network",
+              url: "https://example.com/a.js",
+              size: 1,
+              searchable: true,
+              redacted: true,
+              truncated: false,
+            },
+          ],
+          jsMatches: [],
+          contexts: [],
+          failedFetches: [],
+        },
+        {
+          id: "attachment-js-b",
+          kind: "js-source",
+          title: "JS 源码片段",
+          summary: "b",
+          createdAt: 2,
+          redacted: true,
+          truncated: false,
+          resources: [
+            {
+              id: "script-b",
+              source: "same-origin-fetch",
+              url: "https://example.com/b.js",
+              size: 1,
+              searchable: true,
+              redacted: true,
+              truncated: false,
+            },
+          ],
+          jsMatches: [],
+          contexts: [],
+          failedFetches: [],
+        },
+      ],
+    });
+
+    const [attachment] = collectMessageToolAttachments(message);
+
+    expect(attachment).toMatchObject({
+      kind: "js-source",
+      resources: [
+        expect.objectContaining({ id: "script-a" }),
+        expect.objectContaining({ id: "script-b" }),
+      ],
+    });
+    expect(attachment).not.toHaveProperty("details");
+  });
+  it("归一化空结果 JS 源码附件时会保留工具调用归属", () => {
+    const attachment = normalizeToolAttachment({
+      id: "attachment-js-empty",
+      kind: "js-source",
+      title: "JS 源码片段",
+      summary: "没有找到 JS 源码命中",
+      sourceToolCallId: "call-js-empty",
+      createdAt: 10,
+      redacted: true,
+      truncated: false,
+      resources: [],
+      jsMatches: [],
+      contexts: [],
+      failedFetches: [],
+    });
+
+    expect(attachment).toMatchObject({
+      id: "attachment-js-empty",
+      kind: "js-source",
+      title: "JS 源码片段",
+      summary: "没有找到 JS 源码命中",
+      sourceToolCallId: "call-js-empty",
+      resources: [],
+      jsMatches: [],
+      contexts: [],
+      failedFetches: [],
+    });
   });
 });

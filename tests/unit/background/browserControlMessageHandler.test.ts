@@ -1066,6 +1066,49 @@ describe("浏览器控制地基", () => {
     });
   });
 
+  it("页面跳转和切换时会清理 JS 索引，避免旧页面源码残留", async () => {
+    const chromeMock = createChromeMock({
+      tabs: [
+        { id: 7, title: "页面 A", url: "https://example.com/a", active: true, windowId: 1, groupId: 4 } as chrome.tabs.Tab & { id: number },
+        { id: 8, title: "页面 B", url: "https://example.com/b", active: false, windowId: 1, groupId: 4 } as chrome.tabs.Tab & { id: number },
+      ],
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 7);
+    chromeMock.eventListeners[0]?.({ tabId: 7 }, "Network.requestWillBeSent", {
+      requestId: "js-1",
+      request: { url: "https://example.com/app.js", method: "GET" },
+      type: "Script",
+      timestamp: 1,
+    });
+    chromeMock.eventListeners[0]?.({ tabId: 7 }, "Network.responseReceived", {
+      requestId: "js-1",
+      type: "Script",
+      timestamp: 2,
+      response: { status: 200, mimeType: "application/javascript" },
+    });
+    chromeMock.eventListeners[0]?.({ tabId: 7 }, "Network.loadingFinished", {
+      requestId: "js-1",
+      timestamp: 3,
+    });
+    chromeMock.debugger.sendCommand.mockImplementation((_debuggee: chrome.debugger.Debuggee, method: string, _params: unknown, callback: (result?: unknown) => void) => {
+      callback(method === "Network.getResponseBody"
+        ? { body: "function sign(){ return 'old'; }", base64Encoded: false }
+        : method === "Accessibility.getFullAXTree"
+          ? { nodes: [] }
+          : {});
+    });
+    const beforeSwitch = await manager.executeJsSourceTool(createNamedToolCall("js_search_sources", { keywords: ["sign"] }));
+    expect(beforeSwitch.toolAttachments?.[0]).toBeDefined();
+
+    await manager.executeBrowserTool(createNamedToolCall("select_page", { index: 2 }));
+    const afterSwitch = await manager.executeJsSourceTool(createNamedToolCall("js_search_sources", { keywords: ["sign"] }));
+
+    expect(afterSwitch.content).toContain("未找到匹配的 JS 源码片段");
+  });
+
   it("JS 弹窗出现时等待用户手动处理并把确认结果追加到工具结果", async () => {
     const chromeMock = createChromeMock({
       sendCommandResults: {

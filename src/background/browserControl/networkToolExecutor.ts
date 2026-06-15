@@ -18,6 +18,8 @@ import type { ModelToolCall, ModelToolResult } from "../../shared/models/types";
 import type { ChatNetworkToolAttachment, NetworkHeader, NetworkRequestDetail, NetworkRequestMeta } from "../../shared/types";
 import { createNetworkContextPrompt, formatNetworkAttachmentSummary, redactNetworkRequestDetail } from "../../shared/networkContext";
 import { truncateText } from "../../shared/utils/text";
+import { isJavaScriptDetail } from "./jsSourceIndex";
+import { JsSourceToolExecutor } from "./jsSourceToolExecutor";
 import type { BrowserNetworkRecorder, NetworkRequestFilter, NetworkWaitFilter } from "./networkRecorder";
 
 type NetworkToolName =
@@ -80,6 +82,8 @@ const NETWORK_TOOL_NAMES = new Set<string>([
 ]);
 
 export class BrowserNetworkToolExecutor {
+  private jsSourceExecutor: JsSourceToolExecutor | undefined;
+
   constructor(private readonly recorder: NetworkRecorderLike | BrowserNetworkRecorder) {}
 
   async execute(toolCall: ModelToolCall): Promise<ModelToolResult> {
@@ -101,6 +105,7 @@ export class BrowserNetworkToolExecutor {
   private async executeTool(toolCall: ModelToolCall): Promise<ModelToolResult> {
     if (isToolCallName(toolCall.name, NETWORK_CLEAR_REQUESTS_TOOL_ID, NETWORK_CLEAR_REQUESTS_TOOL_NAME)) {
       this.recorder.clear();
+      this.getJsSourceExecutor().clear();
       return { toolCallId: toolCall.id, name: toolCall.name, content: "已清空当前受控页面的 Network 请求缓存。" };
     }
 
@@ -116,9 +121,14 @@ export class BrowserNetworkToolExecutor {
     }
 
     if (isToolCallName(toolCall.name, NETWORK_EXTRACT_JS_CANDIDATES_TOOL_ID, NETWORK_EXTRACT_JS_CANDIDATES_TOOL_NAME) && toolCall.arguments.requestIds === undefined) {
-      const jsRequests = this.recorder.listRequests({ limit: 100 }).filter(isJavaScriptMeta);
-      const details = await this.recorder.getDetails(jsRequests.map((request) => request.id));
-      return createNetworkResult(toolCall, extractJsCandidates(details, toolCall.arguments), details);
+      const jsResult = await this.getJsSourceExecutor().searchForNetworkCompatibility(toolCall.arguments);
+      return createNetworkResult(toolCall, jsResult.content, jsResult.resources.map((resource) => createMetaDetail({
+        id: resource.id,
+        url: resource.url,
+        method: "GET",
+        mimeType: resource.mimeType,
+        resourceType: "Script",
+      })));
     }
 
     const requestIds = normalizeRequestIds(toolCall.arguments.requestIds);
@@ -144,6 +154,15 @@ export class BrowserNetworkToolExecutor {
 
   private isEnabled(): boolean {
     return typeof this.recorder.isEnabled === "function" ? this.recorder.isEnabled() : this.recorder.isEnabled;
+  }
+
+  private getJsSourceExecutor(): JsSourceToolExecutor {
+    this.jsSourceExecutor ??= new JsSourceToolExecutor({
+      recorder: this.recorder,
+      getCurrentPageUrl: async () => "",
+      fetcher: { fetch: async () => ({ ok: false, url: "", message: "同源 JS 补位不可用于 Network 兼容入口。" }) },
+    });
+    return this.jsSourceExecutor;
   }
 }
 
@@ -385,20 +404,6 @@ function normalizeStringArray(value: unknown): string[] {
     return [];
   }
   return Array.from(new Set(value.map((item) => (typeof item === "string" ? item.trim().slice(0, MAX_FILTER_TEXT_LENGTH) : "")).filter(Boolean))).slice(0, MAX_KEYWORDS);
-}
-
-function isJavaScriptDetail(detail: NetworkRequestDetail): boolean {
-  const url = detail.url.toLowerCase();
-  const mimeType = detail.mimeType?.toLowerCase() ?? "";
-  const resourceType = detail.resourceType?.toLowerCase() ?? "";
-  return url.includes(".js") || mimeType.includes("javascript") || resourceType === "script";
-}
-
-function isJavaScriptMeta(meta: NetworkRequestMeta): boolean {
-  const url = meta.url.toLowerCase();
-  const mimeType = meta.mimeType?.toLowerCase() ?? "";
-  const resourceType = meta.resourceType?.toLowerCase() ?? "";
-  return url.includes(".js") || mimeType.includes("javascript") || resourceType === "script";
 }
 
 function findSnippets(text: string, term: string): Array<{ term: string; snippet: string }> {

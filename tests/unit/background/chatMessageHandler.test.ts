@@ -886,6 +886,92 @@ describe("聊天模型请求处理", () => {
     expect(JSON.stringify(secondBody.messages)).not.toContain("invoke name");
   });
 
+  it("最终回答阶段即使模型再次输出 DSML 工具块也不会泄漏协议文本", async () => {
+    registeredModelToolsMock.tools = [
+      {
+        id: "browser.take_snapshot",
+        name: "take_snapshot",
+        description: "读取当前页面结构快照",
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+      },
+    ];
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          choices: [
+            {
+              message: {
+                tool_calls: [
+                  {
+                    id: "call-snapshot",
+                    type: "function",
+                    function: { name: "take_snapshot", arguments: "{}" },
+                  },
+                ],
+                content: "",
+              },
+            },
+          ],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          choices: [{ message: { content: "已拿到页面结构。" } }],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          choices: [
+            {
+              message: {
+                content: [
+                  "分析已经非常清晰了。让我再确认 serializeObject：",
+                  "< | | DSML | | tool_calls>",
+                  '< | | DSML | | invoke name="evaluate_script">',
+                  '< | | DSML | | parameter name="function" string="true">() => $.fn.serializeObject</ | | DSML | | parameter>',
+                  "</ | | DSML | | invoke>",
+                  "</ | | DSML | | tool_calls>",
+                ].join("\n"),
+              },
+            },
+          ],
+        }),
+      });
+
+    const result = await handleChatSendMessage(
+      {
+        type: "chat.send",
+        model: createModel(),
+        messages: [createMessage("user", "继续分析")],
+        stream: false,
+        enabledToolIds: ["browser.take_snapshot"],
+        toolChoice: "auto",
+      },
+      fetcher,
+      {},
+      async (toolCall) => ({
+        toolCallId: toolCall.id,
+        name: toolCall.name,
+        content: "页面结构快照",
+      }),
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      content: "分析已经非常清晰了。让我再确认 serializeObject：",
+    });
+    expect(result.ok && result.content).not.toContain("DSML");
+    expect(result.ok && result.content).not.toContain("invoke name");
+    expect(result.ok && result).not.toHaveProperty("toolCalls");
+    const finalBody = JSON.parse(String(fetcher.mock.calls[2][1]?.body)) as { tools?: unknown[]; tool_choice?: unknown };
+    expect(finalBody.tools).toBeUndefined();
+    expect(finalBody.tool_choice).toBeUndefined();
+  });
+
   it("OpenAI-compatible DSML 工具调用参数非法时沿用工具错误回灌", async () => {
     registeredModelToolsMock.tools = [
       {
