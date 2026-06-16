@@ -15,6 +15,7 @@ export interface RunModelToolLoopInput {
   onToolCallStart?: (record: ChatToolCallRecord) => void;
   onToolCallComplete?: (record: ChatToolCallRecord, attachments: ChatToolAttachment[]) => void;
   maxIterations?: number;
+  signal?: AbortSignal;
 }
 
 export type ModelToolLoopResponse =
@@ -34,7 +35,13 @@ export async function runModelToolLoop(input: RunModelToolLoopInput): Promise<Mo
   let lastResponse: ModelToolLoopResponse | undefined;
 
   for (let iteration = 0; iteration < maxIterations; iteration += 1) {
+    if (input.signal?.aborted) {
+      return createAbortResponse();
+    }
     const response = await input.requestModel(messages);
+    if (input.signal?.aborted) {
+      return createAbortResponse();
+    }
     if (!response.ok) {
       return response;
     }
@@ -65,6 +72,7 @@ export async function runModelToolLoop(input: RunModelToolLoopInput): Promise<Mo
     const toolResultMessages = await Promise.all(
       response.toolCalls.map((toolCall) =>
         executeAllowedTool(toolCall, input.tools, enabledToolIds, input.executeTool, {
+          signal: input.signal,
           onStart: (record) => {
             toolCallRecords.push(record);
             currentTurnRecords.push(record);
@@ -90,6 +98,9 @@ export async function runModelToolLoop(input: RunModelToolLoopInput): Promise<Mo
         }),
       ),
     );
+    if (input.signal?.aborted) {
+      return createAbortResponse();
+    }
     for (const toolResultMessage of toolResultMessages) {
       appendUniqueToolAttachments(toolAttachments, toolResultMessage.toolAttachments ?? []);
       appendUniqueToolAttachments(currentTurnAttachments, toolResultMessage.toolAttachments ?? []);
@@ -116,7 +127,13 @@ export async function runModelToolLoop(input: RunModelToolLoopInput): Promise<Mo
   }
 
   if (input.requestFinalModel && lastResponse?.ok) {
+    if (input.signal?.aborted) {
+      return createAbortResponse();
+    }
     const finalResponse = await input.requestFinalModel(messages);
+    if (input.signal?.aborted) {
+      return createAbortResponse();
+    }
     if (!finalResponse.ok) {
       return finalResponse;
     }
@@ -131,6 +148,10 @@ export async function runModelToolLoop(input: RunModelToolLoopInput): Promise<Mo
   }
 
   return lastResponse ?? { ok: false, message: "工具调用超过最大轮次，已停止本次请求。" };
+}
+
+function createAbortResponse(): ModelToolLoopResponse {
+  return { ok: false, message: "已终止本次生成。" };
 }
 
 function createToolTurnMessage(input: {
@@ -172,6 +193,7 @@ async function executeAllowedTool(
   enabledToolIds: Set<string>,
   executeTool: ModelToolExecutor,
   callbacks: {
+    signal?: AbortSignal;
     onStart: (record: ChatToolCallRecord) => void;
     onComplete: (record: ChatToolCallRecord, attachments: ChatToolAttachment[]) => void;
   },
@@ -201,7 +223,13 @@ async function executeAllowedTool(
   }
 
   try {
-    const result = await executeTool(toolCall, tool);
+    if (callbacks.signal?.aborted) {
+      return completeToolError(runningRecord, toolCall, "已终止本次生成。", callbacks);
+    }
+    const result = await executeTool(toolCall, tool, { signal: callbacks.signal });
+    if (callbacks.signal?.aborted) {
+      return completeToolError(runningRecord, toolCall, "已终止本次生成。", callbacks);
+    }
     const resultMessage: ModelToolResultMessage = {
       role: "tool",
       toolCallId: result.toolCallId,

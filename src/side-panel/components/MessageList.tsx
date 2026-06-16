@@ -705,7 +705,7 @@ function JsSourceToolAttachmentView({ attachment }: { attachment: ChatToolAttach
     <details className="message-tool-attachment message-js-source-attachment">
       <summary>
         <span>JS 源码片段</span>
-        <span className="message-js-source-count">{attachment.jsMatches.length + attachment.contexts.length}</span>
+        <span className="message-js-source-count">{getJsSourceAttachmentDisplayCount(attachment)}</span>
       </summary>
       <p className="message-tool-attachment-summary">{attachment.summary}</p>
       {attachment.resources.length ? (
@@ -740,6 +740,19 @@ function JsSourceToolAttachmentView({ attachment }: { attachment: ChatToolAttach
       {attachment.failedFetches.length ? <pre>{attachment.failedFetches.map((failure) => `${failure.url}: ${failure.message}`).join("\n")}</pre> : null}
     </details>
   );
+}
+
+export function getJsSourceAttachmentDisplayCount(attachment: ChatToolAttachment): number {
+  if (!isJsSourceToolAttachment(attachment)) {
+    return 0;
+  }
+
+  const snippetCount = attachment.jsMatches.length + attachment.contexts.length;
+  if (snippetCount > 0) {
+    return snippetCount;
+  }
+
+  return attachment.resources.length || attachment.failedFetches.length;
 }
 
 function formatToolCallLine(record: ChatToolCallRecord): string {

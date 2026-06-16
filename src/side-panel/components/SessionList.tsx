@@ -3,6 +3,7 @@ import type { DragEvent } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import type { ChatFolder, ChatSession } from "../../shared/types";
 import { useAppStore } from "../state/appStore";
+import type { ChatTaskMap, ChatTaskStatus } from "../state/appStoreChatTasks";
 
 interface SessionListProps {
   compact?: boolean;
@@ -18,6 +19,8 @@ interface SessionFolderProps {
   menuPlacement?: "down" | "up";
   activeSessionId: string;
   pendingDeleteSessionId?: string;
+  chatTasksBySessionId: ChatTaskMap;
+  dismissedChatTaskIdsBySessionId: Record<string, string>;
   renaming: boolean;
   renamingValue: string;
   dragOver: boolean;
@@ -56,6 +59,7 @@ interface SessionItemProps {
   renaming: boolean;
   renamingValue: string;
   pendingDelete: boolean;
+  taskStatus?: ChatTaskStatus;
   onSelect: (sessionId: string) => void;
   onArchive?: (sessionId: string) => void;
   onRename: (sessionId: string) => void;
@@ -89,6 +93,8 @@ export function SessionList({ compact = false }: SessionListProps) {
   const chatFolders = useAppStore((state) => state.chatFolders);
   const activeSessionId = useAppStore((state) => state.activeSessionId);
   const pendingDeleteSessionId = useAppStore((state) => state.pendingDeleteSessionId);
+  const chatTasksBySessionId = useAppStore((state) => state.chatTasksBySessionId);
+  const dismissedChatTaskIdsBySessionId = useAppStore((state) => state.dismissedChatTaskIdsBySessionId);
   const composerHasDraft = useAppStore((state) => state.composerHasDraft);
   const privateModeActive = useAppStore((state) => state.privateModeActive);
   const privateChatSession = useAppStore((state) => state.privateChatSession);
@@ -316,6 +322,8 @@ export function SessionList({ compact = false }: SessionListProps) {
               onRenameCommit={() => undefined}
               activeSessionId={activeSessionId}
               pendingDeleteSessionId={pendingDeleteSessionId}
+              chatTasksBySessionId={chatTasksBySessionId}
+              dismissedChatTaskIdsBySessionId={dismissedChatTaskIdsBySessionId}
               onSelect={handleSelectChatSession}
               onArchive={(sessionId) => void archiveChatSession(sessionId)}
               onRenameSession={startRenameSession}
@@ -357,6 +365,8 @@ export function SessionList({ compact = false }: SessionListProps) {
                 onRenameCommit={commitRenameFolderByKey}
                 activeSessionId={activeSessionId}
                 pendingDeleteSessionId={pendingDeleteSessionId}
+                chatTasksBySessionId={chatTasksBySessionId}
+                dismissedChatTaskIdsBySessionId={dismissedChatTaskIdsBySessionId}
                 onSelect={handleSelectChatSession}
                 onArchive={(sessionId) => void archiveChatSession(sessionId)}
                 onRenameSession={startRenameSession}
@@ -400,6 +410,8 @@ export function SessionList({ compact = false }: SessionListProps) {
             onRenameCommit={() => undefined}
             activeSessionId={activeSessionId}
             pendingDeleteSessionId={pendingDeleteSessionId}
+            chatTasksBySessionId={chatTasksBySessionId}
+            dismissedChatTaskIdsBySessionId={dismissedChatTaskIdsBySessionId}
             onSelect={handleSelectChatSession}
             onRenameSession={startRenameSession}
             onRequestDelete={requestDeleteChatSession}
@@ -453,6 +465,8 @@ function SessionFolder({
   menuPlacement = "down",
   activeSessionId,
   pendingDeleteSessionId,
+  chatTasksBySessionId,
+  dismissedChatTaskIdsBySessionId,
   renaming,
   renamingValue,
   dragOver,
@@ -530,31 +544,36 @@ function SessionFolder({
       {collapsed ? null : (
         <div className="session-item-stack">
           {sessions.length === 0 ? <p className="session-empty">暂无对话</p> : null}
-          {sessions.map((session) => (
-            <SessionItem
-              key={session.id}
-              session={session}
-              active={session.id === activeSessionId}
-              menuOpen={session.id === openMenuSessionId}
-              menuPlacement={menuPlacement}
-              renaming={session.id === renamingSessionId}
-              renamingValue={renamingSessionValue}
-              pendingDelete={session.id === pendingDeleteSessionId}
-              onSelect={onSelect}
-              onArchive={onArchive}
-              onRename={onRenameSession}
-              onRequestDelete={onRequestDelete}
-              onConfirmDelete={onConfirmDelete}
-              onDragStart={onDragStart}
-              onDragEnd={onDragEnd}
-              onToggleMenu={onToggleSessionMenu}
-              onCloseMenu={onCloseSessionMenu}
-              onRenameChange={onSessionRenameChange}
-              onRenameCancel={onSessionRenameCancel}
-              onRenameSave={onSessionRenameSave}
-              onRenameCommit={onSessionRenameCommit}
-            />
-          ))}
+          {sessions.map((session) => {
+            const task = chatTasksBySessionId[session.id];
+            const taskStatus = task && dismissedChatTaskIdsBySessionId[session.id] !== task.id ? task.status : undefined;
+            return (
+              <SessionItem
+                key={session.id}
+                session={session}
+                active={session.id === activeSessionId}
+                taskStatus={taskStatus}
+                menuOpen={session.id === openMenuSessionId}
+                menuPlacement={menuPlacement}
+                renaming={session.id === renamingSessionId}
+                renamingValue={renamingSessionValue}
+                pendingDelete={session.id === pendingDeleteSessionId}
+                onSelect={onSelect}
+                onArchive={onArchive}
+                onRename={onRenameSession}
+                onRequestDelete={onRequestDelete}
+                onConfirmDelete={onConfirmDelete}
+                onDragStart={onDragStart}
+                onDragEnd={onDragEnd}
+                onToggleMenu={onToggleSessionMenu}
+                onCloseMenu={onCloseSessionMenu}
+                onRenameChange={onSessionRenameChange}
+                onRenameCancel={onSessionRenameCancel}
+                onRenameSave={onSessionRenameSave}
+                onRenameCommit={onSessionRenameCommit}
+              />
+            );
+          })}
         </div>
       )}
     </section>
@@ -564,6 +583,7 @@ function SessionFolder({
 function SessionItem({
   session,
   active,
+  taskStatus,
   menuOpen,
   menuPlacement,
   renaming,
@@ -584,10 +604,14 @@ function SessionItem({
   onRenameCommit,
 }: SessionItemProps) {
   const visibleTitle = session.titleGenerating ? "生成标题中..." : session.title;
+  const taskClassName = resolveSessionTaskStatusClassName(taskStatus);
+  const className = ["session-item", active ? "session-item-active" : "", taskClassName].filter(Boolean).join(" ");
+  const statusAriaLabel = resolveSessionTaskStatusAriaLabel(taskStatus);
 
   return (
     <article
-      className={active ? "session-item session-item-active" : "session-item"}
+      className={className}
+      aria-label={statusAriaLabel ? `${session.title}，${statusAriaLabel}` : session.title}
       draggable={Boolean(onArchive)}
       onDragStart={(event) => onDragStart?.(session.id, event)}
       onDragEnd={onDragEnd}
@@ -671,4 +695,38 @@ function SessionItem({
       </div>
     </article>
   );
+}
+
+function resolveSessionTaskStatusClassName(status: ChatTaskStatus | undefined): string | undefined {
+  if (status === "running") {
+    return "session-item-running";
+  }
+  if (status === "completed") {
+    return "session-item-completed";
+  }
+  if (status === "failed") {
+    return "session-item-failed";
+  }
+  if (status === "canceled") {
+    return "session-item-canceled";
+  }
+
+  return undefined;
+}
+
+function resolveSessionTaskStatusAriaLabel(status: ChatTaskStatus | undefined): string | undefined {
+  if (status === "running") {
+    return "正在生成";
+  }
+  if (status === "completed") {
+    return "生成完成";
+  }
+  if (status === "failed") {
+    return "生成失败";
+  }
+  if (status === "canceled") {
+    return "已终止";
+  }
+
+  return undefined;
 }

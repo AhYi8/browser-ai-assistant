@@ -136,6 +136,15 @@ body {
     color: var(--color-muted);
   }
 
+  .composer-abort-button {
+    background: var(--color-error);
+    color: var(--color-on-primary);
+  }
+
+  .composer-abort-button:active {
+    background: color-mix(in srgb, var(--color-error) 82%, var(--color-surface-dark));
+  }
+
   .ui-button-secondary {
     @apply rounded-md text-sm font-medium transition;
     background: var(--color-canvas);
@@ -323,7 +332,7 @@ body {
   }
 
   .session-item {
-    @apply min-w-0 rounded-lg p-2;
+    @apply relative min-w-0 rounded-lg p-2;
     overflow: visible;
     background: var(--color-canvas);
     border: 1px solid var(--color-hairline-soft);
@@ -1660,5 +1669,40 @@ body {
     @apply text-lg font-medium;
     color: var(--color-ink);
     font-family: Georgia, "Times New Roman", serif;
+  }
+}
+
+.session-item-running {
+  border-color: rgba(204, 120, 92, 1);
+  animation: session-running-border-pulse 2.8s ease-in-out infinite;
+}
+
+.session-item-completed {
+  border-color: var(--color-success);
+}
+
+.session-item-failed {
+  border-color: var(--color-error);
+}
+
+.session-item-canceled {
+  border-color: var(--color-warning);
+}
+
+@keyframes session-running-border-pulse {
+  0%,
+  100% {
+    border-color: rgba(204, 120, 92, 1);
+  }
+
+  50% {
+    border-color: rgba(204, 120, 92, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .session-item-running {
+    animation: none;
+    border-color: rgba(204, 120, 92, 1);
   }
 }

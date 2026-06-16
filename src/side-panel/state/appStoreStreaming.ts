@@ -11,6 +11,7 @@ import type { AppChatSendMessage, AppState, StoreSetter } from "./appStore";
 import { upsertSession } from "./appStoreSessionUtils";
 
 const STREAM_FAILURE_MESSAGE = "流式响应异常中断，请重新生成后重试";
+const STREAM_CANCELED_MESSAGE = "已终止本次生成。";
 
 type ChatStreamPortMessage =
   | { type: "chunk"; content: string }
@@ -32,6 +33,8 @@ type ChatStreamPortMessage =
 interface StreamingChatResult {
   completed: boolean;
   assistantContent?: string;
+  canceled?: boolean;
+  failed?: boolean;
 }
 
 interface StreamingChatInput {
@@ -48,6 +51,8 @@ interface StreamingChatInput {
   streamMode: boolean;
   toolAttachments?: ChatToolAttachment[];
   request: AppChatSendMessage;
+  onAbortHandle?: (handle: () => void) => void;
+  shouldShowFailure?: () => boolean;
 }
 
 type AssistantPlaceholderInput = Omit<StreamingChatInput, "request">;
@@ -141,6 +146,7 @@ export async function sendStreamingChatMessage(input: StreamingChatInput): Promi
     const port = globalThis.chrome.runtime.connect({ name: "chat.stream" });
     let settled = false;
     let receivedFinalComplete = false;
+    let canceledByUser = false;
     let writeQueue = Promise.resolve();
 
     const finish = (result: StreamingChatResult, options: { disconnect: boolean } = { disconnect: true }) => {
@@ -154,9 +160,22 @@ export async function sendStreamingChatMessage(input: StreamingChatInput): Promi
       }
       resolve(result);
     };
+    input.onAbortHandle?.(() => {
+      if (settled) {
+        return;
+      }
+      if (receivedFinalComplete) {
+        return;
+      }
+
+      canceledByUser = true;
+      port.disconnect();
+    });
     const enqueueWrite = (operation: () => Promise<void>) => {
       writeQueue = writeQueue.then(operation).catch(() => {
-        input.set({ failure: { message: "消息保存失败，请重试" } });
+        if (input.shouldShowFailure?.() ?? true) {
+          input.set({ failure: { message: "消息保存失败，请重试" } });
+        }
       });
       return writeQueue;
     };
@@ -232,28 +251,45 @@ export async function sendStreamingChatMessage(input: StreamingChatInput): Promi
       }
 
       const failureMessage = resolveStreamPortFailureMessage(message);
-      input.set({ failure: { message: failureMessage } });
+      if (input.shouldShowFailure?.() ?? true) {
+        input.set({ failure: { message: failureMessage } });
+      }
       void enqueueWrite(async () => {
         const finalAssistantMessage = await ensureFinalAssistantMessage();
         if (finalAssistantMessage) {
           await failAssistantMessage(input.sessionId, finalAssistantMessage.id, failureMessage, input.set, input.privateMode);
         }
-      }).then(() => finish({ completed: true }));
+      }).then(() => finish({ completed: true, failed: true }));
     });
 
     port.onDisconnect.addListener(() => {
-      if (!receivedFinalComplete) {
-        input.set({ failure: { message: STREAM_FAILURE_MESSAGE } });
-        void enqueueWrite(async () => {
-          const finalAssistantMessage = await ensureFinalAssistantMessage();
-          if (finalAssistantMessage) {
-            await failAssistantMessage(input.sessionId, finalAssistantMessage.id, STREAM_FAILURE_MESSAGE, input.set, input.privateMode);
-          }
-        }).then(() => finish({ completed: true }, { disconnect: false }));
+      if (receivedFinalComplete) {
+        finish({ completed: true }, { disconnect: false });
         return;
       }
 
-      finish({ completed: true }, { disconnect: false });
+      if (canceledByUser) {
+        void enqueueWrite(async () => {
+          if (settled || receivedFinalComplete) {
+            return;
+          }
+          const finalAssistantMessage = await ensureFinalAssistantMessage();
+          if (finalAssistantMessage) {
+            await failAssistantMessage(input.sessionId, finalAssistantMessage.id, STREAM_CANCELED_MESSAGE, input.set, input.privateMode);
+          }
+        }).then(() => finish({ completed: true, canceled: true }, { disconnect: false }));
+        return;
+      }
+
+      if (input.shouldShowFailure?.() ?? true) {
+        input.set({ failure: { message: STREAM_FAILURE_MESSAGE } });
+      }
+      void enqueueWrite(async () => {
+        const finalAssistantMessage = await ensureFinalAssistantMessage();
+        if (finalAssistantMessage) {
+          await failAssistantMessage(input.sessionId, finalAssistantMessage.id, STREAM_FAILURE_MESSAGE, input.set, input.privateMode);
+        }
+      }).then(() => finish({ completed: true, failed: true }, { disconnect: false }));
     });
 
     port.postMessage({

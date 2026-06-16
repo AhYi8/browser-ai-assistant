@@ -25,8 +25,10 @@ export async function readModelStreamResponse(
   let rawContent = "";
   let visibleContent = "";
   let rawThinking = "";
+  let visibleThinking = "";
   let sawDone = false;
-  const dsmlChunkFilter = new DsmlStreamChunkFilter();
+  const contentChunkFilter = new DsmlStreamChunkFilter();
+  const thinkingChunkFilter = new DsmlStreamChunkFilter();
 
   while (true) {
     const { done, value } = await reader.read();
@@ -39,7 +41,7 @@ export async function readModelStreamResponse(
     buffer = parsed.remaining;
     for (const chunk of parsed.contentChunks) {
       rawContent += chunk;
-      const visibleChunk = dsmlChunkFilter.push(chunk);
+      const visibleChunk = contentChunkFilter.push(chunk);
       if (visibleChunk) {
         visibleContent += visibleChunk;
         callbacks.onContentChunk?.(visibleChunk);
@@ -47,7 +49,11 @@ export async function readModelStreamResponse(
     }
     for (const chunk of parsed.thinkingChunks) {
       rawThinking += chunk;
-      callbacks.onThinkingChunk?.(chunk);
+      const visibleChunk = thinkingChunkFilter.push(chunk);
+      if (visibleChunk) {
+        visibleThinking += visibleChunk;
+        callbacks.onThinkingChunk?.(visibleChunk);
+      }
     }
 
     if (parsed.done) {
@@ -62,7 +68,7 @@ export async function readModelStreamResponse(
   sawDone = sawDone || tail.done;
   for (const chunk of tail.contentChunks) {
     rawContent += chunk;
-    const visibleChunk = dsmlChunkFilter.push(chunk);
+    const visibleChunk = contentChunkFilter.push(chunk);
     if (visibleChunk) {
       visibleContent += visibleChunk;
       callbacks.onContentChunk?.(visibleChunk);
@@ -70,7 +76,11 @@ export async function readModelStreamResponse(
   }
   for (const chunk of tail.thinkingChunks) {
     rawThinking += chunk;
-    callbacks.onThinkingChunk?.(chunk);
+    const visibleChunk = thinkingChunkFilter.push(chunk);
+    if (visibleChunk) {
+      visibleThinking += visibleChunk;
+      callbacks.onThinkingChunk?.(visibleChunk);
+    }
   }
 
   if (!rawContent && !rawThinking) {
@@ -81,22 +91,31 @@ export async function readModelStreamResponse(
     return { ok: false, message: STREAM_INTERRUPTED_MESSAGE };
   }
 
-  const finalVisibleChunk = dsmlChunkFilter.flush();
-  if (finalVisibleChunk) {
-    visibleContent += finalVisibleChunk;
-    callbacks.onContentChunk?.(finalVisibleChunk);
+  const finalVisibleContentChunk = contentChunkFilter.flush();
+  if (finalVisibleContentChunk) {
+    visibleContent += finalVisibleContentChunk;
+    callbacks.onContentChunk?.(finalVisibleContentChunk);
+  }
+  const finalVisibleThinkingChunk = thinkingChunkFilter.flush();
+  if (finalVisibleThinkingChunk) {
+    visibleThinking += finalVisibleThinkingChunk;
+    callbacks.onThinkingChunk?.(finalVisibleThinkingChunk);
   }
 
   const parsedContent = parseAssistantResponse(visibleContent || rawContent);
+  const parsedThinking = parseAssistantResponse(visibleThinking || rawThinking);
   return {
     ok: true,
     content: parsedContent.content,
-    thinking: rawThinking || parsedContent.thinking,
-    ...(shouldPassDeepSeekReasoningContent(model) && rawThinking ? { reasoningContent: rawThinking } : {}),
+    thinking: visibleThinking || parsedThinking.thinking || parsedContent.thinking,
+    ...(shouldPassDeepSeekReasoningContent(model) && (visibleThinking || rawThinking)
+      ? { reasoningContent: visibleThinking || rawThinking }
+      : {}),
   };
 }
 
 class DsmlStreamChunkFilter {
+  // 已进入工具块抑制态时保留更长尾部，用来等待可能跨 chunk 到达的结束标记。
   private static readonly markerTailLength = 96;
 
   private buffer = "";
@@ -204,11 +223,12 @@ function getSafeVisibleLengthBeforePotentialDsmlStart(content: string): number {
   return content.length;
 }
 
+// 未确认工具块开始前只扫描较短窗口，避免普通长正文因为尾部残留检查产生额外缓冲。
 const DsmlStreamChunkFilterMarkerWindow = 64;
 
 function isPotentialDsmlToolCallStartPrefix(value: string): boolean {
   const compact = value.replace(/\s+/g, "").toLowerCase();
-  const candidates = ["<|tool_calls|>", "<｜tool_calls｜>", "<||dsml||tool_calls>"];
+  const candidates = ["<|tool_calls|>", "<｜tool_calls｜>", "<||dsml||tool_calls>", "<｜｜dsml｜｜tool_calls>"];
   return candidates.some((candidate) => candidate.startsWith(compact));
 }
 

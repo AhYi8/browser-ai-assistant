@@ -58,7 +58,11 @@ export interface ModelToolResultMessage extends ModelToolResult {
 
 export type ModelRequestMessage = ChatMessage | ModelSystemMessage | ModelAssistantToolMessage | ModelToolResultMessage;
 
-export type ModelToolExecutor = (call: ModelToolCall, tool: ModelToolRegistryEntry) => Promise<ModelToolResult>;
+export interface ModelToolExecutionContext {
+  signal?: AbortSignal;
+}
+
+export type ModelToolExecutor = (call: ModelToolCall, tool: ModelToolRegistryEntry, context?: ModelToolExecutionContext) => Promise<ModelToolResult>;
 
 export interface ModelResponseData {
   content: string;

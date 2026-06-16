@@ -24,7 +24,11 @@ export interface ChatSendMessage {
   browserAutomationMaxToolIterations?: number;
 }
 
-type PreparedChatSendMessage = ChatSendMessage & {
+type ChatSendHandlerMessage = ChatSendMessage & {
+  signal?: AbortSignal;
+};
+
+type PreparedChatSendMessage = ChatSendHandlerMessage & {
   tools?: ModelToolDefinition[];
 };
 
@@ -57,7 +61,7 @@ interface ChatStreamCallbacks {
 }
 
 export async function handleChatSendMessage(
-  message: ChatSendMessage,
+  message: ChatSendHandlerMessage,
   fetcher: Fetcher = fetch,
   callbacks: ChatStreamCallbacks = {},
   executeTool?: ModelToolExecutor,
@@ -84,6 +88,7 @@ export async function handleChatSendMessage(
       requestFinalModel: (messages: ModelRequestMessage[]) =>
         requestModelOnce({ ...message, messages, stream: message.stream, tools: undefined, toolChoice: undefined }, fetcher, callbacks),
       executeTool: toolExecutor,
+      signal: message.signal,
       onToolTurnMessage: callbacks.onToolTurnMessage,
       onToolCallStart: callbacks.onToolCallStart,
       onToolCallComplete: callbacks.onToolCallComplete,
@@ -110,6 +115,7 @@ async function requestModelOnce(
       method: "POST",
       headers: payload.headers,
       body: JSON.stringify(payload.body),
+      signal: message.signal,
     };
     const retryCount = normalizeModelRequestRetryCount(message.retryCount);
 

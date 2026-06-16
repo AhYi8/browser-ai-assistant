@@ -815,6 +815,56 @@ describe("background 入口", () => {
     });
   });
 
+  it("流式聊天端口断开时会终止正在进行的模型请求", async () => {
+    const mock = createChromeMock();
+    vi.stubGlobal("chrome", mock.chrome);
+    const fetcher = vi.fn((_url: string, init?: RequestInit) => {
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      return new Promise<Response>(() => undefined);
+    });
+    vi.stubGlobal("fetch", fetcher);
+    await import("../../../src/background/index");
+    const port = createPortMock("chat.stream");
+
+    mock.connectListeners[0](port);
+    port.emitMessage({
+      type: "chat.stream.start",
+      payload: {
+        type: "chat.send",
+        model: {
+          id: "model-1",
+          providerId: "provider-1",
+          name: "默认模型",
+          displayName: "默认模型",
+          channelName: "默认渠道",
+          endpointType: "openai_chat",
+          endpointUrl: "https://api.example.com/v1/chat/completions",
+          apiKey: "sk-test",
+          modelId: "gpt-test",
+          temperature: 0.7,
+          maxTokens: 1024,
+          systemPrompt: "你是网页助手",
+          isTitleModel: false,
+          enabled: true,
+          createdAt: 1,
+          updatedAt: 1,
+        },
+        messages: [],
+        stream: false,
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(fetcher).toHaveBeenCalled();
+    });
+    const requestInit = fetcher.mock.calls[0][1] as RequestInit;
+    expect((requestInit.signal as AbortSignal).aborted).toBe(false);
+    port.emitDisconnect();
+
+    expect((requestInit.signal as AbortSignal).aborted).toBe(true);
+    expect(port.postMessage).not.toHaveBeenCalled();
+  });
+
   it("流式聊天完成事件会透传 Tavily 工具附件", async () => {
     const mock = createChromeMock();
     vi.stubGlobal("chrome", mock.chrome);

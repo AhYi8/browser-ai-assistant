@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { aggregateDisplayAttachmentsByKind } from "../../../src/side-panel/components/MessageList";
+import { aggregateDisplayAttachmentsByKind, getJsSourceAttachmentDisplayCount } from "../../../src/side-panel/components/MessageList";
 import type { ChatJsSourceToolAttachment } from "../../../src/shared/types";
 
 function createJsSourceAttachment(partial: Partial<ChatJsSourceToolAttachment>): ChatJsSourceToolAttachment {
@@ -163,5 +163,71 @@ describe("MessageList 工具附件展示聚合", () => {
       kind: "js-source",
       summary: "JS 资源 1 个，命中 1 个，上下文 0 个，补位失败 0 个。",
     });
+  });
+
+  it("JS 源码附件标题计数在无片段时显示资源数，有片段时显示片段数", () => {
+    expect(getJsSourceAttachmentDisplayCount(createJsSourceAttachment({
+      resources: [
+        {
+          id: "script-a",
+          source: "network",
+          url: "https://example.com/a.js",
+          size: 1,
+          searchable: true,
+          redacted: true,
+          truncated: false,
+        },
+        {
+          id: "script-b",
+          source: "network",
+          url: "https://example.com/b.js",
+          size: 1,
+          searchable: true,
+          redacted: true,
+          truncated: false,
+        },
+      ],
+    }))).toBe(2);
+
+    expect(getJsSourceAttachmentDisplayCount(createJsSourceAttachment({
+      resources: [
+        {
+          id: "script-a",
+          source: "network",
+          url: "https://example.com/a.js",
+          size: 1,
+          searchable: true,
+          redacted: true,
+          truncated: false,
+        },
+      ],
+      jsMatches: [
+        {
+          resourceId: "script-a",
+          source: "network",
+          url: "https://example.com/a.js",
+          term: "login",
+          position: 10,
+          line: 1,
+          column: 11,
+          snippet: "login()",
+          redacted: true,
+          truncated: false,
+        },
+      ],
+      contexts: [
+        {
+          resourceId: "script-a",
+          source: "network",
+          url: "https://example.com/a.js",
+          position: 20,
+          line: 2,
+          column: 5,
+          snippet: "function login(){}",
+          redacted: true,
+          truncated: false,
+        },
+      ],
+    }))).toBe(2);
   });
 });

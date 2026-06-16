@@ -212,6 +212,56 @@ describe("通用模型工具循环", () => {
     );
   });
 
+  it("AbortSignal 已中止时不再执行工具调用", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const requestModel = vi.fn().mockResolvedValue({
+      ok: true,
+      content: "",
+      toolCalls: [{ id: "call-abort", name: tool.name, arguments: { mode: "text" } }],
+    });
+    const executeTool = vi.fn<ModelToolExecutor>();
+
+    const result = await runModelToolLoop({
+      initialMessages: baseMessages,
+      tools: [tool],
+      enabledToolIds: [tool.id],
+      requestModel,
+      executeTool,
+      signal: controller.signal,
+    });
+
+    expect(result).toEqual({ ok: false, message: "已终止本次生成。" });
+    expect(executeTool).not.toHaveBeenCalled();
+  });
+
+  it("工具执行器会收到 AbortSignal", async () => {
+    const controller = new AbortController();
+    const requestModel = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, content: "", toolCalls: [{ id: "call-signal", name: tool.name, arguments: { mode: "text" } }] })
+      .mockResolvedValueOnce({ ok: true, content: "最终回答" });
+    const executeTool: ModelToolExecutor = vi.fn(async (call, _tool, context) => {
+      expect(context?.signal).toBe(controller.signal);
+      return {
+        toolCallId: call.id,
+        name: call.name,
+        content: "工具结果",
+      };
+    });
+
+    await runModelToolLoop({
+      initialMessages: baseMessages,
+      tools: [tool],
+      enabledToolIds: [tool.id],
+      requestModel,
+      executeTool,
+      signal: controller.signal,
+    });
+
+    expect(executeTool).toHaveBeenCalledTimes(1);
+  });
+
   it("存在最终模型请求时会先跑完多轮工具决策再请求最终回复", async () => {
     const requestModel = vi
       .fn()

@@ -103,6 +103,7 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   const loadContextTabs = useAppStore((state) => state.loadContextTabs);
   const toggleContextTabSelection = useAppStore((state) => state.toggleContextTabSelection);
   const sendChatMessage = useAppStore((state) => state.sendChatMessage);
+  const abortActiveChatTask = useAppStore((state) => state.abortActiveChatTask);
   const registeredTools = useMemo(() => getRegisteredModelTools(), []);
   const registeredToolGroups = useMemo(() => getModelToolGroups(registeredTools), [registeredTools]);
   const userEditableToolIds = useMemo(() => registeredTools.filter((tool) => !isBrowserAutomationToolId(tool.id)).map((tool) => tool.id), [registeredTools]);
@@ -381,7 +382,8 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   const contextModeLabel = contextMode === "all" ? "提取所有" : "提取文本";
   const toolCallingLabel = `工具调用：${toolCallingEnabled ? "已启用" : "已关闭"}`;
   const filteredPromptTemplates = filterPromptTemplates(promptTemplates, slashQuery);
-  const canSubmit = canSend && !sending && (input.trim().length > 0 || attachments.length > 0 || promptInvocations.length > 0);
+  const hasDraft = input.trim().length > 0 || attachments.length > 0 || promptInvocations.length > 0;
+  const canSubmit = canSend && hasDraft;
 
   return (
     <section className="chat-composer" aria-label="聊天输入区">
@@ -599,8 +601,13 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
             onToggle={() => setContextMode(contextMode === "all" ? "text" : "all")}
           />
         </div>
-        <button className="ui-button-primary" type="button" disabled={!canSubmit} onClick={() => void submit()}>
-          {sending ? "发送中" : "发送"}
+        <button
+          className={sending ? "ui-button-primary composer-abort-button" : "ui-button-primary"}
+          type="button"
+          disabled={sending ? false : !canSubmit}
+          onClick={() => (sending ? abortActiveChatTask() : void submit())}
+        >
+          {sending ? "终止" : "发送"}
         </button>
       </div>
       {previewAttachment ? (

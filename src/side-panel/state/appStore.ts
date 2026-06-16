@@ -101,6 +101,18 @@ import {
   resolveRuntimeEnabledToolIds,
 } from "./appStorePreferences";
 import { upsertSession } from "./appStoreSessionUtils";
+import {
+  abortChatTaskHandle,
+  clearChatTask,
+  clearChatTaskAbortHandles,
+  createChatTask,
+  finishChatTask,
+  type ChatTaskMap,
+  isSessionTaskRunning,
+  registerChatTaskAbortHandle,
+  unregisterChatTaskAbortHandle,
+  upsertChatTask,
+} from "./appStoreChatTasks";
 import { sendStreamingChatMessage } from "./appStoreStreaming";
 import {
   backupNowAction,
@@ -120,6 +132,14 @@ function createSessionId(timestamp = Date.now()): string {
 
 interface RequestFailure {
   message: string;
+}
+
+function shouldShowFailureForSession(state: AppState, sessionId: string): boolean {
+  if (state.privateModeActive) {
+    return state.privateChatSession?.id === sessionId;
+  }
+
+  return !state.activeSessionId || state.activeSessionId === sessionId;
 }
 
 interface ChannelOperationState {
@@ -186,6 +206,8 @@ export interface AppState {
   privateChatSession?: ChatSession;
   pendingDeleteSessionId?: string;
   composerHasDraft: boolean;
+  chatTasksBySessionId: ChatTaskMap;
+  dismissedChatTaskIdsBySessionId: Record<string, string>;
   appendPageContextToSystemPrompt: boolean;
   streamMode: boolean;
   sending: boolean;
@@ -253,6 +275,8 @@ export interface AppState {
   sendChatMessage: (content: string, attachments?: ChatImageAttachment[], promptInvocations?: ChatPromptInvocation[]) => Promise<void>;
   regenerateMessage: (messageId: string) => Promise<void>;
   editAndRegenerateUserMessage: (messageId: string, content: string, promptInvocations?: ChatPromptInvocation[]) => Promise<void>;
+  abortChatTask: (sessionId: string) => void;
+  abortActiveChatTask: () => void;
   reset: () => void;
 }
 
@@ -310,6 +334,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
   privateModeActive: false,
   privateChatSession: undefined,
   composerHasDraft: false,
+  chatTasksBySessionId: {},
+  dismissedChatTaskIdsBySessionId: {},
   appendPageContextToSystemPrompt: true,
   streamMode: true,
   sending: false,
@@ -668,6 +694,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       privateModeActive: false,
       privateChatSession: undefined,
       pendingDeleteSessionId: undefined,
+      sending: false,
       appendPageContextToSystemPrompt: currentState.chatPreferences.injectPageContextByDefault,
       contextMode: defaultContextMode,
       pageContext: {
@@ -722,6 +749,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       activeSessionId: "",
       selectedModelId,
       pendingDeleteSessionId: undefined,
+      sending: false,
       chatSessions: activeSession ? current.chatSessions.filter((session) => session.id !== activeSession.id) : current.chatSessions,
       appendPageContextToSystemPrompt: state.chatPreferences.injectPageContextByDefault,
       contextMode: defaultContextMode,
@@ -744,6 +772,10 @@ export const useAppStore = create<AppState>()((set, get) => ({
       set({ privateModeActive: false, privateChatSession: undefined });
       return;
     }
+    if (isSessionTaskRunning(state.chatTasksBySessionId, privateChatSession.id)) {
+      set({ failure: { message: "隐私对话仍在生成中，请先终止或等待完成后再保存。" } });
+      return;
+    }
 
     const sessionToSave: ChatSession = {
       ...privateChatSession,
@@ -757,6 +789,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       privateChatSession: undefined,
       activeSessionId: sessionToSave.id,
       selectedModelId: resolveSessionModelId(sessionToSave, current),
+      sending: isSessionTaskRunning(current.chatTasksBySessionId, sessionToSave.id),
       chatSessions: upsertSession(current.chatSessions, sessionToSave),
     }));
     await generateTitleFromSavedPrivateSession({
@@ -775,11 +808,23 @@ export const useAppStore = create<AppState>()((set, get) => ({
         return { pendingDeleteSessionId: undefined };
       }
 
+      const taskId = state.chatTasksBySessionId[sessionId]?.id;
+      const dismissedChatTaskIdsBySessionId = { ...state.dismissedChatTaskIdsBySessionId };
+      const activeTask = state.activeSessionId ? state.chatTasksBySessionId[state.activeSessionId] : undefined;
+      // 运行中会话被用户切回时只是临时隐藏边框，离开后仍需恢复后台运行提示；终态会话被打开后视为已读，保留隐藏记录。
+      if (state.activeSessionId && state.activeSessionId !== sessionId && activeTask?.status === "running") {
+        delete dismissedChatTaskIdsBySessionId[state.activeSessionId];
+      }
+      if (taskId) {
+        dismissedChatTaskIdsBySessionId[sessionId] = taskId;
+      }
       return {
         activeSessionId: sessionId,
         privateModeActive: false,
         privateChatSession: undefined,
         pendingDeleteSessionId: undefined,
+        dismissedChatTaskIdsBySessionId,
+        sending: isSessionTaskRunning(state.chatTasksBySessionId, sessionId),
         selectedModelId: resolveSessionModelId(session, state),
         ...(session.messages.length === 0
           ? {
@@ -794,7 +839,20 @@ export const useAppStore = create<AppState>()((set, get) => ({
   renameChatSession: (sessionId, title) => renameChatSessionAction({ sessionId, title, get, set }),
   archiveChatSession: (sessionId) => archiveChatSessionAction({ sessionId, get, set }),
   requestDeleteChatSession: (sessionId) => requestDeleteChatSessionAction({ sessionId, set }),
-  confirmDeleteChatSession: (sessionId) => confirmDeleteChatSessionAction({ sessionId, set }),
+  confirmDeleteChatSession: async (sessionId) => {
+    get().abortChatTask(sessionId);
+    await confirmDeleteChatSessionAction({ sessionId, set });
+    set((state) => {
+      const chatTasksBySessionId = clearChatTask(state.chatTasksBySessionId, sessionId);
+      const dismissedChatTaskIdsBySessionId = { ...state.dismissedChatTaskIdsBySessionId };
+      delete dismissedChatTaskIdsBySessionId[sessionId];
+      return {
+        chatTasksBySessionId,
+        dismissedChatTaskIdsBySessionId,
+        sending: isSessionTaskRunning(chatTasksBySessionId, state.activeSessionId),
+      };
+    });
+  },
   clearPendingDeleteSession: () => clearPendingDeleteSessionAction({ set }),
   createChatFolder: (name) => createChatFolderAction({ name, set }),
   renameChatFolder: (folderId, name) => renameChatFolderAction({ folderId, name, get, set }),
@@ -913,8 +971,28 @@ export const useAppStore = create<AppState>()((set, get) => ({
   sendChatMessage: (content, attachments = [], promptInvocations = []) => sendChatMessageWithState({ content, attachments, promptInvocations, get, set }),
   regenerateMessage: (messageId) => regenerateChatMessage({ messageId, get, set }),
   editAndRegenerateUserMessage: (messageId, content, promptInvocations) => editAndRegenerateUserMessage({ messageId, content, promptInvocations, get, set }),
+  abortChatTask: (sessionId) => {
+    const aborted = abortChatTaskHandle(sessionId);
+    set((state) => {
+      const taskId = state.chatTasksBySessionId[sessionId]?.id;
+      const chatTasksBySessionId = finishChatTask(state.chatTasksBySessionId, sessionId, "canceled", Date.now(), taskId);
+      return {
+        chatTasksBySessionId,
+        sending: isSessionTaskRunning(chatTasksBySessionId, state.activeSessionId),
+        ...(aborted ? { failure: undefined } : {}),
+      };
+    });
+  },
+  abortActiveChatTask: () => {
+    const state = get();
+    const sessionId = state.privateModeActive ? state.privateChatSession?.id : state.activeSessionId;
+    if (sessionId) {
+      get().abortChatTask(sessionId);
+    }
+  },
   reset: () => {
     clearAllModelConnectivityResetTimers();
+    clearChatTaskAbortHandles();
     resetPageContextRefreshSequence();
 
     set({
@@ -945,6 +1023,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
       privateChatSession: undefined,
       pendingDeleteSessionId: undefined,
       composerHasDraft: false,
+      chatTasksBySessionId: {},
+      dismissedChatTaskIdsBySessionId: {},
       appendPageContextToSystemPrompt: true,
       streamMode: true,
       sending: false,
@@ -1042,7 +1122,7 @@ async function sendChatMessageWithState(input: SendChatMessageWithStateInput): P
   const trimmedContent = input.content.trim();
   const imageAttachments = (input.attachments ?? []).filter((attachment) => attachment.mediaType.startsWith("image/"));
   const promptInvocations = input.promptInvocations ?? [];
-  if ((!trimmedContent && imageAttachments.length === 0 && promptInvocations.length === 0) || input.get().sending) {
+  if (!trimmedContent && imageAttachments.length === 0 && promptInvocations.length === 0) {
     return;
   }
 
@@ -1062,6 +1142,9 @@ async function sendChatMessageWithState(input: SendChatMessageWithStateInput): P
   const baseSession = state.privateModeActive
     ? state.privateChatSession
     : state.chatSessions.find((session) => session.id === state.activeSessionId);
+  if (!baseSession && Object.values(state.chatTasksBySessionId).some((task) => task.status === "running")) {
+    return;
+  }
   const effectiveChatPreferences = resolveEffectiveChatPreferences(state.chatPreferences, baseSession?.chatPreferenceOverrides);
   const session =
     baseSession ??
@@ -1075,6 +1158,9 @@ async function sendChatMessageWithState(input: SendChatMessageWithStateInput): P
       selectedModelId: model.id,
       messages: [],
     };
+  if (isSessionTaskRunning(state.chatTasksBySessionId, session.id)) {
+    return;
+  }
   const shouldInjectPageContext = session.messages.length === 0 && state.appendPageContextToSystemPrompt;
   const requestPageContextPrompt = shouldInjectPageContext
     ? state.pageContext.formatted
@@ -1117,14 +1203,14 @@ async function sendChatMessageWithState(input: SendChatMessageWithStateInput): P
 
 async function regenerateChatMessage(input: RegenerateChatMessageInput): Promise<void> {
   const state = input.get();
-  if (state.sending) {
-    return;
-  }
 
   const session = state.privateModeActive
     ? state.privateChatSession
     : state.chatSessions.find((item) => item.id === state.activeSessionId);
   if (!session) {
+    return;
+  }
+  if (isSessionTaskRunning(state.chatTasksBySessionId, session.id)) {
     return;
   }
 
@@ -1176,7 +1262,7 @@ async function editAndRegenerateUserMessage(input: EditAndRegenerateUserMessageI
   const trimmedContent = input.content.trim();
   const state = input.get();
   const promptInvocations = input.promptInvocations;
-  if ((!trimmedContent && (!promptInvocations || promptInvocations.length === 0)) || state.sending) {
+  if (!trimmedContent && (!promptInvocations || promptInvocations.length === 0)) {
     return;
   }
 
@@ -1184,6 +1270,9 @@ async function editAndRegenerateUserMessage(input: EditAndRegenerateUserMessageI
     ? state.privateChatSession
     : state.chatSessions.find((item) => item.id === state.activeSessionId);
   if (!session) {
+    return;
+  }
+  if (isSessionTaskRunning(state.chatTasksBySessionId, session.id)) {
     return;
   }
 
@@ -1241,11 +1330,10 @@ function findPreviousUserMessage(messages: ChatMessage[], startIndex: number): C
 }
 
 async function runChatRequest(input: RunChatRequestInput): Promise<void> {
-  input.set({ sending: true, failure: undefined });
-
   const effectiveChatPreferences = resolveEffectiveChatPreferences(input.state.chatPreferences, input.session.chatPreferenceOverrides);
   const modelConfig = createModelConfig(input.provider, input.model, effectiveChatPreferences);
   const now = Date.now();
+  const chatTask = createChatTask(input.session.id, now);
   const nextSession: ChatSession = {
     ...input.session,
     title: input.nextTitle,
@@ -1254,6 +1342,18 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
     selectedModelId: input.model.id,
     messages: input.nextMessages,
   };
+  input.set((current) => {
+    const chatTasksBySessionId = upsertChatTask(current.chatTasksBySessionId, chatTask);
+    const dismissedChatTaskIdsBySessionId = { ...current.dismissedChatTaskIdsBySessionId };
+    delete dismissedChatTaskIdsBySessionId[nextSession.id];
+    return {
+      chatTasksBySessionId,
+      dismissedChatTaskIdsBySessionId,
+      sending: isSessionTaskRunning(chatTasksBySessionId, current.activeSessionId || nextSession.id),
+      failure: undefined,
+    };
+  });
+  let taskStatus: "completed" | "failed" | "canceled" = "completed";
 
   try {
     if (input.privateMode) {
@@ -1261,8 +1361,9 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
     } else {
       await saveChatSession(nextSession);
       input.set((current) => ({
-        activeSessionId: nextSession.id,
+        activeSessionId: current.activeSessionId || nextSession.id,
         chatSessions: upsertSession(current.chatSessions, nextSession),
+        sending: isSessionTaskRunning(current.chatTasksBySessionId, current.activeSessionId || nextSession.id),
       }));
     }
 
@@ -1311,9 +1412,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
         : {}),
     };
 
-    const requestUsesProgressPort = requestStreamMode || enabledTools.length > 0;
-
-    if (requestUsesProgressPort) {
+    {
       const streamResult = await sendStreamingChatMessage({
         set: input.set,
         sessionId: nextSession.id,
@@ -1326,7 +1425,15 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
         privateMode: input.privateMode,
         streamMode: requestStreamMode,
         request,
+        onAbortHandle: (handle) => registerChatTaskAbortHandle(nextSession.id, chatTask.id, handle),
+        shouldShowFailure: () => shouldShowFailureForSession(input.get(), nextSession.id),
       });
+      unregisterChatTaskAbortHandle(nextSession.id, chatTask.id);
+      if (streamResult.canceled) {
+        taskStatus = "canceled";
+      } else if (streamResult.failed) {
+        taskStatus = "failed";
+      }
       if (streamResult.completed) {
         return;
       }
@@ -1349,12 +1456,14 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
     >(request);
 
     if (!response) {
-      input.set({ failure: { message: "模型请求失败，请重试" } });
+      taskStatus = "failed";
+      input.set((current) => (shouldShowFailureForSession(current, nextSession.id) ? { failure: { message: "模型请求失败，请重试" } } : {}));
       return;
     }
 
     if (!response.ok) {
-      input.set({ failure: { message: response.message } });
+      taskStatus = "failed";
+      input.set((current) => (shouldShowFailureForSession(current, nextSession.id) ? { failure: { message: response.message } } : {}));
       return;
     }
 
@@ -1418,13 +1527,25 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
       };
     });
   } catch {
-    input.set({
-      failure: {
-        message: "消息保存失败，请重试",
-      },
-    });
+    taskStatus = "failed";
+    input.set((current) =>
+      shouldShowFailureForSession(current, nextSession.id)
+        ? {
+            failure: {
+              message: "消息保存失败，请重试",
+            },
+          }
+        : {},
+    );
   } finally {
-    input.set({ sending: false });
+    unregisterChatTaskAbortHandle(nextSession.id, chatTask.id);
+    input.set((current) => {
+      const chatTasksBySessionId = finishChatTask(current.chatTasksBySessionId, nextSession.id, taskStatus, Date.now(), chatTask.id);
+      return {
+        chatTasksBySessionId,
+        sending: isSessionTaskRunning(chatTasksBySessionId, current.activeSessionId),
+      };
+    });
   }
 }
 

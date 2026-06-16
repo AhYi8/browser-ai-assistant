@@ -247,6 +247,9 @@ describe("appStore 网络搜索", () => {
       "network.compare_requests",
       "network.find_parameter_candidates",
       "network.extract_js_candidates",
+      "js.list_resources",
+      "js.search_sources",
+      "js.extract_context",
     ]);
   });
 });
@@ -2110,6 +2113,187 @@ describe("appStore", () => {
     expect(disconnect).toHaveBeenCalled();
   });
 
+  it("切换到新会话后旧会话后台继续生成且新会话可以继续发送", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const listeners: Array<(message: unknown) => void> = [];
+    const ports: Array<{ postMessage: ReturnType<typeof vi.fn>; disconnect: ReturnType<typeof vi.fn> }> = [];
+    const connect = vi.fn(() => {
+      const port = {
+        postMessage: vi.fn(),
+        disconnect: vi.fn(),
+        onMessage: {
+          addListener: vi.fn((listener: (message: unknown) => void) => listeners.push(listener)),
+        },
+        onDisconnect: {
+          addListener: vi.fn(),
+        },
+      };
+      ports.push(port);
+      return port;
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        connect,
+        sendMessage: vi.fn((_message: unknown, callback: (response: unknown) => void) => {
+          callback({ ok: true });
+          return undefined;
+        }),
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+
+    const firstSend = useAppStore.getState().sendChatMessage("第一问");
+    await vi.waitFor(() => {
+      expect(connect).toHaveBeenCalledTimes(1);
+    });
+    const firstSessionId = useAppStore.getState().activeSessionId;
+    expect(useAppStore.getState().chatTasksBySessionId[firstSessionId]?.status).toBe("running");
+
+    const secondSession = await useAppStore.getState().createChatSession();
+    expect(useAppStore.getState().activeSessionId).toBe(secondSession.id);
+    expect(useAppStore.getState().dismissedChatTaskIdsBySessionId[firstSessionId]).toBeUndefined();
+    useAppStore.getState().selectChatSession(firstSessionId);
+    expect(useAppStore.getState().activeSessionId).toBe(firstSessionId);
+    expect(useAppStore.getState().sending).toBe(true);
+    expect(useAppStore.getState().chatTasksBySessionId[firstSessionId]?.status).toBe("running");
+    expect(useAppStore.getState().dismissedChatTaskIdsBySessionId[firstSessionId]).toBe(useAppStore.getState().chatTasksBySessionId[firstSessionId]?.id);
+    useAppStore.getState().selectChatSession(secondSession.id);
+    expect(useAppStore.getState().dismissedChatTaskIdsBySessionId[firstSessionId]).toBeUndefined();
+    const secondSend = useAppStore.getState().sendChatMessage("第二问");
+    await vi.waitFor(() => {
+      expect(connect).toHaveBeenCalledTimes(2);
+    });
+
+    listeners[0]?.({ type: "complete", content: "第一答" });
+    listeners[1]?.({ type: "complete", content: "第二答" });
+    await Promise.all([firstSend, secondSend]);
+
+    const state = useAppStore.getState();
+    const firstSession = state.chatSessions.find((session) => session.id === firstSessionId);
+    const secondStoredSession = state.chatSessions.find((session) => session.id === secondSession.id);
+    expect(firstSession?.messages.map((message) => message.content)).toEqual(["第一问", "第一答"]);
+    expect(secondStoredSession?.messages.map((message) => message.content)).toEqual(["第二问", "第二答"]);
+    expect(state.chatTasksBySessionId[firstSessionId]?.status).toBe("completed");
+    expect(state.chatTasksBySessionId[secondSession.id]?.status).toBe("completed");
+    expect(ports[0].disconnect).toHaveBeenCalled();
+    expect(ports[1].disconnect).toHaveBeenCalled();
+  });
+
+  it("后台会话完成后用户切回该会话会清除完成态已读提示", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const listeners: Array<(message: unknown) => void> = [];
+    const disconnectListeners: Array<() => void> = [];
+    const connect = vi.fn(() => ({
+      postMessage: vi.fn(),
+      disconnect: vi.fn(() => {
+        const listener = disconnectListeners.shift();
+        listener?.();
+      }),
+      onMessage: {
+        addListener: vi.fn((listener: (message: unknown) => void) => listeners.push(listener)),
+      },
+      onDisconnect: {
+        addListener: vi.fn((listener: () => void) => disconnectListeners.push(listener)),
+      },
+    }));
+    vi.stubGlobal("chrome", {
+      runtime: {
+        connect,
+        sendMessage: vi.fn((_message: unknown, callback: (response: unknown) => void) => {
+          callback({ ok: true });
+          return undefined;
+        }),
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+
+    const firstSend = useAppStore.getState().sendChatMessage("第一问");
+    await vi.waitFor(() => expect(connect).toHaveBeenCalledTimes(1));
+    const firstSessionId = useAppStore.getState().activeSessionId;
+    const secondSession = await useAppStore.getState().createChatSession();
+
+    listeners[0]?.({ type: "complete", content: "第一答" });
+    await firstSend;
+
+    expect(useAppStore.getState().activeSessionId).toBe(secondSession.id);
+    expect(useAppStore.getState().chatTasksBySessionId[firstSessionId]?.status).toBe("completed");
+    expect(useAppStore.getState().dismissedChatTaskIdsBySessionId[firstSessionId]).toBeUndefined();
+
+    useAppStore.getState().selectChatSession(firstSessionId);
+    const completedTaskId = useAppStore.getState().chatTasksBySessionId[firstSessionId]?.id;
+    expect(useAppStore.getState().dismissedChatTaskIdsBySessionId[firstSessionId]).toBe(completedTaskId);
+
+    useAppStore.getState().selectChatSession(secondSession.id);
+    expect(useAppStore.getState().dismissedChatTaskIdsBySessionId[firstSessionId]).toBe(completedTaskId);
+  });
+
+  it("终止当前会话任务时只断开当前会话的长连接", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const listeners: Array<(message: unknown) => void> = [];
+    const disconnectListeners: Array<() => void> = [];
+    const ports: Array<{ disconnect: ReturnType<typeof vi.fn> }> = [];
+    const connect = vi.fn(() => {
+      const portIndex = ports.length;
+      const port = {
+        postMessage: vi.fn(),
+        disconnect: vi.fn(() => {
+          disconnectListeners[portIndex]?.();
+        }),
+        onMessage: {
+          addListener: vi.fn((listener: (message: unknown) => void) => listeners.push(listener)),
+        },
+        onDisconnect: {
+          addListener: vi.fn((listener: () => void) => disconnectListeners.push(listener)),
+        },
+      };
+      ports.push(port);
+      return port;
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        connect,
+        sendMessage: vi.fn((_message: unknown, callback: (response: unknown) => void) => {
+          callback({ ok: true });
+          return undefined;
+        }),
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+
+    const firstSend = useAppStore.getState().sendChatMessage("第一问");
+    await vi.waitFor(() => expect(connect).toHaveBeenCalledTimes(1));
+    const firstSessionId = useAppStore.getState().activeSessionId;
+    const secondSession = await useAppStore.getState().createChatSession();
+    const secondSend = useAppStore.getState().sendChatMessage("第二问");
+    await vi.waitFor(() => expect(connect).toHaveBeenCalledTimes(2));
+
+    useAppStore.getState().abortActiveChatTask();
+    expect(ports[0].disconnect).not.toHaveBeenCalled();
+    expect(ports[1].disconnect).toHaveBeenCalled();
+    expect(useAppStore.getState().chatTasksBySessionId[secondSession.id]?.status).toBe("canceled");
+
+    listeners[0]?.({ type: "complete", content: "第一答" });
+    await firstSend;
+    await secondSend;
+
+    expect(useAppStore.getState().chatTasksBySessionId[firstSessionId]?.status).toBe("completed");
+  });
+
   it("启用 Tavily 工具且打开流式偏好时仍通过长连接发送流式请求", async () => {
     const provider = createProvider();
     const model = createModel();
@@ -2248,6 +2432,54 @@ describe("appStore", () => {
       content: "模型响应中没有可用内容",
       streaming: false,
     });
+  });
+
+  it("后台会话流式失败不会污染当前会话错误提示", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    let portMessageListener: ((message: unknown) => void) | undefined;
+    const port = {
+      postMessage: vi.fn(),
+      disconnect: vi.fn(),
+      onMessage: {
+        addListener: vi.fn((listener: (message: unknown) => void) => {
+          portMessageListener = listener;
+        }),
+      },
+      onDisconnect: {
+        addListener: vi.fn(),
+      },
+    };
+    vi.stubGlobal("chrome", {
+      runtime: {
+        connect: vi.fn(() => port),
+        sendMessage: vi.fn((_message: unknown, callback: (response: unknown) => void) => {
+          callback({ ok: true });
+          return undefined;
+        }),
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+
+    const sendPromise = useAppStore.getState().sendChatMessage("后台问题");
+    await vi.waitFor(() => {
+      expect(portMessageListener).toBeTypeOf("function");
+    });
+    const firstSessionId = useAppStore.getState().activeSessionId;
+    const secondSession = await useAppStore.getState().createChatSession();
+    expect(useAppStore.getState().activeSessionId).toBe(secondSession.id);
+
+    portMessageListener?.({ type: "error", message: "后台失败" });
+    await sendPromise;
+
+    const state = useAppStore.getState();
+    expect(state.activeSessionId).toBe(secondSession.id);
+    expect(state.chatTasksBySessionId[firstSessionId]?.status).toBe("failed");
+    expect(state.failure).toBeUndefined();
   });
 
   it("流式响应先逐段更新思考过程，再逐段更新正文", async () => {
@@ -3911,6 +4143,46 @@ describe("appStore", () => {
       id: savedSessionId,
       messages: expect.any(Array),
     });
+  });
+
+  it("隐私会话生成中保存会被拒绝并保留隐私模式", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    let portMessageListener: ((message: unknown) => void) | undefined;
+    const port = {
+      postMessage: vi.fn(),
+      disconnect: vi.fn(),
+      onMessage: {
+        addListener: vi.fn((listener: (message: unknown) => void) => {
+          portMessageListener = listener;
+        }),
+      },
+      onDisconnect: {
+        addListener: vi.fn(),
+      },
+    };
+    vi.stubGlobal("chrome", { runtime: { connect: vi.fn(() => port), sendMessage: vi.fn() } });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    useAppStore.getState().setStreamMode(true);
+    await useAppStore.getState().enterPrivateMode();
+
+    const sendPromise = useAppStore.getState().sendChatMessage("隐私生成中");
+    await vi.waitFor(() => {
+      expect(portMessageListener).toBeTypeOf("function");
+      expect(useAppStore.getState().privateChatSession?.messages.map((message) => message.content)).toEqual(["隐私生成中", ""]);
+    });
+
+    await useAppStore.getState().savePrivateChatSession();
+
+    expect(useAppStore.getState().privateModeActive).toBe(true);
+    expect(useAppStore.getState().privateChatSession?.messages.map((message) => message.content)).toEqual(["隐私生成中", ""]);
+    expect(useAppStore.getState().failure?.message).toBe("隐私对话仍在生成中，请先终止或等待完成后再保存。");
+
+    portMessageListener?.({ type: "complete", content: "隐私生成完成" });
+    await sendPromise;
   });
 
   it("保存隐私会话后使用完整聊天记录重新生成标题", async () => {

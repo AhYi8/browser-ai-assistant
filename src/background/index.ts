@@ -192,21 +192,31 @@ chrome.runtime.onConnect.addListener((port) => {
     return;
   }
 
+  const controller = new AbortController();
+  let disconnected = false;
+  const postToPort = (message: unknown) => {
+    if (!disconnected) {
+      port.postMessage(message);
+    }
+  };
   const handlePortMessage = (message: ChatStreamStartMessage) => {
     if (message.type !== "chat.stream.start") {
       return;
     }
 
-    void handleChatSendMessage(message.payload, fetch, {
-      onContentChunk: (content) => port.postMessage({ type: "chunk", content }),
-      onThinkingChunk: (content) => port.postMessage({ type: "thinking", content }),
-      onToolTurnMessage: (assistantMessage: ChatMessage) => port.postMessage({ type: "assistant:tool-turn", message: assistantMessage }),
-      onToolCallStart: (record: ChatToolCallRecord) => port.postMessage({ type: "tool:start", record }),
-      onToolCallComplete: (record: ChatToolCallRecord, attachments: ChatToolAttachment[]) => port.postMessage({ type: "tool:complete", record, attachments }),
+    void handleChatSendMessage({ ...message.payload, signal: controller.signal }, fetch, {
+      onContentChunk: (content) => postToPort({ type: "chunk", content }),
+      onThinkingChunk: (content) => postToPort({ type: "thinking", content }),
+      onToolTurnMessage: (assistantMessage: ChatMessage) => postToPort({ type: "assistant:tool-turn", message: assistantMessage }),
+      onToolCallStart: (record: ChatToolCallRecord) => postToPort({ type: "tool:start", record }),
+      onToolCallComplete: (record: ChatToolCallRecord, attachments: ChatToolAttachment[]) => postToPort({ type: "tool:complete", record, attachments }),
     })
       .then((response) => {
+        if (disconnected) {
+          return;
+        }
         if (response.ok) {
-          port.postMessage({
+          postToPort({
             type: "complete",
             content: response.content,
             thinking: response.thinking,
@@ -217,14 +227,18 @@ chrome.runtime.onConnect.addListener((port) => {
           return;
         }
 
-        port.postMessage({ type: "error", message: response.message });
+        postToPort({ type: "error", message: response.message });
       })
       .catch(() => {
-        port.postMessage({ type: "error", message: "模型请求失败，请稍后重试" });
+        postToPort({ type: "error", message: "模型请求失败，请稍后重试" });
       });
   };
 
   port.onMessage.addListener(handlePortMessage);
+  port.onDisconnect.addListener(() => {
+    disconnected = true;
+    controller.abort();
+  });
 });
 
 export {};

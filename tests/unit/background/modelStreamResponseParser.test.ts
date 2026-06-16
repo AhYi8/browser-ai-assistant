@@ -115,6 +115,70 @@ describe("模型流式响应解析", () => {
     expect(onContentChunk.mock.calls.map((call) => call[0]).join("")).not.toContain("evaluate_script");
   });
 
+  it("OpenAI-compatible SSE 思考增量不会把 DSML 工具块透传到 UI", async () => {
+    const onThinkingChunk = vi.fn();
+    const result = await readModelStreamResponse(
+      new Response(
+        createStream([
+          'data: {"choices":[{"delta":{"reasoning_content":"现在我已经有了足够的信息。\\n< | | DSML | | tool_calls>\\n"}}]}\n\n',
+          'data: {"choices":[{"delta":{"reasoning_content":"< | | DSML | | invoke name=\\"select_page\\">\\n< | | DSML | | parameter name=\\"index\\" string=\\" false\\">1</ | | DSML | | parameter>\\n"}}]}\n\n',
+          'data: {"choices":[{"delta":{"reasoning_content":"</ | | DSML | | invoke>\\n</ | | DSML | | tool_calls>\\n回到登录页给出结论。"}}]}\n\n',
+          'data: {"choices":[{"delta":{"content":"最终结论。"}}]}\n\n',
+          "data: [DONE]\n\n",
+        ]),
+      ),
+      createModel({
+        modelId: "deepseek-v4-pro",
+        displayName: "DeepSeek V4 Pro",
+        endpointUrl: "https://api.deepseek.com/v1/chat/completions",
+      }),
+      { onThinkingChunk },
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      content: "最终结论。",
+      thinking: "现在我已经有了足够的信息。\n回到登录页给出结论。",
+      reasoningContent: "现在我已经有了足够的信息。\n回到登录页给出结论。",
+    });
+    const visibleThinking = onThinkingChunk.mock.calls.map((call) => call[0]).join("");
+    expect(visibleThinking).toBe("现在我已经有了足够的信息。\n回到登录页给出结论。");
+    expect(visibleThinking).not.toContain("DSML");
+    expect(visibleThinking).not.toContain("select_page");
+  });
+
+  it("OpenAI-compatible SSE 思考增量会拦截跨 chunk 的全角 DSML 命名空间工具块", async () => {
+    const onThinkingChunk = vi.fn();
+    const result = await readModelStreamResponse(
+      new Response(
+        createStream([
+          'data: {"choices":[{"delta":{"reasoning_content":"前置思考\\n<｜｜"}}]}\n\n',
+          'data: {"choices":[{"delta":{"reasoning_content":"DSML｜｜tool_calls>\\n<｜｜DSML｜｜invoke name=\\"select_page\\">1"}}]}\n\n',
+          'data: {"choices":[{"delta":{"reasoning_content":"</｜｜DSML｜｜invoke>\\n</｜｜DSML｜｜tool_calls>\\n后续思考"}}]}\n\n',
+          'data: {"choices":[{"delta":{"content":"最终结论。"}}]}\n\n',
+          "data: [DONE]\n\n",
+        ]),
+      ),
+      createModel({
+        modelId: "deepseek-v4-pro",
+        displayName: "DeepSeek V4 Pro",
+        endpointUrl: "https://api.deepseek.com/v1/chat/completions",
+      }),
+      { onThinkingChunk },
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      content: "最终结论。",
+      thinking: "前置思考\n后续思考",
+      reasoningContent: "前置思考\n后续思考",
+    });
+    const visibleThinking = onThinkingChunk.mock.calls.map((call) => call[0]).join("");
+    expect(visibleThinking).toBe("前置思考\n后续思考");
+    expect(visibleThinking).not.toContain("DSML");
+    expect(visibleThinking).not.toContain("select_page");
+  });
+
   it("Anthropic SSE 只拼接 text_delta 并忽略畸形 JSON 片段", async () => {
     const onContentChunk = vi.fn();
     const result = await readModelStreamResponse(

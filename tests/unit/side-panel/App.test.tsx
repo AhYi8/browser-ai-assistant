@@ -1,7 +1,10 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import autoprefixer from "autoprefixer";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import postcss from "postcss";
+import tailwindcss from "tailwindcss";
 import { App } from "../../../src/side-panel/App";
 import { useAppStore } from "../../../src/side-panel/state/appStore";
 import type { ModelToolRegistryEntry } from "../../../src/shared/models/types";
@@ -300,6 +303,313 @@ describe("App", () => {
     render(<App />);
 
     expect(screen.getByRole("heading", { name: "Browser AI Assistant" })).toBeInTheDocument();
+  });
+
+  it("会话任务状态通过边框类名展示且不渲染可见文案", async () => {
+    const styles = readFileSync(resolve(process.cwd(), "src/side-panel/styles.css"), "utf8");
+    await saveChatSession(createChatSession({ id: "session-running", title: "后台生成" }));
+    await saveChatSession(createChatSession({ id: "session-completed", title: "已经完成", sortOrder: 2 }));
+    useAppStore.setState({
+      chatTasksBySessionId: {
+        "session-running": {
+          id: "task-running",
+          sessionId: "session-running",
+          status: "running",
+          startedAt: 1,
+        },
+        "session-completed": {
+          id: "task-completed",
+          sessionId: "session-completed",
+          status: "completed",
+          startedAt: 1,
+          completedAt: 2,
+        },
+      },
+    });
+
+    render(<App />);
+
+    const runningItem = (await screen.findByRole("button", { name: "后台生成" })).closest(".session-item");
+    const completedItem = (await screen.findByRole("button", { name: "已经完成" })).closest(".session-item");
+    expect(runningItem).toHaveClass("session-item-running");
+    expect(completedItem).toHaveClass("session-item-completed");
+    expect(runningItem).toHaveAttribute("aria-label", "后台生成，正在生成");
+    expect(completedItem).toHaveAttribute("aria-label", "已经完成，生成完成");
+    expect(runningItem?.querySelector(".session-task-indicator")).not.toBeInTheDocument();
+    expect(completedItem?.querySelector(".session-task-indicator")).not.toBeInTheDocument();
+    expect(screen.queryByText("正在生成")).not.toBeInTheDocument();
+    expect(screen.queryByText("生成完成")).not.toBeInTheDocument();
+    expect(styles).not.toContain(".session-item-running::before");
+    expect(styles).not.toContain(".session-item-completed::before");
+    expect(styles).not.toContain(".session-item-failed::before");
+    expect(styles).not.toContain(".session-item-canceled::before");
+    expect(styles).not.toContain(".session-task-indicator");
+    expect(styles).not.toMatch(/\.session-item-(?:running|completed|failed|canceled)[^{]*{[^}]*box-shadow/);
+    expect(styles).toContain("border: 2px solid var(--color-hairline-soft)");
+    expect(styles).toContain("rgba(204, 120, 92, 1)");
+    expect(styles).toContain("rgba(204, 120, 92, 0)");
+    expect(styles).toContain("@keyframes session-running-border-pulse");
+    expect(styles).toContain(".composer-abort-button");
+    expect(styles).toContain("background: var(--color-error)");
+  });
+
+  it("会话任务状态样式经过 Tailwind 构建后仍保留", async () => {
+    const styles = readFileSync(resolve(process.cwd(), "src/side-panel/styles.css"), "utf8");
+    const result = await postcss([tailwindcss(resolve(process.cwd(), "tailwind.config.ts")), autoprefixer]).process(styles, {
+      from: resolve(process.cwd(), "src/side-panel/styles.css"),
+    });
+
+    expect(result.css).not.toContain(".session-item-running:before");
+    expect(result.css).not.toContain(".session-item-completed:before");
+    expect(result.css).not.toContain(".session-item-failed:before");
+    expect(result.css).not.toContain(".session-item-canceled:before");
+    expect(result.css).not.toContain(".session-task-indicator");
+    expect(result.css).not.toMatch(/\.session-item-(?:running|completed|failed|canceled)[^{]*{[^}]*box-shadow/);
+    expect(result.css).toContain(".session-item-running");
+    expect(result.css).toContain(".session-item-completed");
+    expect(result.css).toContain(".session-item-failed");
+    expect(result.css).toContain(".session-item-canceled");
+    expect(result.css).toContain("@keyframes session-running-border-pulse");
+    expect(result.css).toMatch(/50%\s*{\s*border-color:\s*(?:rgba\(204,\s*120,\s*92,\s*0\)|#cc785c00);?\s*}/);
+    expect(result.css).toContain(".composer-abort-button");
+  });
+
+  it("发送后切换到新会话时原会话会显示运行中并在完成后显示完成态", async () => {
+    const user = userEvent.setup();
+    const provider: ModelProvider = {
+      id: "provider-session-task",
+      name: "任务渠道",
+      endpointType: "openai_chat",
+      endpointUrl: "https://api.example.com/v1/chat/completions",
+      apiKey: "sk-task",
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const model: ProviderModel = {
+      id: "model-session-task",
+      providerId: "provider-session-task",
+      displayName: "任务模型",
+      modelId: "gpt-task",
+      temperature: 0.7,
+      maxTokens: 1024,
+      systemPrompt: "你是网页助手",
+      isTitleModel: false,
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    let portMessageListener: ((message: unknown) => void) | undefined;
+    const port = {
+      postMessage: vi.fn(),
+      disconnect: vi.fn(),
+      onMessage: {
+        addListener: vi.fn((listener: (message: unknown) => void) => {
+          portMessageListener = listener;
+        }),
+      },
+      onDisconnect: {
+        addListener: vi.fn(),
+      },
+    };
+    vi.stubGlobal("chrome", {
+      runtime: {
+        connect: vi.fn(() => port),
+        sendMessage: vi.fn((_message: unknown, callback: (response: unknown) => void) => {
+          callback({ ok: true });
+          return undefined;
+        }),
+      },
+    });
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+
+    render(<App />);
+
+    await user.type(await screen.findByLabelText("对话输入"), "第一问");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => {
+      expect(portMessageListener).toBeTypeOf("function");
+    });
+    const firstSessionButton = await screen.findByRole("button", { name: "第一问" });
+    await user.click(screen.getByRole("button", { name: "新对话" }));
+
+    expect(firstSessionButton.closest(".session-item")).toHaveClass("session-item-running");
+
+    await act(async () => {
+      portMessageListener?.({ type: "complete", content: "第一答" });
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      expect(firstSessionButton.closest(".session-item")).toHaveClass("session-item-completed");
+    });
+  });
+
+  it("用户切回原会话后会取消该会话的任务边框状态展示", async () => {
+    const user = userEvent.setup();
+    const provider: ModelProvider = {
+      id: "provider-session-task-dismiss",
+      name: "任务渠道",
+      endpointType: "openai_chat",
+      endpointUrl: "https://api.example.com/v1/chat/completions",
+      apiKey: "sk-task",
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const model: ProviderModel = {
+      id: "model-session-task-dismiss",
+      providerId: "provider-session-task-dismiss",
+      displayName: "任务模型",
+      modelId: "gpt-task",
+      temperature: 0.7,
+      maxTokens: 1024,
+      systemPrompt: "你是网页助手",
+      isTitleModel: false,
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    let portMessageListener: ((message: unknown) => void) | undefined;
+    const port = {
+      postMessage: vi.fn(),
+      disconnect: vi.fn(),
+      onMessage: {
+        addListener: vi.fn((listener: (message: unknown) => void) => {
+          portMessageListener = listener;
+        }),
+      },
+      onDisconnect: {
+        addListener: vi.fn(),
+      },
+    };
+    vi.stubGlobal("chrome", {
+      runtime: {
+        connect: vi.fn(() => port),
+        sendMessage: vi.fn((_message: unknown, callback: (response: unknown) => void) => {
+          callback({ ok: true });
+          return undefined;
+        }),
+      },
+    });
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+
+    render(<App />);
+
+    await user.type(await screen.findByLabelText("对话输入"), "第一问");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => {
+      expect(portMessageListener).toBeTypeOf("function");
+    });
+    const firstSessionButton = await screen.findByRole("button", { name: "第一问" });
+    await user.click(screen.getByRole("button", { name: "新对话" }));
+    expect(firstSessionButton.closest(".session-item")).toHaveClass("session-item-running");
+
+    await user.click(firstSessionButton);
+
+    expect(firstSessionButton.closest(".session-item")).not.toHaveClass("session-item-running");
+    expect(screen.getByRole("button", { name: "终止" })).toBeInTheDocument();
+
+    await act(async () => {
+      portMessageListener?.({ type: "complete", content: "第一答" });
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      expect(firstSessionButton.closest(".session-item")).not.toHaveClass("session-item-completed");
+    });
+  });
+
+  it("用户切回运行中会话再离开时会恢复该会话的运行中边框状态展示", async () => {
+    const user = userEvent.setup();
+    const provider: ModelProvider = {
+      id: "provider-session-task-redismiss",
+      name: "任务渠道",
+      endpointType: "openai_chat",
+      endpointUrl: "https://api.example.com/v1/chat/completions",
+      apiKey: "sk-task",
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const model: ProviderModel = {
+      id: "model-session-task-redismiss",
+      providerId: "provider-session-task-redismiss",
+      displayName: "任务模型",
+      modelId: "gpt-task",
+      temperature: 0.7,
+      maxTokens: 1024,
+      systemPrompt: "你是网页助手",
+      isTitleModel: false,
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    let portMessageListener: ((message: unknown) => void) | undefined;
+    const port = {
+      postMessage: vi.fn(),
+      disconnect: vi.fn(),
+      onMessage: {
+        addListener: vi.fn((listener: (message: unknown) => void) => {
+          portMessageListener = listener;
+        }),
+      },
+      onDisconnect: {
+        addListener: vi.fn(),
+      },
+    };
+    vi.stubGlobal("chrome", {
+      runtime: {
+        connect: vi.fn(() => port),
+        sendMessage: vi.fn((_message: unknown, callback: (response: unknown) => void) => {
+          callback({ ok: true });
+          return undefined;
+        }),
+      },
+    });
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+
+    render(<App />);
+
+    await user.type(await screen.findByLabelText("对话输入"), "第一问");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => {
+      expect(portMessageListener).toBeTypeOf("function");
+    });
+    const firstSessionButton = await screen.findByRole("button", { name: "第一问" });
+    await user.click(screen.getByRole("button", { name: "新对话" }));
+    expect(firstSessionButton.closest(".session-item")).toHaveClass("session-item-running");
+
+    await user.click(firstSessionButton);
+    expect(firstSessionButton.closest(".session-item")).not.toHaveClass("session-item-running");
+
+    const secondSessionButton = screen
+      .getAllByRole("button", { name: "新对话" })
+      .find((button) => button.closest(".session-item"));
+    expect(secondSessionButton).toBeDefined();
+    await user.click(secondSessionButton!);
+
+    expect(firstSessionButton.closest(".session-item")).toHaveClass("session-item-running");
+  });
+
+  it("发送中即使当前模型不可发送也允许点击终止", async () => {
+    const abortActiveChatTask = vi.fn();
+    useAppStore.setState({
+      providers: [],
+      models: [],
+      sending: true,
+      abortActiveChatTask,
+    });
+
+    render(<App />);
+
+    const abortButton = await screen.findByRole("button", { name: "终止" });
+    expect(abortButton).toBeEnabled();
+    await userEvent.click(abortButton);
+    expect(abortActiveChatTask).toHaveBeenCalledTimes(1);
   });
 
   it("聊天 Markdown 代码块显示类型和快捷操作栏", async () => {
