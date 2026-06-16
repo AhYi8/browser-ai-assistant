@@ -1,7 +1,7 @@
 import { parseAssistantResponse } from "../shared/chat/parseAssistantResponse";
 import { createModelRequestPayload } from "../shared/models/modelRequestPayload";
 import { shouldPassDeepSeekReasoningContent } from "../shared/models/openaiChatAdapter";
-import { normalizeModelRequestRetryCount, shouldRetryModelResponse, withModelRequestRetry } from "../shared/models/modelRequestRetry";
+import { normalizeModelRequestRetryCount, shouldRetryModelResponse, withModelRequestRetry, type ModelRequestRetryProgress } from "../shared/models/modelRequestRetry";
 import { getRegisteredModelTools, isBrowserAutomationToolId, resolveEnabledModelTools } from "../shared/models/toolRegistry";
 import type { ModelRequestMessage, ModelToolCall, ModelToolChoice, ModelToolDefinition, ModelToolExecutor, OpenAIStructuredOutputFormat } from "../shared/models/types";
 import type { ChatMessage, ChatToolAttachment, ChatToolCallRecord, ModelConfig } from "../shared/types";
@@ -55,6 +55,8 @@ type Fetcher = typeof fetch;
 interface ChatStreamCallbacks {
   onContentChunk?: (content: string) => void;
   onThinkingChunk?: (content: string) => void;
+  onRetryProgress?: (progress: ModelRequestRetryProgress) => void;
+  onFinalResponseStart?: () => void;
   onToolTurnMessage?: (message: ChatMessage) => void;
   onToolCallStart?: (record: ChatToolCallRecord) => void;
   onToolCallComplete?: (record: ChatToolCallRecord, attachments: ChatToolAttachment[]) => void;
@@ -85,8 +87,10 @@ export async function handleChatSendMessage(
       enabledToolIds: exposedToolIds,
       requestModel: (messages) =>
         requestModelOnce({ ...message, messages, stream: false, tools: toolOptions.tools, toolChoice: toolOptions.toolChoice }, fetcher),
-      requestFinalModel: (messages: ModelRequestMessage[]) =>
-        requestModelOnce({ ...message, messages, stream: message.stream, tools: undefined, toolChoice: undefined }, fetcher, callbacks),
+      requestFinalModel: (messages: ModelRequestMessage[]) => {
+        callbacks.onFinalResponseStart?.();
+        return requestModelOnce({ ...message, messages, stream: message.stream, tools: undefined, toolChoice: undefined }, fetcher, callbacks);
+      },
       executeTool: toolExecutor,
       signal: message.signal,
       onToolTurnMessage: callbacks.onToolTurnMessage,
@@ -122,6 +126,7 @@ async function requestModelOnce(
     if (message.stream) {
       const streamResponse = await withModelRequestRetry(() => fetcher(payload.url, requestInit), retryCount, {
         onRetryResult: cancelRetryableResponseBody,
+        onRetryScheduled: callbacks.onRetryProgress,
       });
 
       if (!streamResponse.ok) {
@@ -137,6 +142,7 @@ async function requestModelOnce(
     const modelResponse = await withModelRequestRetry(() => fetchAndReadModelResponse(fetcher, payload.url, requestInit), retryCount, {
       shouldRetryResult: (result) => result.retryable,
       onRetryResult: (result) => cancelRetryableResponseBody(result.response),
+      onRetryScheduled: callbacks.onRetryProgress,
     });
 
     if (!modelResponse.response.ok) {

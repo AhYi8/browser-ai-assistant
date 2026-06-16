@@ -865,6 +865,60 @@ describe("background 入口", () => {
     expect(port.postMessage).not.toHaveBeenCalled();
   });
 
+  it("聊天长连接端口会透传 AI 请求重试进度", async () => {
+    const mock = createChromeMock();
+    vi.stubGlobal("chrome", mock.chrome);
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(new Response("busy", { status: 429, statusText: "Too Many Requests", headers: { "Retry-After": "0" } }))
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              choices: [{ message: { content: "重试成功" } }],
+            }),
+            { status: 200 },
+          ),
+        ),
+    );
+    await import("../../../src/background/index");
+    const port = createPortMock("chat.stream");
+
+    mock.connectListeners[0](port);
+    port.emitMessage({
+      type: "chat.stream.start",
+      payload: {
+        type: "chat.send",
+        model: {
+          id: "model-1",
+          providerId: "provider-1",
+          name: "默认模型",
+          displayName: "默认模型",
+          channelName: "默认渠道",
+          endpointType: "openai_chat",
+          endpointUrl: "https://api.example.com/v1/chat/completions",
+          apiKey: "sk-test",
+          modelId: "gpt-test",
+          temperature: 0.7,
+          maxTokens: 1024,
+          systemPrompt: "你是网页助手",
+          isTitleModel: false,
+          enabled: true,
+          createdAt: 1,
+          updatedAt: 1,
+        },
+        messages: [],
+        stream: false,
+        retryCount: 5,
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(port.postMessage).toHaveBeenCalledWith({ type: "retry:progress", currentRetry: 1, maxRetries: 5 });
+    });
+  });
+
   it("流式聊天完成事件会透传 Tavily 工具附件", async () => {
     const mock = createChromeMock();
     vi.stubGlobal("chrome", mock.chrome);
@@ -1006,6 +1060,7 @@ describe("background 入口", () => {
           ],
         }),
       );
+      expect(port.postMessage).toHaveBeenCalledWith({ type: "assistant:final-start" });
       expect(port.postMessage).toHaveBeenCalledWith(
         expect.objectContaining({
           type: "complete",

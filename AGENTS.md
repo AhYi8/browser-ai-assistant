@@ -150,6 +150,7 @@
 * 流式聊天必须通过 `chrome.runtime.connect({ name: "chat.stream" })` 处理增量内容；普通 `runtime.sendMessage` 不应用于长期承载流式模型响应。
 * SSE 解析必须容忍心跳、畸形 JSON 片段和分块边界；OpenAI 的 `delta.content` 与 `reasoning_content`、Anthropic 的 `text_delta` 和 `message_stop` 都要分别处理。
 * 流式连接必须以最终 `complete` 事件作为成功收尾信号；端口在 `complete` 前断开时，不论是否已收到工具进度或正文增量，都必须将占位 AI 消息收尾为非 streaming 的固定中文失败提示，不得回退为非流式请求或留下永久占位。
+* AI 请求重试进度需要通过 background 端口事件传递到侧边栏，仅作为当前 AI 占位消息的临时 UI 状态展示；`正在重试 m/n` 不得写入 `ChatMessage` 持久化字段、同步快照或导出内容，且在收到正文增量、完成、失败、取消或断开时必须立即清除。
 * 工具调用链路中，工具决策请求可以强制非流式以稳定收集 `tool_calls`；但工具完成后的最终回答请求必须继承用户当前流式偏好，且不得携带 `tools/tool_choice`。浏览器自动化工具只允许影响最大工具轮次和工具暴露条件，不能让最终总结请求退回非流式。
 * OpenAI-compatible 工具决策响应除标准 `message.tool_calls` 外，还必须兼容模型把工具调用写进正文里的 DSML `<｜tool_calls｜><｜invoke name="..."｜>...` 块；解析后必须转成 `ModelToolCall` 并从 assistant 正文移除，禁止把协议文本展示给用户或写入后续上下文。疑似 DSML 工具调用但格式不完整时，也必须转成带 `parseError` 的错误工具结果回灌给模型，由模型决定继续调用工具或输出最终总结，而不是在本地直接中断工具循环或固定总结。
 * DSML 工具调用解析必须同时兼容 `<｜tool_calls｜>`、`<|tool_calls|>` 和 `< | | DSML | | tool_calls>` 这类命名空间格式；带 `< | | DSML | | parameter name="..." string="...">` 的参数块必须在 background 转成结构化工具参数，不能只依赖 Side Panel 展示层剥离。当前命名空间兼容范围固定为 `DSML` 前后各两个半角或全角竖线，不为未知三竖线等变体静默扩宽协议。

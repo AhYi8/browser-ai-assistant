@@ -207,6 +207,8 @@ chrome.runtime.onConnect.addListener((port) => {
     void handleChatSendMessage({ ...message.payload, signal: controller.signal }, fetch, {
       onContentChunk: (content) => postToPort({ type: "chunk", content }),
       onThinkingChunk: (content) => postToPort({ type: "thinking", content }),
+      onRetryProgress: (progress) => postToPort({ type: "retry:progress", ...progress }),
+      onFinalResponseStart: () => postToPort({ type: "assistant:final-start" }),
       onToolTurnMessage: (assistantMessage: ChatMessage) => postToPort({ type: "assistant:tool-turn", message: assistantMessage }),
       onToolCallStart: (record: ChatToolCallRecord) => postToPort({ type: "tool:start", record }),
       onToolCallComplete: (record: ChatToolCallRecord, attachments: ChatToolAttachment[]) => postToPort({ type: "tool:complete", record, attachments }),

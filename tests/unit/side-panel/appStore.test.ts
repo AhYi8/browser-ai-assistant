@@ -2113,6 +2113,201 @@ describe("appStore", () => {
     expect(disconnect).toHaveBeenCalled();
   });
 
+  it("普通对话每次发送都先创建消息占位", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    let portMessageListener: ((message: unknown) => void) | undefined;
+    const port = {
+      postMessage: vi.fn(),
+      disconnect: vi.fn(),
+      onMessage: {
+        addListener: vi.fn((listener: (message: unknown) => void) => {
+          portMessageListener = listener;
+        }),
+      },
+      onDisconnect: {
+        addListener: vi.fn(),
+      },
+    };
+    vi.stubGlobal("chrome", {
+      runtime: {
+        connect: vi.fn(() => port),
+        sendMessage: vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+          if (message.type === "pageContext.extract") {
+            callback({
+              ok: true,
+              url: "https://example.com/article",
+              text: "页面内容",
+              truncated: false,
+              usedFallback: false,
+            });
+          }
+
+          return undefined;
+        }),
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+
+    const sendPromise = useAppStore.getState().sendChatMessage("普通问题");
+    await vi.waitFor(() => {
+      expect(portMessageListener).toBeTypeOf("function");
+      expect(useAppStore.getState().chatSessions[0]?.messages.map((message) => message.content)).toEqual(["普通问题", ""]);
+    });
+
+    portMessageListener?.({ type: "complete", content: "普通回答" });
+    await sendPromise;
+
+    expect(useAppStore.getState().chatSessions[0]?.messages.map((message) => message.content)).toEqual(["普通问题", "普通回答"]);
+  });
+
+  it("收到 AI 请求重试进度后更新当前 AI 占位消息并在完成后清除", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    let portMessageListener: ((message: unknown) => void) | undefined;
+    const port = {
+      postMessage: vi.fn(),
+      disconnect: vi.fn(),
+      onMessage: {
+        addListener: vi.fn((listener: (message: unknown) => void) => {
+          portMessageListener = listener;
+        }),
+      },
+      onDisconnect: {
+        addListener: vi.fn(),
+      },
+    };
+    vi.stubGlobal("chrome", {
+      runtime: {
+        connect: vi.fn(() => port),
+        sendMessage: vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+          if (message.type === "pageContext.extract") {
+            callback({
+              ok: true,
+              url: "https://example.com/article",
+              text: "页面内容",
+              truncated: false,
+              usedFallback: false,
+            });
+          }
+
+          return undefined;
+        }),
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    await useAppStore.getState().refreshPageContext();
+
+    const sendPromise = useAppStore.getState().sendChatMessage("第一问");
+    await vi.waitFor(() => {
+      expect(portMessageListener).toBeTypeOf("function");
+    });
+
+    portMessageListener?.({ type: "retry:progress", currentRetry: 1, maxRetries: 5 });
+    await vi.waitFor(() => {
+      const assistantMessage = useAppStore.getState().chatSessions[0]?.messages[1];
+      expect(assistantMessage?.content).toBe("");
+      expect(assistantMessage?.streaming).toBe(true);
+      expect(useAppStore.getState().chatRetryProgressByMessageId[assistantMessage?.id ?? ""]).toEqual({
+        currentRetry: 1,
+        maxRetries: 5,
+      });
+    });
+
+    const assistantMessageId = useAppStore.getState().chatSessions[0]?.messages[1]?.id ?? "";
+    portMessageListener?.({ type: "retry:progress", currentRetry: 2, maxRetries: 5 });
+    await vi.waitFor(() => {
+      expect(useAppStore.getState().chatRetryProgressByMessageId[assistantMessageId]).toEqual({
+        currentRetry: 2,
+        maxRetries: 5,
+      });
+    });
+
+    portMessageListener?.({ type: "complete", content: "AI 回复" });
+    await sendPromise;
+
+    expect(useAppStore.getState().chatRetryProgressByMessageId[assistantMessageId]).toBeUndefined();
+    expect(useAppStore.getState().chatSessions[0]?.messages[1]).toMatchObject({
+      content: "AI 回复",
+      streaming: false,
+    });
+  });
+
+  it("AI 请求重试进度会在错误和用户取消后清除", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    let portMessageListener: ((message: unknown) => void) | undefined;
+    let portDisconnectListener: (() => void) | undefined;
+    const port = {
+      postMessage: vi.fn(),
+      disconnect: vi.fn(() => {
+        portDisconnectListener?.();
+      }),
+      onMessage: {
+        addListener: vi.fn((listener: (message: unknown) => void) => {
+          portMessageListener = listener;
+        }),
+      },
+      onDisconnect: {
+        addListener: vi.fn((listener: () => void) => {
+          portDisconnectListener = listener;
+        }),
+      },
+    };
+    vi.stubGlobal("chrome", {
+      runtime: {
+        connect: vi.fn(() => port),
+        sendMessage: vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+          if (message.type === "pageContext.extract") {
+            callback({ ok: true, url: "https://example.com/article", text: "页面内容", truncated: false, usedFallback: false });
+          }
+
+          return undefined;
+        }),
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    await useAppStore.getState().refreshPageContext();
+
+    const firstSendPromise = useAppStore.getState().sendChatMessage("第一问");
+    await vi.waitFor(() => expect(portMessageListener).toBeTypeOf("function"));
+    portMessageListener?.({ type: "retry:progress", currentRetry: 5, maxRetries: 5 });
+    const firstAssistantMessageId = await vi.waitFor(() => {
+      const messageId = useAppStore.getState().chatSessions[0]?.messages[1]?.id;
+      expect(messageId).toBeTruthy();
+      return messageId ?? "";
+    });
+    portMessageListener?.({ type: "error", message: "模型请求失败，请稍后重试" });
+    await firstSendPromise;
+
+    expect(useAppStore.getState().chatRetryProgressByMessageId[firstAssistantMessageId]).toBeUndefined();
+
+    const secondSendPromise = useAppStore.getState().sendChatMessage("第二问");
+    await vi.waitFor(() => {
+      const lastMessage = useAppStore.getState().chatSessions[0]?.messages.at(-1);
+      expect(lastMessage?.role).toBe("assistant");
+      expect(lastMessage?.streaming).toBe(true);
+    });
+    portMessageListener?.({ type: "retry:progress", currentRetry: 1, maxRetries: 5 });
+    const secondAssistantMessageId = useAppStore.getState().chatSessions[0]?.messages.at(-1)?.id ?? "";
+    useAppStore.getState().abortActiveChatTask();
+    await secondSendPromise;
+
+    expect(useAppStore.getState().chatRetryProgressByMessageId[secondAssistantMessageId]).toBeUndefined();
+  });
+
   it("切换到新会话后旧会话后台继续生成且新会话可以继续发送", async () => {
     const provider = createProvider();
     const model = createModel();
@@ -2432,6 +2627,93 @@ describe("appStore", () => {
       content: "模型响应中没有可用内容",
       streaming: false,
     });
+  });
+
+  it("工具调用流程仅在最终总结请求开始时创建占位消息", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    let portMessageListener: ((message: unknown) => void) | undefined;
+    const port = {
+      postMessage: vi.fn(),
+      disconnect: vi.fn(),
+      onMessage: {
+        addListener: vi.fn((listener: (message: unknown) => void) => {
+          portMessageListener = listener;
+        }),
+      },
+      onDisconnect: {
+        addListener: vi.fn(),
+      },
+    };
+    vi.stubGlobal("chrome", {
+      runtime: {
+        connect: vi.fn(() => port),
+        sendMessage: vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+          if (message.type === "pageContext.extract") {
+            callback({
+              ok: true,
+              url: "https://example.com/article",
+              text: "页面内容",
+              truncated: false,
+              usedFallback: false,
+            });
+          }
+
+          return undefined;
+        }),
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    useAppStore.setState((state) => ({
+      chatPreferences: {
+        ...state.chatPreferences,
+        toolCallingEnabled: true,
+        enabledToolIds: ["web_search.tavily"],
+      },
+    }));
+
+    const sendPromise = useAppStore.getState().sendChatMessage("需要搜索");
+    await vi.waitFor(() => {
+      expect(portMessageListener).toBeTypeOf("function");
+      expect(useAppStore.getState().chatSessions[0]?.messages.map((message) => message.content)).toEqual(["需要搜索"]);
+    });
+
+    portMessageListener?.({
+      type: "assistant:tool-turn",
+      message: {
+        id: "tool-turn-1",
+        role: "assistant",
+        assistantMessageKind: "tool_call_turn",
+        content: "需要先调用工具",
+        createdAt: 1,
+        modelId: model.id,
+        endpointType: "openai_chat",
+        streamMode: false,
+        systemPrompt: "你是网页助手",
+        contextPrompt: "页面内容",
+        contextMode: "text",
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(useAppStore.getState().chatSessions[0]?.messages.map((message) => message.content)).toEqual(["需要搜索", "需要先调用工具"]);
+    });
+    expect(useAppStore.getState().chatSessions[0]?.messages).toHaveLength(2);
+
+    portMessageListener?.({ type: "assistant:final-start" });
+    await vi.waitFor(() => {
+      expect(useAppStore.getState().chatSessions[0]?.messages.map((message) => message.content)).toEqual(["需要搜索", "需要先调用工具", ""]);
+    });
+
+    portMessageListener?.({ type: "chunk", content: "最终回答" });
+    portMessageListener?.({ type: "complete", content: "最终回答" });
+    await sendPromise;
+
+    expect(useAppStore.getState().chatSessions[0]?.messages.map((message) => message.content)).toEqual(["需要搜索", "需要先调用工具", "最终回答"]);
   });
 
   it("后台会话流式失败不会污染当前会话错误提示", async () => {
@@ -4183,6 +4465,58 @@ describe("appStore", () => {
 
     portMessageListener?.({ type: "complete", content: "隐私生成完成" });
     await sendPromise;
+  });
+
+  it("隐私模式 AI 请求重试进度只保存在临时状态并在完成后清除", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    let portMessageListener: ((message: unknown) => void) | undefined;
+    const port = {
+      postMessage: vi.fn(),
+      disconnect: vi.fn(),
+      onMessage: {
+        addListener: vi.fn((listener: (message: unknown) => void) => {
+          portMessageListener = listener;
+        }),
+      },
+      onDisconnect: {
+        addListener: vi.fn(),
+      },
+    };
+    vi.stubGlobal("chrome", { runtime: { connect: vi.fn(() => port), sendMessage: vi.fn() } });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    useAppStore.getState().setStreamMode(true);
+    await useAppStore.getState().enterPrivateMode();
+
+    const sendPromise = useAppStore.getState().sendChatMessage("隐私重试问题");
+    await vi.waitFor(() => expect(portMessageListener).toBeTypeOf("function"));
+
+    portMessageListener?.({ type: "retry:progress", currentRetry: 1, maxRetries: 5 });
+    const assistantMessageId = await vi.waitFor(() => {
+      const assistantMessage = useAppStore.getState().privateChatSession?.messages[1];
+      expect(assistantMessage?.content).toBe("");
+      expect(assistantMessage).toBeDefined();
+      expect(Object.prototype.hasOwnProperty.call(assistantMessage, "retryProgress")).toBe(false);
+      return assistantMessage?.id ?? "";
+    });
+    await vi.waitFor(() => {
+      expect(useAppStore.getState().chatRetryProgressByMessageId[assistantMessageId]).toEqual({
+        currentRetry: 1,
+        maxRetries: 5,
+      });
+    });
+
+    portMessageListener?.({ type: "complete", content: "隐私重试完成" });
+    await sendPromise;
+
+    expect(useAppStore.getState().chatRetryProgressByMessageId[assistantMessageId]).toBeUndefined();
+    expect(useAppStore.getState().privateChatSession?.messages[1]).toMatchObject({
+      content: "隐私重试完成",
+      streaming: false,
+    });
   });
 
   it("保存隐私会话后使用完整聊天记录重新生成标题", async () => {

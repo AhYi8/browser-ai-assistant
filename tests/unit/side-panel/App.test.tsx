@@ -4068,6 +4068,46 @@ describe("App", () => {
     expect(screen.queryByText("思考过程")).not.toBeInTheDocument();
   });
 
+  it("AI 请求重试进度在消息气泡上方显示并随状态清除", async () => {
+    await saveChatSession(
+      createChatSession({
+        id: "session-retry-progress",
+        title: "重试进度",
+        messages: [
+          createChatMessage({
+            id: "message-retry-progress",
+            content: "",
+            streaming: true,
+          }),
+        ],
+      }),
+    );
+
+    render(<App />);
+
+    await screen.findByText("重试进度");
+    act(() => {
+      useAppStore.setState({
+        chatRetryProgressByMessageId: {
+          "message-retry-progress": {
+            currentRetry: 1,
+            maxRetries: 5,
+          },
+        },
+      });
+    });
+
+    expect(await screen.findByRole("status")).toHaveTextContent("正在重试 1/5");
+
+    act(() => {
+      useAppStore.setState({ chatRetryProgressByMessageId: {} });
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText("正在重试 1/5")).not.toBeInTheDocument();
+    });
+  });
+
   it("流式思考过程超过五行时自动折叠", async () => {
     await saveChatSession(
       createChatSession({

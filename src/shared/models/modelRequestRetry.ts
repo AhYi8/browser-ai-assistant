@@ -12,6 +12,12 @@ export interface ModelRequestRetryOptions<T = unknown> {
   maxDelayMs?: number;
   shouldRetryResult?: (result: T) => boolean;
   onRetryResult?: (result: T) => Promise<void> | void;
+  onRetryScheduled?: (progress: ModelRequestRetryProgress) => Promise<void> | void;
+}
+
+export interface ModelRequestRetryProgress {
+  currentRetry: number;
+  maxRetries: number;
 }
 
 export function normalizeModelRequestRetryCount(value: unknown, fallback = DEFAULT_MODEL_REQUEST_RETRY_COUNT): number {
@@ -35,12 +41,14 @@ export async function withModelRequestRetry<T>(operation: () => Promise<T>, retr
         return result;
       }
       await options.onRetryResult?.(result);
+      await options.onRetryScheduled?.({ currentRetry: attempt, maxRetries: normalizedRetryCount });
       await waitBeforeRetry(attempt, result, options);
     } catch (error) {
       lastError = error;
       if (attempt === maxAttempts) {
         throw error;
       }
+      await options.onRetryScheduled?.({ currentRetry: attempt, maxRetries: normalizedRetryCount });
       await waitBeforeRetry(attempt, undefined, options);
     }
   }

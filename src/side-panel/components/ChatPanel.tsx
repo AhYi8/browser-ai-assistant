@@ -22,6 +22,7 @@ export function ChatPanel({ historyPanelOpen, onToggleHistoryPanel }: ChatPanelP
   const models = useAppStore((state) => state.models);
   const selectedModelId = useAppStore((state) => state.selectedModelId);
   const failure = useAppStore((state) => state.failure);
+  const chatRetryProgressByMessageId = useAppStore((state) => state.chatRetryProgressByMessageId);
   const regenerateMessage = useAppStore((state) => state.regenerateMessage);
   const editAndRegenerateUserMessage = useAppStore((state) => state.editAndRegenerateUserMessage);
   const sending = useAppStore((state) => state.sending);
@@ -149,6 +150,7 @@ export function ChatPanel({ historyPanelOpen, onToggleHistoryPanel }: ChatPanelP
       </div>
       <MessageList
         messages={activeSession?.messages ?? []}
+        retryProgressByMessageId={chatRetryProgressByMessageId}
         toolCallDisplayMode={toolCallDisplayMode}
         showToolCallProcessInAssistantMode={showToolCallProcessInAssistantMode}
         onRegenerateMessage={(messageId) => void regenerateMessage(messageId)}

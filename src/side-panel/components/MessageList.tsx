@@ -16,9 +16,11 @@ import { copyOrDownloadMessageImage, copyTextToClipboard } from "../utils/messag
 import type { ChatImageAttachment, ChatMessage, ChatPromptInvocation, ChatToolAttachment, ChatToolCallRecord, ToolCallDisplayMode } from "../../shared/types";
 import { MarkdownCodeBlock, MarkdownCodePre } from "./MarkdownCodeBlock";
 import { PromptInlineEditor, PromptTokenContent } from "./PromptInlineEditor";
+import type { ChatRetryProgress } from "../state/appStore";
 
 interface MessageListProps {
   messages: ChatMessage[];
+  retryProgressByMessageId: Record<string, ChatRetryProgress>;
   toolCallDisplayMode: ToolCallDisplayMode;
   showToolCallProcessInAssistantMode: boolean;
   onRegenerateMessage: (messageId: string) => void;
@@ -28,6 +30,7 @@ interface MessageListProps {
 
 export function MessageList({
   messages,
+  retryProgressByMessageId,
   toolCallDisplayMode,
   showToolCallProcessInAssistantMode,
   onRegenerateMessage,
@@ -136,11 +139,13 @@ export function MessageList({
         const hasPromptTokens = message.role === "user" && Boolean(message.promptInvocations?.length);
         const shouldRenderMessageBubble = hasVisibleContent || hasPromptTokens;
         const displayAttachments = displayAttachmentGroups.get(message.id) ?? [];
+        const retryProgress = message.role === "assistant" ? retryProgressByMessageId[message.id] : undefined;
         const hasVisibleArticle =
           message.role !== "assistant" ||
           !isToolCallTurn ||
           hasVisibleThinking ||
           hasVisibleContent ||
+          Boolean(retryProgress) ||
           Boolean(message.attachments?.length) ||
           Boolean(displayAttachments.length);
         const shouldShowPreArticleToolTimeline =
@@ -189,6 +194,7 @@ export function MessageList({
                 ))}
               </div>
             ) : null}
+            {retryProgress ? <MessageRetryProgress progress={retryProgress} /> : null}
             {editingMessageId === message.id ? (
               <div className="message-edit-panel">
                 <PromptInlineEditor
@@ -350,6 +356,15 @@ export function MessageList({
         </>
       ) : null}
     </section>
+  );
+}
+
+function MessageRetryProgress({ progress }: { progress: ChatRetryProgress }) {
+  return (
+    <div className="message-retry-progress" role="status" aria-live="polite">
+      <span className="message-retry-progress-dot" aria-hidden="true" />
+      <span>{`正在重试 ${progress.currentRetry}/${progress.maxRetries}`}</span>
+    </div>
   );
 }
 

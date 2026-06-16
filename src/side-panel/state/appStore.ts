@@ -183,6 +183,11 @@ interface SyncOperationState {
   error?: string;
 }
 
+export interface ChatRetryProgress {
+  currentRetry: number;
+  maxRetries: number;
+}
+
 export interface AppState {
   providers: ModelProvider[];
   models: ProviderModel[];
@@ -208,6 +213,7 @@ export interface AppState {
   composerHasDraft: boolean;
   chatTasksBySessionId: ChatTaskMap;
   dismissedChatTaskIdsBySessionId: Record<string, string>;
+  chatRetryProgressByMessageId: Record<string, ChatRetryProgress>;
   appendPageContextToSystemPrompt: boolean;
   streamMode: boolean;
   sending: boolean;
@@ -336,6 +342,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   composerHasDraft: false,
   chatTasksBySessionId: {},
   dismissedChatTaskIdsBySessionId: {},
+  chatRetryProgressByMessageId: {},
   appendPageContextToSystemPrompt: true,
   streamMode: true,
   sending: false,
@@ -978,6 +985,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       const chatTasksBySessionId = finishChatTask(state.chatTasksBySessionId, sessionId, "canceled", Date.now(), taskId);
       return {
         chatTasksBySessionId,
+        chatRetryProgressByMessageId: clearChatRetryProgressForSession(state, sessionId),
         sending: isSessionTaskRunning(chatTasksBySessionId, state.activeSessionId),
         ...(aborted ? { failure: undefined } : {}),
       };
@@ -1025,6 +1033,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       composerHasDraft: false,
       chatTasksBySessionId: {},
       dismissedChatTaskIdsBySessionId: {},
+      chatRetryProgressByMessageId: {},
       appendPageContextToSystemPrompt: true,
       streamMode: true,
       sending: false,
@@ -1543,10 +1552,27 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
       const chatTasksBySessionId = finishChatTask(current.chatTasksBySessionId, nextSession.id, taskStatus, Date.now(), chatTask.id);
       return {
         chatTasksBySessionId,
+        chatRetryProgressByMessageId: clearChatRetryProgressForSession(current, nextSession.id),
         sending: isSessionTaskRunning(chatTasksBySessionId, current.activeSessionId),
       };
     });
   }
+}
+
+function clearChatRetryProgressForSession(state: AppState, sessionId: string): Record<string, ChatRetryProgress> {
+  const session = state.privateModeActive && state.privateChatSession?.id === sessionId
+    ? state.privateChatSession
+    : state.chatSessions.find((item) => item.id === sessionId);
+  if (!session) {
+    return state.chatRetryProgressByMessageId;
+  }
+
+  const messageIds = new Set(session.messages.map((message) => message.id));
+  const nextProgress = { ...state.chatRetryProgressByMessageId };
+  for (const messageId of messageIds) {
+    delete nextProgress[messageId];
+  }
+  return nextProgress;
 }
 
 function createAndStoreModel(

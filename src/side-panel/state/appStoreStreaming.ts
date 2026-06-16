@@ -7,7 +7,7 @@ import type {
   EndpointType,
   PageContextExtractMode,
 } from "../../shared/types";
-import type { AppChatSendMessage, AppState, StoreSetter } from "./appStore";
+import type { AppChatSendMessage, AppState, ChatRetryProgress, StoreSetter } from "./appStore";
 import { upsertSession } from "./appStoreSessionUtils";
 
 const STREAM_FAILURE_MESSAGE = "流式响应异常中断，请重新生成后重试";
@@ -16,6 +16,8 @@ const STREAM_CANCELED_MESSAGE = "已终止本次生成。";
 type ChatStreamPortMessage =
   | { type: "chunk"; content: string }
   | { type: "thinking"; content: string }
+  | { type: "retry:progress"; currentRetry: number; maxRetries: number }
+  | { type: "assistant:final-start" }
   | { type: "assistant:tool-turn"; message: ChatMessage }
   | { type: "tool:start"; record: ChatToolCallRecord }
   | { type: "tool:complete"; record: ChatToolCallRecord; attachments?: ChatToolAttachment[] }
@@ -138,6 +140,7 @@ export async function sendStreamingChatMessage(input: StreamingChatInput): Promi
   const usesTools = Boolean(input.request.enabledToolIds?.length);
   let assistantMessage: ChatMessage | undefined = usesTools ? undefined : await createAssistantPlaceholder(input);
   let currentToolTurnMessageId: string | undefined;
+  let pendingRetryProgress: ChatRetryProgress | undefined;
   if (!usesTools && !assistantMessage) {
     return { completed: true };
   }
@@ -185,6 +188,9 @@ export async function sendStreamingChatMessage(input: StreamingChatInput): Promi
       }
 
       assistantMessage = await createAssistantPlaceholder(input);
+      if (assistantMessage && pendingRetryProgress) {
+        updateAssistantRetryProgress(assistantMessage.id, pendingRetryProgress, input.set);
+      }
       return assistantMessage;
     };
 
@@ -193,6 +199,7 @@ export async function sendStreamingChatMessage(input: StreamingChatInput): Promi
         void enqueueWrite(async () => {
           const finalAssistantMessage = await ensureFinalAssistantMessage();
           if (finalAssistantMessage) {
+            clearAssistantRetryProgress(finalAssistantMessage.id, input.set);
             await appendAssistantChunk(input.sessionId, finalAssistantMessage.id, message.content, input.set, input.privateMode);
           }
         });
@@ -203,8 +210,32 @@ export async function sendStreamingChatMessage(input: StreamingChatInput): Promi
         void enqueueWrite(async () => {
           const finalAssistantMessage = await ensureFinalAssistantMessage();
           if (finalAssistantMessage) {
+            clearAssistantRetryProgress(finalAssistantMessage.id, input.set);
             await appendAssistantThinkingChunk(input.sessionId, finalAssistantMessage.id, message.content, input.set, input.privateMode);
           }
+        });
+        return;
+      }
+
+      if (message.type === "retry:progress") {
+        void enqueueWrite(async () => {
+          if (!isValidRetryProgress(message)) {
+            return;
+          }
+          pendingRetryProgress = {
+            currentRetry: message.currentRetry,
+            maxRetries: message.maxRetries,
+          };
+          if (assistantMessage) {
+            updateAssistantRetryProgress(assistantMessage.id, pendingRetryProgress, input.set);
+          }
+        });
+        return;
+      }
+
+      if (message.type === "assistant:final-start") {
+        void enqueueWrite(async () => {
+          await ensureFinalAssistantMessage();
         });
         return;
       }
@@ -242,6 +273,8 @@ export async function sendStreamingChatMessage(input: StreamingChatInput): Promi
           if (!finalAssistantMessage) {
             return;
           }
+          pendingRetryProgress = undefined;
+          clearAssistantRetryProgress(finalAssistantMessage.id, input.set);
           await finalizeAssistantMessage(input.sessionId, finalAssistantMessage.id, message.content, message.thinking, input.set, input.privateMode, {
             reasoningContent: message.reasoningContent,
             toolAttachments: mergeToolAttachments(input.toolAttachments, message.toolAttachments),
@@ -257,6 +290,8 @@ export async function sendStreamingChatMessage(input: StreamingChatInput): Promi
       void enqueueWrite(async () => {
         const finalAssistantMessage = await ensureFinalAssistantMessage();
         if (finalAssistantMessage) {
+          pendingRetryProgress = undefined;
+          clearAssistantRetryProgress(finalAssistantMessage.id, input.set);
           await failAssistantMessage(input.sessionId, finalAssistantMessage.id, failureMessage, input.set, input.privateMode);
         }
       }).then(() => finish({ completed: true, failed: true }));
@@ -275,6 +310,8 @@ export async function sendStreamingChatMessage(input: StreamingChatInput): Promi
           }
           const finalAssistantMessage = await ensureFinalAssistantMessage();
           if (finalAssistantMessage) {
+            pendingRetryProgress = undefined;
+            clearAssistantRetryProgress(finalAssistantMessage.id, input.set);
             await failAssistantMessage(input.sessionId, finalAssistantMessage.id, STREAM_CANCELED_MESSAGE, input.set, input.privateMode);
           }
         }).then(() => finish({ completed: true, canceled: true }, { disconnect: false }));
@@ -287,6 +324,8 @@ export async function sendStreamingChatMessage(input: StreamingChatInput): Promi
       void enqueueWrite(async () => {
         const finalAssistantMessage = await ensureFinalAssistantMessage();
         if (finalAssistantMessage) {
+          pendingRetryProgress = undefined;
+          clearAssistantRetryProgress(finalAssistantMessage.id, input.set);
           await failAssistantMessage(input.sessionId, finalAssistantMessage.id, STREAM_FAILURE_MESSAGE, input.set, input.privateMode);
         }
       }).then(() => finish({ completed: true, failed: true }, { disconnect: false }));
@@ -297,6 +336,43 @@ export async function sendStreamingChatMessage(input: StreamingChatInput): Promi
       payload: input.request,
     });
   });
+}
+
+function updateAssistantRetryProgress(messageId: string, progress: ChatRetryProgress, set: StoreSetter): void {
+  if (!isValidRetryProgress(progress)) {
+    return;
+  }
+
+  set((current) => ({
+    chatRetryProgressByMessageId: {
+      ...current.chatRetryProgressByMessageId,
+      [messageId]: {
+        currentRetry: progress.currentRetry,
+        maxRetries: progress.maxRetries,
+      },
+    },
+  }));
+}
+
+function clearAssistantRetryProgress(messageId: string, set: StoreSetter): void {
+  set((current) => {
+    if (!current.chatRetryProgressByMessageId[messageId]) {
+      return {};
+    }
+
+    const nextProgress = { ...current.chatRetryProgressByMessageId };
+    delete nextProgress[messageId];
+    return { chatRetryProgressByMessageId: nextProgress };
+  });
+}
+
+function isValidRetryProgress(progress: ChatRetryProgress): boolean {
+  return (
+    Number.isInteger(progress.currentRetry) &&
+    Number.isInteger(progress.maxRetries) &&
+    progress.currentRetry >= 1 &&
+    progress.maxRetries >= progress.currentRetry
+  );
 }
 
 function resolveStreamPortFailureMessage(message: ChatStreamPortMessage): string {
@@ -345,44 +421,6 @@ async function failAssistantMessage(
   }));
 
   set((current) => updateAssistantMessageInState(current, sessionId, messageId, applyFailure));
-}
-
-async function removeAssistantMessage(sessionId: string, messageId: string, set: StoreSetter, privateMode = false): Promise<void> {
-  if (privateMode) {
-    set((current) => {
-      const session = current.privateChatSession;
-      if (!current.privateModeActive || !session || session.id !== sessionId) {
-        return {};
-      }
-
-      return {
-        privateChatSession: {
-          ...session,
-          messages: session.messages.filter((message) => message.id !== messageId),
-        },
-      };
-    });
-    return;
-  }
-
-  await updateChatSession(sessionId, (latestSession) => ({
-    ...latestSession,
-    messages: latestSession.messages.filter((message) => message.id !== messageId),
-  }));
-
-  set((current) => {
-    const session = current.chatSessions.find((item) => item.id === sessionId);
-    if (!session) {
-      return {};
-    }
-
-    return {
-      chatSessions: upsertSession(current.chatSessions, {
-        ...session,
-        messages: session.messages.filter((message) => message.id !== messageId),
-      }),
-    };
-  });
 }
 
 async function appendAssistantThinkingChunk(sessionId: string, messageId: string, content: string, set: StoreSetter, privateMode = false): Promise<void> {

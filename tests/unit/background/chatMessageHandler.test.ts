@@ -118,7 +118,7 @@ describe("聊天模型请求处理", () => {
   it("模型请求遇到可恢复失败时会按请求配置重试", async () => {
     const fetcher = vi
       .fn()
-      .mockResolvedValueOnce(new Response("busy", { status: 500, statusText: "Server Error" }))
+      .mockResolvedValueOnce(new Response("busy", { status: 429, statusText: "Too Many Requests", headers: { "Retry-After": "0" } }))
       .mockResolvedValueOnce(
         new Response(
           JSON.stringify({
@@ -151,6 +151,36 @@ describe("聊天模型请求处理", () => {
       thinking: undefined,
     });
     expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it("模型请求遇到可恢复失败时会回调重试进度", async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("busy", { status: 500, statusText: "Server Error" }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            choices: [{ message: { content: "重试成功" } }],
+          }),
+          { status: 200 },
+        ),
+      );
+    const onRetryProgress = vi.fn();
+
+    const result = await handleChatSendMessage(
+      {
+        type: "chat.send",
+        model: createModel(),
+        messages: [createMessage("user", "总结页面")],
+        stream: false,
+        retryCount: 5,
+      },
+      fetcher,
+      { onRetryProgress },
+    );
+
+    expect(result).toMatchObject({ ok: true, content: "重试成功" });
+    expect(onRetryProgress).toHaveBeenCalledWith({ currentRetry: 1, maxRetries: 5 });
   });
 
   it("非流式响应正文解析失败时会重新发起模型请求", async () => {
