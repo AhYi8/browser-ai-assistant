@@ -165,7 +165,7 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResp
     return true;
   }
 
-  if (message.type === "browserControl.setEnabled") {
+  if (message.type === "browserControl.setEnabled" || message.type === "browserControl.setRuntimeReadonly") {
     void handleBrowserControlMessage(message, _sender).then(sendResponse);
     return true;
   }

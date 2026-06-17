@@ -1,4 +1,5 @@
 import type { ChatMessage, ChatToolAttachment, ChatToolCallRecord } from "../types";
+import type { ToolRiskCapability } from "../toolAuthorization";
 
 export interface ModelRequestPayload {
   url: string;
@@ -16,6 +17,7 @@ export interface ModelToolRegistryEntry extends ModelToolDefinition {
   id: string;
   displayName?: string;
   groupId?: string;
+  requiredCapabilities?: ToolRiskCapability[];
 }
 
 export interface ModelToolCall {

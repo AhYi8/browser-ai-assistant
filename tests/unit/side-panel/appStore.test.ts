@@ -197,7 +197,7 @@ describe("appStore 网络搜索", () => {
     });
   });
 
-  it("浏览器快照工具只在全局浏览器控制运行态开启时随聊天请求暴露", async () => {
+  it("浏览器工具随浏览器控制暴露，runtime 工具还需要运行时只读授权", async () => {
     const provider = createProvider();
     const model = createModel();
     const sendMessage = vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
@@ -215,14 +215,17 @@ describe("appStore 网络搜索", () => {
       chatPreferences: {
         ...state.chatPreferences,
         toolCallingEnabled: true,
-        enabledToolIds: ["web_search.tavily", "browser.take_snapshot", "browser.click"],
+        enabledToolIds: ["web_search.tavily", "browser.take_snapshot", "browser.click", "runtime.inspect_globals"],
       },
       browserControlEnabled: false,
+      runtimeReadonlyEnabled: false,
     }));
 
     await useAppStore.getState().sendChatMessage("未开启浏览器控制");
     useAppStore.setState({ browserControlEnabled: true });
     await useAppStore.getState().sendChatMessage("已开启浏览器控制");
+    useAppStore.setState({ runtimeReadonlyEnabled: true });
+    await useAppStore.getState().sendChatMessage("已开启运行时只读");
 
     const chatRequests = sendMessage.mock.calls
       .map(([message]) => message as { type: string; enabledToolIds?: string[] })
@@ -253,6 +256,12 @@ describe("appStore 网络搜索", () => {
       "sourcemap.list_candidates",
       "sourcemap.resolve_location",
       "sourcemap.extract_original_context",
+    ]);
+    expect(chatRequests[2].enabledToolIds).toEqual([
+      ...chatRequests[1].enabledToolIds!,
+      "runtime.inspect_globals",
+      "runtime.search_modules",
+      "runtime.describe_function",
     ]);
   });
 });

@@ -6,7 +6,12 @@ import {
   handleBrowserControlMessage,
   handleBrowserControlTabRemoved,
 } from "../../../src/background/browserControlMessageHandler";
-import { BROWSER_CONTROL_SET_ENABLED_MESSAGE_TYPE, isBrowserControlRestrictedUrl } from "../../../src/shared/browserControl";
+import {
+  BROWSER_CONTROL_RUNTIME_READONLY_CHANGED_MESSAGE_TYPE,
+  BROWSER_CONTROL_SET_ENABLED_MESSAGE_TYPE,
+  BROWSER_CONTROL_SET_RUNTIME_READONLY_MESSAGE_TYPE,
+  isBrowserControlRestrictedUrl,
+} from "../../../src/shared/browserControl";
 
 function createToolCall(argumentsValue: Record<string, unknown> = {}): ModelToolCall {
   return {
@@ -370,6 +375,84 @@ describe("浏览器控制地基", () => {
 
     expect(manager.setEnabled).toHaveBeenCalledWith(true, 8);
     expect(response).toEqual({ ok: true, attached: true, tabId: 8, message: "已开启" });
+  });
+
+  it("运行时只读授权消息会转发到浏览器控制管理器", async () => {
+    const manager = {
+      setRuntimeReadonlyEnabled: vi.fn(() => ({ ok: true as const, attached: true, tabId: 8, message: "已开启" })),
+    } as unknown as BrowserControlManager;
+
+    const response = await handleBrowserControlMessage(
+      { type: BROWSER_CONTROL_SET_RUNTIME_READONLY_MESSAGE_TYPE, enabled: true, reason: "测试" },
+      { tab: { id: 8 } as chrome.tabs.Tab },
+      manager,
+    );
+
+    expect(manager.setRuntimeReadonlyEnabled).toHaveBeenCalledWith(true, "测试");
+    expect(response).toEqual({ ok: true, attached: true, tabId: 8, message: "已开启" });
+  });
+
+  it("runtime 工具未额外授权时拒绝执行，授权后使用固定 Runtime.evaluate", async () => {
+    const chromeMock = createChromeMock({
+      sendCommandResults: {
+        "Runtime.evaluate": { result: { value: [{ path: "__APP_CONFIG__", exists: true, value: { entries: [["safe", { value: "ok" }]] } }] } },
+      },
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 7);
+    const blocked = await manager.executeRuntimeReadTool(createNamedToolCall("runtime_inspect_globals", { paths: ["window.__APP_CONFIG__"] }));
+    expect(blocked).toMatchObject({
+      isError: true,
+      content: "运行时只读分析未授权，无法执行 runtime.* 工具。请先显式开启运行时只读分析。",
+    });
+
+    expect(manager.setRuntimeReadonlyEnabled(true)).toMatchObject({ ok: true, attached: true, expiresAt: expect.any(Number) });
+    const result = await manager.executeRuntimeReadTool(createNamedToolCall("runtime_inspect_globals", { paths: ["window.__APP_CONFIG__"] }));
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain("运行时全局摘要");
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith(
+      { tabId: 7 },
+      "Runtime.evaluate",
+      expect.objectContaining({
+        awaitPromise: false,
+        returnByValue: true,
+        expression: expect.stringContaining("__APP_CONFIG__"),
+      }),
+      expect.any(Function),
+    );
+    expect(chromeMock.runtime.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: BROWSER_CONTROL_RUNTIME_READONLY_CHANGED_MESSAGE_TYPE,
+        enabled: true,
+        tabId: 7,
+        expiresAt: expect.any(Number),
+      }),
+      expect.any(Function),
+    );
+  });
+
+  it("切换受控页面会清理运行时只读授权", async () => {
+    const chromeMock = createChromeMock({
+      tabs: [
+        { id: 7, title: "页面 A", url: "https://example.com/a", active: true, windowId: 1, groupId: -1 } as chrome.tabs.Tab & { id: number },
+        { id: 8, title: "页面 B", url: "https://example.com/b", active: false, windowId: 1, groupId: -1 } as chrome.tabs.Tab & { id: number },
+      ],
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 7);
+    expect(manager.setRuntimeReadonlyEnabled(true)).toMatchObject({ ok: true });
+    await manager.executeBrowserTool(createNamedToolCall("select_page", { index: 2 }));
+
+    expect(manager.canExposeRuntimeReadTool()).toBe(false);
+    expect(chromeMock.runtime.sendMessage).toHaveBeenCalledWith(
+      { type: BROWSER_CONTROL_RUNTIME_READONLY_CHANGED_MESSAGE_TYPE, enabled: false, tabId: 7 },
+      expect.any(Function),
+    );
   });
 
   it("已连接时读取 Accessibility Tree 并格式化为带 UID 的页面快照", async () => {

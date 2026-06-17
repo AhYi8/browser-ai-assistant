@@ -1,4 +1,12 @@
-import { BROWSER_TAKE_SNAPSHOT_TOOL_ID, BROWSER_TAKE_SNAPSHOT_TOOL_NAME, CURRENT_TIME_TOOL_NAME, TAVILY_SEARCH_TOOL_NAME } from "../shared/models/toolRegistry";
+import {
+  BROWSER_TAKE_SNAPSHOT_TOOL_ID,
+  BROWSER_TAKE_SNAPSHOT_TOOL_NAME,
+  CURRENT_TIME_TOOL_NAME,
+  RUNTIME_DESCRIBE_FUNCTION_TOOL_ID,
+  RUNTIME_INSPECT_GLOBALS_TOOL_ID,
+  RUNTIME_SEARCH_MODULES_TOOL_ID,
+  TAVILY_SEARCH_TOOL_NAME,
+} from "../shared/models/toolRegistry";
 import type { ModelRequestMessage, ModelSystemMessage, ModelToolCall, ModelToolDefinition, ModelToolExecutor, ModelToolRegistryEntry } from "../shared/models/types";
 import type { ModelConfig } from "../shared/types";
 import { createWebSearchToolAttachment } from "../shared/toolArtifacts";
@@ -42,6 +50,10 @@ export function shouldExposeTool(tool: ModelToolRegistryEntry): boolean {
     return browserControlManager.canExposeNetworkTool();
   }
 
+  if (tool.id.startsWith("runtime.")) {
+    return browserControlManager.canExposeRuntimeReadTool();
+  }
+
   return true;
 }
 
@@ -73,6 +85,12 @@ export function createBackgroundToolExecutor(message: BackgroundToolExecutorMess
 
     if (tool.id.startsWith("sourcemap.")) {
       return browserControlManager.executeSourceMapTool(toolCall);
+    }
+
+    if (tool.id === RUNTIME_INSPECT_GLOBALS_TOOL_ID ||
+      tool.id === RUNTIME_SEARCH_MODULES_TOOL_ID ||
+      tool.id === RUNTIME_DESCRIBE_FUNCTION_TOOL_ID) {
+      return browserControlManager.executeRuntimeReadTool(toolCall);
     }
 
     if (tool.name === TAVILY_SEARCH_TOOL_NAME) {

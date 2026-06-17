@@ -1,5 +1,5 @@
 import { DEFAULT_MODEL_REQUEST_RETRY_COUNT, normalizeModelRequestRetryCount } from "../../shared/models/modelRequestRetry";
-import { getRegisteredModelTools, isBrowserAutomationToolId, normalizeEnabledToolIds } from "../../shared/models/toolRegistry";
+import { getRegisteredModelTools, isBrowserAutomationToolId, isRuntimeReadonlyToolId, normalizeEnabledToolIds } from "../../shared/models/toolRegistry";
 import type {
   ChatPreferenceValues,
   ChatSessionPreferenceOverrides,
@@ -147,10 +147,15 @@ function normalizeUserEditableToolIds(value: unknown): string[] {
   return normalizeEnabledToolIds(value).filter((toolId) => !isBrowserAutomationToolId(toolId));
 }
 
-export function resolveRuntimeEnabledToolIds(enabledToolIds: string[], browserControlEnabled: boolean): string[] {
+export function resolveRuntimeEnabledToolIds(enabledToolIds: string[], browserControlEnabled: boolean, runtimeReadonlyEnabled = false): string[] {
   const registeredTools = getRegisteredModelTools();
-  const browserToolIds = registeredTools.filter((tool) => isBrowserAutomationToolId(tool.id)).map((tool) => tool.id);
-  const baseIds = enabledToolIds.filter((toolId) => browserControlEnabled || !isBrowserAutomationToolId(toolId));
+  const browserToolIds = registeredTools
+    .filter((tool) => isBrowserAutomationToolId(tool.id) && (runtimeReadonlyEnabled || !isRuntimeReadonlyToolId(tool.id)))
+    .map((tool) => tool.id);
+  const baseIds = enabledToolIds.filter((toolId) =>
+    (browserControlEnabled || !isBrowserAutomationToolId(toolId)) &&
+    (runtimeReadonlyEnabled || !isRuntimeReadonlyToolId(toolId))
+  );
 
   if (!browserControlEnabled) {
     return baseIds;

@@ -231,6 +231,34 @@ describe("background 入口", () => {
     expect(mock.chrome.debugger.attach).toHaveBeenCalledWith({ tabId: 7 }, "1.3", expect.any(Function));
   });
 
+  it("处理运行时只读授权消息并返回响应", async () => {
+    const mock = createChromeMock();
+    vi.stubGlobal("chrome", mock.chrome);
+    await import("../../../src/background/index");
+
+    const enableResponse = vi.fn();
+    mock.messageListeners[0](
+      { type: "browserControl.setEnabled", enabled: true },
+      { tab: { id: 7 } as chrome.tabs.Tab },
+      enableResponse,
+    );
+    await vi.waitFor(() => {
+      expect(enableResponse).toHaveBeenCalledWith(expect.objectContaining({ ok: true, attached: true, tabId: 7 }));
+    });
+
+    const sendResponse = vi.fn();
+    const keepChannel = mock.messageListeners[0](
+      { type: "browserControl.setRuntimeReadonly", enabled: true, reason: "测试" },
+      { tab: { id: 7 } as chrome.tabs.Tab },
+      sendResponse,
+    );
+
+    expect(keepChannel).toBe(true);
+    await vi.waitFor(() => {
+      expect(sendResponse).toHaveBeenCalledWith(expect.objectContaining({ ok: true, attached: true, tabId: 7, message: "运行时只读分析已临时开启。" }));
+    });
+  });
+
   it("浏览器启动时根据已保存设置恢复自动同步定时任务", async () => {
     const mock = createChromeMock();
     vi.stubGlobal("chrome", mock.chrome);

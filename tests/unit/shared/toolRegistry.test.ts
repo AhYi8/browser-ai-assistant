@@ -32,6 +32,12 @@ import {
   JS_EXTRACT_CONTEXT_TOOL_ID,
   JS_LIST_RESOURCES_TOOL_ID,
   JS_SEARCH_SOURCES_TOOL_ID,
+  RUNTIME_DESCRIBE_FUNCTION_TOOL_ID,
+  RUNTIME_DESCRIBE_FUNCTION_TOOL_NAME,
+  RUNTIME_INSPECT_GLOBALS_TOOL_ID,
+  RUNTIME_INSPECT_GLOBALS_TOOL_NAME,
+  RUNTIME_SEARCH_MODULES_TOOL_ID,
+  RUNTIME_SEARCH_MODULES_TOOL_NAME,
   SOURCEMAP_EXTRACT_ORIGINAL_CONTEXT_TOOL_ID,
   SOURCEMAP_LIST_CANDIDATES_TOOL_ID,
   SOURCEMAP_RESOLVE_LOCATION_TOOL_ID,
@@ -268,6 +274,9 @@ describe("模型工具注册表", () => {
       SOURCEMAP_LIST_CANDIDATES_TOOL_ID,
       SOURCEMAP_RESOLVE_LOCATION_TOOL_ID,
       SOURCEMAP_EXTRACT_ORIGINAL_CONTEXT_TOOL_ID,
+      RUNTIME_INSPECT_GLOBALS_TOOL_ID,
+      RUNTIME_SEARCH_MODULES_TOOL_ID,
+      RUNTIME_DESCRIBE_FUNCTION_TOOL_ID,
     ]);
   });
 
@@ -345,6 +354,26 @@ describe("模型工具注册表", () => {
     });
   });
 
+  it("注册运行时只读工具并声明高风险只读能力", () => {
+    const tools = getRegisteredModelTools();
+
+    expect(tools.find((tool) => tool.id === RUNTIME_INSPECT_GLOBALS_TOOL_ID)).toMatchObject({
+      name: RUNTIME_INSPECT_GLOBALS_TOOL_NAME,
+      requiredCapabilities: ["browser_control", "network_read", "runtime_readonly"],
+      parameters: { type: "object", required: ["paths"], additionalProperties: false },
+    });
+    expect(tools.find((tool) => tool.id === RUNTIME_SEARCH_MODULES_TOOL_ID)).toMatchObject({
+      name: RUNTIME_SEARCH_MODULES_TOOL_NAME,
+      requiredCapabilities: ["browser_control", "network_read", "runtime_readonly"],
+      parameters: { type: "object", required: ["keywords"], additionalProperties: false },
+    });
+    expect(tools.find((tool) => tool.id === RUNTIME_DESCRIBE_FUNCTION_TOOL_ID)).toMatchObject({
+      name: RUNTIME_DESCRIBE_FUNCTION_TOOL_NAME,
+      requiredCapabilities: ["browser_control", "network_read", "runtime_readonly"],
+      parameters: { type: "object", required: ["path"], additionalProperties: false },
+    });
+  });
+
   it("对外工具函数名兼容 OpenAI-compatible 命名规则", () => {
     const tools = getRegisteredModelTools();
 
@@ -363,6 +392,9 @@ describe("模型工具注册表", () => {
         "sourcemap_list_candidates",
         "sourcemap_resolve_location",
         "sourcemap_extract_original_context",
+        "runtime_inspect_globals",
+        "runtime_search_modules",
+        "runtime_describe_function",
       ]),
     );
     expect(tools.every((tool) => /^[a-zA-Z0-9_-]+$/.test(tool.name))).toBe(true);

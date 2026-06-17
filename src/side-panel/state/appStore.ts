@@ -53,7 +53,11 @@ import type {
   SendShortcut,
   WebSearchSettings,
 } from "../../shared/types";
-import { BROWSER_CONTROL_SET_ENABLED_MESSAGE_TYPE, type BrowserControlResponse } from "../../shared/browserControl";
+import {
+  BROWSER_CONTROL_SET_ENABLED_MESSAGE_TYPE,
+  BROWSER_CONTROL_SET_RUNTIME_READONLY_MESSAGE_TYPE,
+  type BrowserControlResponse,
+} from "../../shared/browserControl";
 import {
   createChatFolderAction,
   moveChatSessionToFolderAction,
@@ -206,6 +210,7 @@ export interface AppState {
   defaultChatModelId: string;
   chatPreferences: ChatPreferenceValues;
   browserControlEnabled: boolean;
+  runtimeReadonlyEnabled: boolean;
   activeSessionId: string;
   privateModeActive: boolean;
   privateChatSession?: ChatSession;
@@ -235,7 +240,9 @@ export interface AppState {
   updateChatPreferences: (updates: Partial<ChatPreferenceValues>) => Promise<void>;
   updateActiveSessionChatPreferences: (updates: ChatSessionPreferenceOverrides) => Promise<void>;
   setBrowserControlEnabled: (enabled: boolean) => Promise<void>;
+  setRuntimeReadonlyEnabled: (enabled: boolean) => Promise<void>;
   markBrowserControlDetached: () => void;
+  markRuntimeReadonlyChanged: (enabled: boolean) => void;
   deleteProvider: (providerId: string) => void;
   deleteModel: (modelId: string) => void;
   loadChannelConfig: () => Promise<void>;
@@ -336,6 +343,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   defaultChatModelId: "",
   chatPreferences: DEFAULT_CHAT_PREFERENCES,
   browserControlEnabled: false,
+  runtimeReadonlyEnabled: false,
   activeSessionId: "",
   privateModeActive: false,
   privateChatSession: undefined,
@@ -538,7 +546,10 @@ export const useAppStore = create<AppState>()((set, get) => ({
       return;
     }
 
-    set({ browserControlEnabled: enabled });
+    set({
+      browserControlEnabled: enabled,
+      ...(enabled ? {} : { runtimeReadonlyEnabled: false }),
+    });
     const response = await syncBrowserControlEnabled(enabled);
     if (!response.ok) {
       set({
@@ -547,8 +558,32 @@ export const useAppStore = create<AppState>()((set, get) => ({
       });
     }
   },
+  setRuntimeReadonlyEnabled: async (enabled) => {
+    const previousEnabled = get().runtimeReadonlyEnabled;
+    if (previousEnabled === enabled) {
+      return;
+    }
+    if (enabled && !get().browserControlEnabled) {
+      set({ failure: { message: "请先开启浏览器控制，再开启运行时只读分析。" } });
+      return;
+    }
+
+    set({ runtimeReadonlyEnabled: enabled });
+    const response = await syncRuntimeReadonlyEnabled(enabled);
+    if (!response.ok) {
+      set({
+        runtimeReadonlyEnabled: previousEnabled,
+        failure: { message: response.message },
+      });
+    }
+  },
   markBrowserControlDetached: () => {
-    set({ browserControlEnabled: false });
+    set({ browserControlEnabled: false, runtimeReadonlyEnabled: false });
+  },
+  markRuntimeReadonlyChanged: (enabled) => {
+    set((state) => ({
+      runtimeReadonlyEnabled: enabled && state.browserControlEnabled,
+    }));
   },
   deleteProvider: (providerId) => {
     let sessionToPersist: ChatSession | undefined;
@@ -1042,6 +1077,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       syncSecrets: DEFAULT_SYNC_SECRETS,
       webSearchSettings: DEFAULT_WEB_SEARCH_SETTINGS,
       browserControlEnabled: false,
+      runtimeReadonlyEnabled: false,
       syncOperation: {
         loading: false,
       },
@@ -1390,7 +1426,10 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
     void titleGenerationPromise;
 
     const enabledTools = effectiveChatPreferences.toolCallingEnabled
-      ? resolveEnabledModelTools(getRegisteredModelTools(), resolveRuntimeEnabledToolIds(effectiveChatPreferences.enabledToolIds, input.state.browserControlEnabled))
+      ? resolveEnabledModelTools(
+          getRegisteredModelTools(),
+          resolveRuntimeEnabledToolIds(effectiveChatPreferences.enabledToolIds, input.state.browserControlEnabled, input.state.runtimeReadonlyEnabled),
+        )
       : [];
     const enabledToolIds = enabledTools.map((tool) => tool.id);
     const requestStreamMode = input.state.streamMode;
@@ -1673,5 +1712,13 @@ async function syncBrowserControlEnabled(enabled: boolean): Promise<BrowserContr
   return sendRuntimeMessage<BrowserControlResponse>({
     type: BROWSER_CONTROL_SET_ENABLED_MESSAGE_TYPE,
     enabled,
+  });
+}
+
+async function syncRuntimeReadonlyEnabled(enabled: boolean): Promise<BrowserControlResponse> {
+  return sendRuntimeMessage<BrowserControlResponse>({
+    type: BROWSER_CONTROL_SET_RUNTIME_READONLY_MESSAGE_TYPE,
+    enabled,
+    reason: "用户在侧边栏临时开启运行时只读分析。",
   });
 }

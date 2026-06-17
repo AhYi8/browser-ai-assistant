@@ -3704,23 +3704,36 @@ describe("App", () => {
     const setBrowserControlEnabled = vi.fn(async (enabled: boolean) => {
       useAppStore.setState({ browserControlEnabled: enabled });
     });
+    const setRuntimeReadonlyEnabled = vi.fn(async (enabled: boolean) => {
+      useAppStore.setState({ runtimeReadonlyEnabled: enabled });
+    });
     useAppStore.setState({
       browserControlEnabled: false,
+      runtimeReadonlyEnabled: false,
       setBrowserControlEnabled,
+      setRuntimeReadonlyEnabled,
     });
 
     render(<App />);
 
     const browserControlButton = screen.getByRole("button", { name: "浏览器控制" });
+    const runtimeReadonlyButton = screen.getByRole("button", { name: "运行时只读分析" });
     const settingsButton = screen.getByRole("button", { name: "设置" });
-    expect(browserControlButton.nextElementSibling).toBe(settingsButton);
+    expect(browserControlButton.nextElementSibling).toBe(runtimeReadonlyButton);
+    expect(runtimeReadonlyButton.nextElementSibling).toBe(settingsButton);
     expect(browserControlButton).toHaveClass("ui-button-secondary", "app-header-icon-button");
+    expect(runtimeReadonlyButton).toHaveClass("ui-button-secondary", "app-header-icon-button");
     expect(settingsButton).toHaveClass("ui-button-secondary", "app-header-icon-button");
     expect(browserControlButton).toHaveTextContent("");
+    expect(runtimeReadonlyButton).toHaveTextContent("");
     expect(settingsButton).toHaveTextContent("");
     expect(browserControlButton).not.toHaveClass("browser-control-global-button-active");
+    expect(runtimeReadonlyButton).not.toHaveClass("runtime-readonly-global-button-active");
     expect(browserControlButton).toHaveAttribute("aria-pressed", "false");
+    expect(runtimeReadonlyButton).toHaveAttribute("aria-pressed", "false");
+    expect(runtimeReadonlyButton).toBeDisabled();
     expect(browserControlButton).toHaveAttribute("title", expect.stringContaining("Chrome 调试协议"));
+    expect(runtimeReadonlyButton).toHaveAttribute("title", expect.stringContaining("不会开放任意脚本"));
     expect(settingsButton).toHaveAttribute("title", "设置");
     expect(browserControlButton.querySelector(".app-header-icon")).not.toBeNull();
     expect([...browserControlButton.querySelectorAll(".app-header-icon path")].map((path) => path.getAttribute("d")).join(" ")).not.toContain("l-2 3");
@@ -3732,10 +3745,17 @@ describe("App", () => {
     expect(setBrowserControlEnabled).toHaveBeenCalledWith(true);
     await waitFor(() => expect(screen.getByRole("button", { name: "浏览器控制" })).toHaveAttribute("aria-pressed", "true"));
     expect(screen.getByRole("button", { name: "浏览器控制" })).toHaveClass("browser-control-global-button-active");
+    expect(screen.getByRole("button", { name: "运行时只读分析" })).not.toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "运行时只读分析" }));
+    expect(setRuntimeReadonlyEnabled).toHaveBeenCalledWith(true);
+    await waitFor(() => expect(screen.getByRole("button", { name: "运行时只读分析" })).toHaveAttribute("aria-pressed", "true"));
+    expect(screen.getByRole("button", { name: "运行时只读分析" })).toHaveClass("runtime-readonly-global-button-active");
 
     const styles = readFileSync(resolve(process.cwd(), "src/side-panel/styles.css"), "utf8");
     expect(styles).toContain(".app-header-icon-button");
     expect(styles.indexOf(".ui-button-secondary.browser-control-global-button-active")).toBeGreaterThan(styles.indexOf(".ui-button-secondary"));
+    expect(styles).toContain(".ui-button-secondary.runtime-readonly-global-button-active");
   });
 
   it("用户点击 Chrome 调试提示栏取消后回滚全局浏览器控制按钮状态", async () => {
@@ -3752,7 +3772,7 @@ describe("App", () => {
         },
       },
     });
-    useAppStore.setState({ browserControlEnabled: true });
+    useAppStore.setState({ browserControlEnabled: true, runtimeReadonlyEnabled: true });
 
     const { unmount } = render(<App />);
 
@@ -3767,6 +3787,69 @@ describe("App", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "浏览器控制" })).toHaveAttribute("aria-pressed", "false"));
     expect(screen.getByRole("button", { name: "浏览器控制" })).not.toHaveClass("browser-control-global-button-active");
     expect(useAppStore.getState().browserControlEnabled).toBe(false);
+    expect(useAppStore.getState().runtimeReadonlyEnabled).toBe(false);
+
+    unmount();
+
+    expect(removeListener).toHaveBeenCalledWith(runtimeListener);
+  });
+
+  it("运行时只读授权被 background 清理或过期后回滚按钮状态", async () => {
+    let runtimeListener: ((message: unknown) => void) | undefined;
+    const addListener = vi.fn((listener: (message: unknown) => void) => {
+      runtimeListener = listener;
+    });
+    const removeListener = vi.fn();
+    vi.stubGlobal("chrome", {
+      runtime: {
+        onMessage: {
+          addListener,
+          removeListener,
+        },
+      },
+    });
+    useAppStore.setState({ browserControlEnabled: true, runtimeReadonlyEnabled: false });
+
+    const { unmount } = render(<App />);
+
+    act(() => {
+      runtimeListener?.({
+        type: "browserControl.runtimeReadonlyChanged",
+        enabled: true,
+        tabId: 9,
+        expiresAt: Date.now() + 60_000,
+      });
+    });
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "运行时只读分析" })).toHaveAttribute("aria-pressed", "true"));
+
+    act(() => {
+      runtimeListener?.({
+        type: "browserControl.runtimeReadonlyChanged",
+        enabled: true,
+        tabId: 9,
+        expiresAt: Date.now(),
+      });
+    });
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "运行时只读分析" })).toHaveAttribute("aria-pressed", "false"));
+
+    act(() => {
+      runtimeListener?.({
+        type: "browserControl.runtimeReadonlyChanged",
+        enabled: true,
+        tabId: 9,
+        expiresAt: Date.now() + 1000,
+      });
+      runtimeListener?.({
+        type: "browserControl.runtimeReadonlyChanged",
+        enabled: false,
+        tabId: 9,
+      });
+    });
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "运行时只读分析" })).toHaveAttribute("aria-pressed", "false"));
+    expect(useAppStore.getState().runtimeReadonlyEnabled).toBe(false);
 
     unmount();
 

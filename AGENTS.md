@@ -284,7 +284,16 @@
 * `source-map` 工具附件必须通过通用 `toolAttachments` 保存、展示、导出和后续上下文注入；历史归一化和聚合必须保留候选来源、映射位置、原始片段、失败摘要、`redacted` 与 `truncated` 标记。
 * `source-map` 原始片段即使未实际替换敏感词，也必须标记为已进入脱敏管道；UI 展示、工具正文、导出和后续追问上下文只能输出 `resourceId`、行列、原始 source、name、ignored、sourcesContent 状态和中文失败摘要，不得直接 `JSON.stringify` 完整对象或暴露完整 `resourceUrl`；候选展示只能显示 inline、外部 Source Map 或无 URL 摘要，不得直接渲染完整 map URL。
 * Source Map 原始源码片段展示、导出和再次注入模型前必须复用敏感赋值脱敏和截断规则，避免泄露 Cookie、Authorization、Token、API Key、Secret、Password、Session、CSRF 等凭据。
-* 受控只读 `Runtime.evaluate`、请求重放沙箱、敏感字段解锁等更高风险 Web 逆向能力默认关闭；未单独完成权限、确认、沙箱、脱敏、审计和测试设计前不得实现或暗中启用。
+* `runtime.inspect_globals`、`runtime.search_modules`、`runtime.describe_function` 可作为下一阶段受控只读 `Runtime.evaluate` 工具方向；它们属于浏览器自动化工具组，但必须额外满足单独高风险只读授权，未授权时 Side Panel 和 background 都不得下发或执行 `runtime.*`。
+* `runtime.*` 已接入统一工具注册表，OpenAI-compatible 函数名固定为 `runtime_inspect_globals`、`runtime_search_modules`、`runtime_describe_function`；浏览器控制开启时不得自动启用该组，必须同时满足 `runtimeReadonlyEnabled` 前端运行态和 background `runtime_readonly` 授权上下文。
+* `runtime.*` 工具不得接收模型传入的任意 JavaScript 表达式，只能接收路径、关键词、模块索引、数量上限和摘要半径等结构化参数，并由独立执行器拼装固定只读模板；危险路径段、超长输入、超预算结果和疑似副作用用途必须 fail closed。
+* `runtime.*` 解析 CDP `Runtime.evaluate` 响应时必须显式校验响应层级类型；用户输入路径允许 `window.` / `globalThis.` 作为控制台书写习惯前缀，但执行固定模板前必须统一剥离并继续套用危险字段校验。
+* `runtime.*` 固定模板读取对象属性时必须优先通过自有 data property 描述符读取，accessor 属性必须跳过并标记；每个属性读取都要独立容错，避免 getter 或页面对象异常把“只读摘要”变成页面业务代码执行或整轮工具失败。
+* `runtime.*` 只允许读取公开全局配置、模块缓存摘要和函数摘要；不得 DOM 写入、表单填写、点击、导航、刷新、发起网络请求、调用页面业务函数，或读取 Cookie、LocalStorage、SessionStorage、IndexedDB 等敏感存储。
+* `runtime.*` 结果必须脱敏、截断并限制对象深度、数组/对象条目数、函数字符串长度和总字节数；字符串中出现 Cookie、Authorization、Bearer、JWT、API Key、Secret、Password、Session、CSRF 等敏感值时必须按值级或整段脱敏，不能只替换字段名；默认只作为 tool message 回灌模型，未完成附件 kind、展示、导出、历史归一化和后续追问上下文设计前不得生成用户可见 `toolAttachments`。
+* 阶段四高风险只读授权不得持久化到聊天偏好、会话历史、同步快照或导出内容；刷新、重载、关闭浏览器控制、切换受控 tab、导航、刷新或 debugger detach 后必须回到关闭状态，background 清理或授权过期时必须广播运行时只读状态变化，让 Side Panel 运行态同步收口。
+* `full_access_reserved` 只能作为未来阶段授权占位；当前阶段所有执行器遇到该授权必须 fail closed，不得借该占位关闭脱敏、关闭只读限制或放行任意脚本。
+* 受控只读 `Runtime.evaluate` 之外的请求重放沙箱、敏感字段解锁等更高风险 Web 逆向能力仍默认关闭；未单独完成权限、确认、沙箱、脱敏、审计和测试设计前不得实现或暗中启用。
 * 修改 Network 工具、浏览器控制 debugger allow-list、manifest、background 入口或工具注册时，最小验证必须覆盖相关 vitest、`npm run typecheck` 和 `npm run build:extension`；涉及真实扩展加载路径时还应运行 `npx playwright test --project=chrome-extension`。
 * Network 工具化与完整 Web 逆向路线的主规划文档统一维护在 `docs/Network工具化与Web逆向自动化规划.md`；该文档必须与当前实现保持一致，旧版 DevTools Network 手动连接方案只可作为历史背景，不得作为当前操作说明继续传播。
 

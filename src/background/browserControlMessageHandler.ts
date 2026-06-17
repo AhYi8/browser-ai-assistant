@@ -1,12 +1,16 @@
 import {
   BROWSER_CONTROL_DETACHED_MESSAGE_TYPE,
+  BROWSER_CONTROL_RUNTIME_READONLY_CHANGED_MESSAGE_TYPE,
   BROWSER_CONTROL_SET_ENABLED_MESSAGE_TYPE,
+  BROWSER_CONTROL_SET_RUNTIME_READONLY_MESSAGE_TYPE,
   getBrowserControlTabUrl,
   isBrowserControlRestrictedUrl,
   type BrowserControlMessage,
   type BrowserControlResponse,
 } from "../shared/browserControl";
 import type { ModelToolCall, ModelToolResult } from "../shared/models/types";
+import type { ToolAuthorizationContext } from "../shared/toolAuthorization";
+import { NORMAL_TOOL_AUTHORIZATION_CONTEXT, isRuntimeReadonlyAuthorized } from "../shared/toolAuthorization";
 import {
   BrowserControlActionExecutor,
   createBrowserActionDisabledResult,
@@ -17,6 +21,7 @@ import { BrowserNetworkRecorder } from "./browserControl/networkRecorder";
 import { BrowserNetworkToolExecutor } from "./browserControl/networkToolExecutor";
 import { JsSourceToolExecutor } from "./browserControl/jsSourceToolExecutor";
 import { SourceMapToolExecutor } from "./browserControl/sourceMapToolExecutor";
+import { RuntimeReadToolExecutor } from "./browserControl/runtimeReadToolExecutor";
 
 type Debuggee = chrome.debugger.Debuggee;
 type ChromeApi = typeof chrome;
@@ -633,6 +638,8 @@ export class BrowserControlManager {
   private readonly networkToolExecutor: BrowserNetworkToolExecutor;
   private readonly jsSourceToolExecutor: JsSourceToolExecutor;
   private readonly sourceMapToolExecutor: SourceMapToolExecutor;
+  private readonly runtimeReadToolExecutor: RuntimeReadToolExecutor;
+  private toolAuthorizationContext: ToolAuthorizationContext = NORMAL_TOOL_AUTHORIZATION_CONTEXT;
 
   constructor(
     private readonly connection = new BrowserDebuggerConnection(),
@@ -651,9 +658,11 @@ export class BrowserControlManager {
       jsSourceIndex: this.jsSourceToolExecutor.getIndex(),
       getCurrentPageUrl: async () => (await this.getTargetTabInfo()).url,
     });
+    this.runtimeReadToolExecutor = new RuntimeReadToolExecutor(this.connection, () => this.getRuntimeToolAuthorizationContext());
     this.networkToolExecutor = new BrowserNetworkToolExecutor(this.networkRecorder, () => {
       this.jsSourceToolExecutor.clear();
       this.sourceMapToolExecutor.clear();
+      this.clearRuntimeReadonlyAuthorization();
     });
     this.connection.installDetachListener((tabId, reason) => {
       if (this.suppressNextDetachTabId === tabId) {
@@ -666,6 +675,7 @@ export class BrowserControlManager {
       this.controlledTabIds.clear();
       this.snapshotManager.clearSnapshotCache();
       this.stopNetworkAnalysis();
+      this.clearRuntimeReadonlyAuthorization();
       this.notifyDetached(tabId, normalizeDetachReason(reason));
     });
     this.connection.installEventListener();
@@ -680,6 +690,7 @@ export class BrowserControlManager {
     this.controlledTabIds.delete(tabId);
     this.snapshotManager.clearSnapshotCache();
     this.stopNetworkAnalysis();
+    this.clearRuntimeReadonlyAuthorization();
     this.notifyDetached(tabId, "tab_removed");
     void this.connection.detach(tabId).catch(() => {
       // 标签页关闭期间 detach 只是尽力清理；异常不能冒泡成未处理 Promise。
@@ -697,6 +708,7 @@ export class BrowserControlManager {
       this.controlledTabIds.clear();
       this.snapshotManager.clearSnapshotCache();
       this.stopNetworkAnalysis();
+      this.clearRuntimeReadonlyAuthorization();
       this.notifyDetached(detachedTabId, "disabled_by_user");
       return { ok: true, attached: false, message: "浏览器控制已关闭。" };
     }
@@ -728,6 +740,7 @@ export class BrowserControlManager {
       this.targetTabId = undefined;
       this.controlledTabIds.clear();
       this.stopNetworkAnalysis();
+      this.clearRuntimeReadonlyAuthorization();
     } else if (this.connection.attachedTabId) {
       this.startNetworkAnalysis(this.connection.attachedTabId);
     }
@@ -747,6 +760,39 @@ export class BrowserControlManager {
     return this.canExposeBrowserTool() && this.networkRecorder.isEnabled;
   }
 
+  canExposeRuntimeReadTool(): boolean {
+    if (!this.canExposeNetworkTool()) {
+      this.clearRuntimeReadonlyAuthorization();
+      return false;
+    }
+
+    return this.getRuntimeToolAuthorizationContext().mode === "runtime_readonly";
+  }
+
+  setRuntimeReadonlyEnabled(enabled: boolean, reason = "用户临时开启运行时只读分析。"): BrowserControlResponse {
+    if (!enabled) {
+      this.clearRuntimeReadonlyAuthorization();
+      return { ok: true, attached: this.connection.isAttached, tabId: this.connection.attachedTabId, message: "运行时只读分析已关闭。" };
+    }
+
+    if (!this.canExposeNetworkTool() || typeof this.connection.attachedTabId !== "number") {
+      this.clearRuntimeReadonlyAuthorization();
+      return { ok: false, message: "浏览器控制或 Network 采集未开启，无法开启运行时只读分析。" };
+    }
+
+    const now = Date.now();
+    const expiresAt = now + 30 * 60 * 1000;
+    this.toolAuthorizationContext = {
+      mode: "runtime_readonly",
+      tabId: this.connection.attachedTabId,
+      createdAt: now,
+      expiresAt,
+      reason,
+    };
+    this.notifyRuntimeReadonlyChanged(true, this.connection.attachedTabId, expiresAt);
+    return { ok: true, attached: true, tabId: this.connection.attachedTabId, expiresAt, message: "运行时只读分析已临时开启。" };
+  }
+
   async executeNetworkTool(toolCall: ModelToolCall): Promise<ModelToolResult> {
     return this.networkToolExecutor.execute(toolCall);
   }
@@ -758,6 +804,14 @@ export class BrowserControlManager {
   async executeSourceMapTool(toolCall: ModelToolCall): Promise<ModelToolResult> {
     await this.jsSourceToolExecutor.refreshResourcesForAnalysis();
     return this.sourceMapToolExecutor.execute(toolCall);
+  }
+
+  async executeRuntimeReadTool(toolCall: ModelToolCall): Promise<ModelToolResult> {
+    if (!this.canExposeRuntimeReadTool()) {
+      return createBrowserToolErrorResult(toolCall, "运行时只读分析未授权，无法执行 runtime.* 工具。请先显式开启运行时只读分析。");
+    }
+
+    return this.runtimeReadToolExecutor.execute(toolCall);
   }
 
   async takeSnapshot(toolCall: ModelToolCall): Promise<ModelToolResult> {
@@ -856,12 +910,14 @@ export class BrowserControlManager {
       this.snapshotManager.clearSnapshotCache();
       this.jsSourceToolExecutor.clear();
       this.sourceMapToolExecutor.clear();
+      this.clearRuntimeReadonlyAuthorization();
       content = `已导航到 ${urlResult.url}。`;
     } else if (action === "reload") {
       await this.connection.reload();
       this.snapshotManager.clearSnapshotCache();
       this.jsSourceToolExecutor.clear();
       this.sourceMapToolExecutor.clear();
+      this.clearRuntimeReadonlyAuthorization();
       content = "已刷新当前页面。";
     } else {
       const history = normalizeNavigationHistory(await this.connection.getNavigationHistory());
@@ -874,6 +930,7 @@ export class BrowserControlManager {
       this.snapshotManager.clearSnapshotCache();
       this.jsSourceToolExecutor.clear();
       this.sourceMapToolExecutor.clear();
+      this.clearRuntimeReadonlyAuthorization();
       content = action === "back" ? "已后退到上一页。" : "已前进到下一页。";
     }
 
@@ -954,6 +1011,7 @@ export class BrowserControlManager {
       this.controlledTabIds.clear();
       this.snapshotManager.clearSnapshotCache();
       this.stopNetworkAnalysis();
+      this.clearRuntimeReadonlyAuthorization();
       this.notifyDetached(detachedTabId, "tab_removed");
       return `已关闭当前受控页面 ${index}，浏览器控制后台受控列表内没有其他可控页面。`;
     }
@@ -967,12 +1025,14 @@ export class BrowserControlManager {
     this.snapshotManager.clearSnapshotCache();
     this.jsSourceToolExecutor.clear();
     this.sourceMapToolExecutor.clear();
+    this.clearRuntimeReadonlyAuthorization();
     this.targetTabId = tabId;
     this.controlledTabIds.add(tabId);
     const attachResult = await this.connection.attach(tabId);
     if (!attachResult.ok) {
       this.targetTabId = undefined;
       this.stopNetworkAnalysis();
+      this.clearRuntimeReadonlyAuthorization();
       throw new Error(attachResult.message);
     }
     this.startNetworkAnalysis(tabId);
@@ -981,13 +1041,32 @@ export class BrowserControlManager {
   private startNetworkAnalysis(tabId: number): void {
     this.jsSourceToolExecutor.clear();
     this.sourceMapToolExecutor.clear();
+    this.clearRuntimeReadonlyAuthorization();
     this.networkRecorder.start(tabId);
   }
 
   private stopNetworkAnalysis(): void {
     this.jsSourceToolExecutor.clear();
     this.sourceMapToolExecutor.clear();
+    this.clearRuntimeReadonlyAuthorization();
     this.networkRecorder.stop();
+  }
+
+  private getRuntimeToolAuthorizationContext(): ToolAuthorizationContext {
+    if (isRuntimeReadonlyAuthorized(this.toolAuthorizationContext, this.connection.attachedTabId)) {
+      return this.toolAuthorizationContext;
+    }
+
+    this.clearRuntimeReadonlyAuthorization();
+    return NORMAL_TOOL_AUTHORIZATION_CONTEXT;
+  }
+
+  private clearRuntimeReadonlyAuthorization(): void {
+    const previous = this.toolAuthorizationContext;
+    this.toolAuthorizationContext = NORMAL_TOOL_AUTHORIZATION_CONTEXT;
+    if (previous.mode === "runtime_readonly") {
+      this.notifyRuntimeReadonlyChanged(false, previous.tabId);
+    }
   }
 
   private async waitAfterPageChange(content: string): Promise<string> {
@@ -1113,6 +1192,19 @@ export class BrowserControlManager {
     }, () => {
       const lastError = this.chromeApi?.runtime?.lastError;
       // Side Panel 未打开时广播可能没有接收者，读取 lastError 避免 MV3 runtime 噪声。
+      void lastError?.message;
+    });
+  }
+
+  private notifyRuntimeReadonlyChanged(enabled: boolean, tabId: number | undefined, expiresAt?: number): void {
+    this.chromeApi?.runtime?.sendMessage?.({
+      type: BROWSER_CONTROL_RUNTIME_READONLY_CHANGED_MESSAGE_TYPE,
+      enabled,
+      tabId,
+      ...(expiresAt === undefined ? {} : { expiresAt }),
+    }, () => {
+      const lastError = this.chromeApi?.runtime?.lastError;
+      // Side Panel 未打开时广播可能没有接收者；读取 lastError 避免 MV3 runtime 噪声。
       void lastError?.message;
     });
   }
@@ -1343,12 +1435,16 @@ export async function handleBrowserControlMessage(
   sender?: chrome.runtime.MessageSender,
   manager = browserControlManager,
 ): Promise<BrowserControlResponse> {
-  if (message.type !== BROWSER_CONTROL_SET_ENABLED_MESSAGE_TYPE) {
-    return { ok: false, message: "未知的浏览器控制请求。" };
+  if (message.type === BROWSER_CONTROL_SET_RUNTIME_READONLY_MESSAGE_TYPE) {
+    return manager.setRuntimeReadonlyEnabled(message.enabled, message.reason);
   }
 
-  const tabId = message.tabId ?? sender?.tab?.id;
-  return manager.setEnabled(message.enabled, tabId);
+  if (message.type === BROWSER_CONTROL_SET_ENABLED_MESSAGE_TYPE) {
+    const tabId = message.tabId ?? sender?.tab?.id;
+    return manager.setEnabled(message.enabled, tabId);
+  }
+
+  return { ok: false, message: "未知的浏览器控制请求。" };
 }
 
 export function handleBrowserControlTabRemoved(tabId: number, manager = browserControlManager): void {
