@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { collectMessageToolAttachments, collectRawMessageToolAttachments, formatToolAttachmentForExport, formatToolAttachmentForPrompt, normalizeToolAttachment } from "../../../src/shared/toolArtifacts";
-import type { ChatMessage } from "../../../src/shared/types";
+import { collectMessageToolAttachments, collectRawMessageToolAttachments, createAutomationReportToolAttachment, formatToolAttachmentForExport, formatToolAttachmentForPrompt, normalizeToolAttachment } from "../../../src/shared/toolArtifacts";
+import type { ChatMessage, ChatToolCallRecord } from "../../../src/shared/types";
 
 function createAssistantMessage(partial: Partial<ChatMessage>): ChatMessage {
   return {
@@ -14,6 +14,19 @@ function createAssistantMessage(partial: Partial<ChatMessage>): ChatMessage {
     systemPrompt: "你是网页助手",
     contextPrompt: "",
     contextMode: "text",
+    ...partial,
+  };
+}
+
+function createToolRecord(partial: Partial<ChatToolCallRecord>): ChatToolCallRecord {
+  return {
+    id: "call-1",
+    toolId: "browser.get_page_state",
+    name: "browser_get_page_state",
+    displayName: "浏览器页面状态",
+    arguments: {},
+    status: "success",
+    startedAt: 1,
     ...partial,
   };
 }
@@ -171,6 +184,183 @@ describe("通用工具附件聚合", () => {
       { title: "Tavily Docs", url: "https://docs.tavily.com/search", content: "Search endpoint." },
       { title: "Chrome Extensions", url: "https://developer.chrome.com/docs/extensions", content: "Chrome extension docs." },
     ]);
+  });
+
+  it("自动化报告附件可归一化、导出并用于后续追问上下文", () => {
+    const attachment = normalizeToolAttachment({
+      id: "automation-report-1",
+      kind: "automation-report",
+      title: "自动化任务报告",
+      summary: "任务报告：总步骤=2，成功=1，失败=1",
+      createdAt: 10,
+      redacted: true,
+      truncated: false,
+      objective: "排查登录失败 token=secret",
+      conclusion: "发现 Network 500 token=secret",
+      fullAccessIncluded: false,
+      timeline: [
+        {
+          id: "event-1",
+          type: "tool_call",
+          at: 1,
+          label: "调用页面状态工具",
+          detail: "读取 token=secret",
+          toolCallId: "call-1",
+          status: "success",
+        },
+        {
+          id: "event-2",
+          type: "failure_recovery",
+          at: 4,
+          label: "失败恢复建议",
+          detail: "检查 password=123456 后重试",
+          toolCallId: "call-2",
+          status: "error",
+        },
+      ],
+      steps: [
+        {
+          toolCallId: "call-1",
+          toolName: "get_page_state",
+          displayName: "浏览器页面状态",
+          status: "success",
+          startedAt: 1,
+          completedAt: 2,
+          evidence: "页面已加载 token=secret",
+          attachmentKinds: ["network"],
+        },
+        {
+          toolCallId: "call-2",
+          toolName: "network_list_requests",
+          displayName: "列出 Network 请求",
+          status: "error",
+          startedAt: 3,
+          completedAt: 4,
+          evidence: "请求失败 password=123456",
+        },
+      ],
+      failureSummary: {
+        failedStepCount: 1,
+        failedTools: ["列出 Network 请求"],
+        recoverableActions: ["检查失败步骤的参数、页面状态或授权边界后重试。"],
+      },
+    });
+
+    expect(attachment).toMatchObject({
+      kind: "automation-report",
+      redacted: true,
+      reportType: "interface_analysis",
+      objective: "排查登录失败 token=[已脱敏]",
+      conclusion: "发现 Network 500 token=[已脱敏]",
+      timeline: [
+        expect.objectContaining({ detail: "读取 token=[已脱敏]" }),
+        expect.objectContaining({ detail: "检查 password=[已脱敏] 后重试" }),
+      ],
+      steps: [
+        expect.objectContaining({ evidence: "页面已加载 token=[已脱敏]" }),
+        expect.objectContaining({ evidence: "请求失败 password=[已脱敏]" }),
+      ],
+    });
+    expect(formatToolAttachmentForPrompt(attachment!)).toContain("后续追问需要继续参考以下自动化任务报告");
+    expect(formatToolAttachmentForPrompt(attachment!)).not.toContain("secret");
+    expect(formatToolAttachmentForPrompt(attachment!)).not.toContain("123456");
+    expect(formatToolAttachmentForExport(attachment!)).toContain("# 自动化任务报告附件");
+    expect(formatToolAttachmentForExport(attachment!)).toContain("任务类型：接口分析");
+    expect(formatToolAttachmentForExport(attachment!)).toContain("时间线：");
+    expect(formatToolAttachmentForExport(attachment!)).toContain("失败恢复建议");
+    expect(formatToolAttachmentForExport(attachment!)).toContain("失败工具：列出 Network 请求");
+    expect(formatToolAttachmentForExport(attachment!)).not.toContain("secret");
+    expect(formatToolAttachmentForExport(attachment!)).not.toContain("123456");
+  });
+
+  it("自动化报告会按工具证据推导页面巡检和表单诊断任务类型", () => {
+    const pageInspectionReport = createAutomationReportToolAttachment({
+      objective: "巡检页面状态",
+      conclusion: "页面加载正常。",
+      records: [
+        createToolRecord({
+          id: "call-page",
+          toolId: "browser.get_page_state",
+          name: "browser_get_page_state",
+          displayName: "浏览器页面状态",
+          resultSummary: "页面已加载",
+        }),
+        createToolRecord({
+          id: "call-console",
+          toolId: "browser.get_console_messages",
+          name: "browser_get_console_messages",
+          displayName: "读取 Console 消息",
+          resultSummary: "无错误",
+        }),
+      ],
+    });
+    const formDiagnosisReport = createAutomationReportToolAttachment({
+      objective: "诊断表单提交失败",
+      conclusion: "必填字段缺失。",
+      records: [
+        createToolRecord({
+          id: "call-form",
+          toolId: "browser.analyze_form",
+          name: "browser_analyze_form",
+          displayName: "分析表单",
+          resultSummary: "发现 1 个必填字段缺失",
+        }),
+      ],
+    });
+
+    expect(pageInspectionReport?.reportType).toBe("page_inspection");
+    expect(formDiagnosisReport?.reportType).toBe("form_diagnosis");
+    expect(formatToolAttachmentForPrompt(pageInspectionReport!)).toContain("任务类型：页面巡检");
+    expect(formatToolAttachmentForPrompt(formDiagnosisReport!)).toContain("任务类型：表单诊断");
+  });
+
+  it("自动化报告会把等待、用户确认和页面变化记录到时间线", () => {
+    const attachment = createAutomationReportToolAttachment({
+      objective: "完成跨页表单操作",
+      conclusion: "已经完成确认。",
+      createdAt: 50,
+      records: [
+        createToolRecord({
+          id: "call-navigate",
+          toolId: "browser.navigate_page",
+          name: "browser_navigate_page",
+          displayName: "浏览器页面导航",
+          status: "success",
+          startedAt: 1,
+          completedAt: 2,
+          resultSummary: "已跳转到下一页",
+        }),
+        createToolRecord({
+          id: "call-wait",
+          toolId: "browser.wait_for_state",
+          name: "browser_wait_for_state",
+          displayName: "等待页面状态",
+          status: "success",
+          startedAt: 3,
+          completedAt: 4,
+          resultSummary: "readyState=complete",
+        }),
+        createToolRecord({
+          id: "call-confirm",
+          toolId: "boundary.request_user_choice",
+          name: "boundary_request_user_choice",
+          displayName: "请求用户确认",
+          status: "success",
+          startedAt: 5,
+          completedAt: 6,
+          resultSummary: "用户确认继续",
+        }),
+      ],
+    });
+
+    expect(attachment?.timeline).toEqual([
+      expect.objectContaining({ type: "page_change", toolCallId: "call-navigate", detail: "已跳转到下一页" }),
+      expect.objectContaining({ type: "wait", toolCallId: "call-wait", detail: "readyState=complete" }),
+      expect.objectContaining({ type: "user_confirmation", toolCallId: "call-confirm", detail: "用户确认继续" }),
+    ]);
+    expect(formatToolAttachmentForPrompt(attachment!)).toContain("[page_change]");
+    expect(formatToolAttachmentForPrompt(attachment!)).toContain("[wait]");
+    expect(formatToolAttachmentForPrompt(attachment!)).toContain("[user_confirmation]");
   });
 
   it("会把同一工具的通用附件合并为一个附件", () => {
@@ -504,6 +694,35 @@ describe("通用工具附件聚合", () => {
       truncated: true,
     });
     expect("details" in attachment && attachment.details?.length).toBeLessThan(longDetails.length);
+  });
+
+  it("归一化浏览器截图附件并在后续追问中只提供元数据", () => {
+    const attachment = normalizeToolAttachment({
+      id: "attachment-screenshot",
+      kind: "browser-screenshot",
+      title: "浏览器截图",
+      summary: "当前视口截图，PNG，3 B。",
+      sourceToolCallId: "call-screenshot",
+      createdAt: 2,
+      redacted: false,
+      truncated: false,
+      mediaType: "image/png",
+      dataUrl: "data:image/png;base64,QUJD",
+      target: "viewport",
+      byteSize: 3,
+    });
+
+    expect(attachment).toMatchObject({
+      kind: "browser-screenshot",
+      mediaType: "image/png",
+      dataUrl: "data:image/png;base64,QUJD",
+      target: "viewport",
+      byteSize: 3,
+    });
+    expect(formatToolAttachmentForPrompt(attachment!)).toContain("后续追问可参考一张历史浏览器截图附件");
+    expect(formatToolAttachmentForPrompt(attachment!)).not.toContain("QUJD");
+    expect(formatToolAttachmentForExport(attachment!)).toContain("# 浏览器截图附件");
+    expect(formatToolAttachmentForExport(attachment!)).not.toContain("QUJD");
   });
 
   it("归一化并聚合 JS 源码附件，导出和后续追问保留片段上下文", () => {

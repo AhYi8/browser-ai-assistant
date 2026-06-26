@@ -218,7 +218,28 @@ describe("background 工具运行时封装", () => {
       content: expect.stringContaining("一般知识、开发建议或未指向当前浏览器现场的问题不要调用浏览器工具"),
     });
     expect(result[0]).toMatchObject({
+      content: expect.stringContaining("按观察页面、操作页面、分析现场、请求确认、交付结果组织工具调用"),
+    });
+    expect(result[0]).toMatchObject({
+      content: expect.stringContaining("优先使用观察页面工具确认现场，再执行操作页面工具"),
+    });
+    expect(result[0]).toMatchObject({
+      content: expect.stringContaining("高风险或最高风险工具结果不能替代用户确认"),
+    });
+    expect(result[0]).toMatchObject({
       content: expect.stringContaining("当前页面信息不足时，先使用 list_pages 或 select_page"),
+    });
+    expect(result[0]).toMatchObject({
+      content: expect.stringContaining("优先调用 get_console_messages"),
+    });
+    expect(result[0]).toMatchObject({
+      content: expect.stringContaining("调用 collect_diagnostics"),
+    });
+    expect(result[0]).toMatchObject({
+      content: expect.stringContaining("再调用 find_elements"),
+    });
+    expect(result[0]).toMatchObject({
+      content: expect.stringContaining("再调用 inspect_element"),
     });
     expect(result[0]).toMatchObject({
       content: expect.not.stringContaining("Tavily 搜索"),
@@ -240,6 +261,15 @@ describe("background 工具运行时封装", () => {
     });
     expect(result[0]).toMatchObject({
       content: expect.stringContaining("用户提交前不要继续执行依赖该边界的分析或工具调用"),
+    });
+    expect(result[0]).toMatchObject({
+      content: expect.stringContaining("涉及表单提交、删除、付款、发布或发送消息时，先调用 boundary_request_user_choice"),
+    });
+    expect(result[0]).toMatchObject({
+      content: expect.stringContaining("涉及跨站点跳转或第三方授权页时，先调用 boundary_request_user_choice"),
+    });
+    expect(result[0]).toMatchObject({
+      content: expect.stringContaining("涉及文件上传、下载或本地文件路径时，先调用 boundary_request_user_choice"),
     });
   });
 

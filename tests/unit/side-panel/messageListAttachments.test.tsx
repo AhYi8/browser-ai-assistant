@@ -1,7 +1,8 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { aggregateDisplayAttachmentsByKind, getJsSourceAttachmentDisplayCount, MessageList } from "../../../src/side-panel/components/MessageList";
-import type { ChatJsSourceToolAttachment, ChatMessage, ChatNetworkToolAttachment } from "../../../src/shared/types";
+import type { ChatAutomationReportToolAttachment, ChatBrowserScreenshotToolAttachment, ChatJsSourceToolAttachment, ChatMessage, ChatNetworkToolAttachment } from "../../../src/shared/types";
 
 function createJsSourceAttachment(partial: Partial<ChatJsSourceToolAttachment>): ChatJsSourceToolAttachment {
   return {
@@ -45,7 +46,176 @@ function createNetworkAttachment(partial: Partial<ChatNetworkToolAttachment>): C
   };
 }
 
+function createScreenshotAttachment(partial: Partial<ChatBrowserScreenshotToolAttachment>): ChatBrowserScreenshotToolAttachment {
+  return {
+    id: "attachment-screenshot",
+    kind: "browser-screenshot",
+    title: "浏览器截图",
+    summary: "当前视口截图，PNG，3 B。",
+    createdAt: 1,
+    redacted: false,
+    truncated: false,
+    mediaType: "image/png",
+    dataUrl: "data:image/png;base64,QUJD",
+    target: "viewport",
+    byteSize: 3,
+    ...partial,
+  };
+}
+
+function createAutomationReportAttachment(partial: Partial<ChatAutomationReportToolAttachment>): ChatAutomationReportToolAttachment {
+  return {
+    id: "attachment-report",
+    kind: "automation-report",
+    title: "自动化任务报告",
+    summary: "任务报告：总步骤=2，成功=1，失败=1。",
+    createdAt: 1,
+    redacted: true,
+    truncated: false,
+    objective: "排查登录失败",
+    conclusion: "发现一个 Network 500。",
+    reportType: "interface_analysis",
+    fullAccessIncluded: false,
+    timeline: [
+      {
+        id: "event-1",
+        type: "tool_call",
+        at: 1,
+        label: "调用浏览器页面状态",
+        detail: "页面已加载",
+        toolCallId: "call-1",
+        status: "success",
+      },
+      {
+        id: "event-2",
+        type: "failure_recovery",
+        at: 4,
+        label: "失败恢复建议",
+        detail: "检查失败步骤的参数、页面状态或授权边界后重试。",
+        toolCallId: "call-2",
+        status: "error",
+      },
+    ],
+    steps: [
+      {
+        toolCallId: "call-1",
+        toolName: "get_page_state",
+        displayName: "浏览器页面状态",
+        status: "success",
+        startedAt: 1,
+        completedAt: 2,
+        evidence: "页面已加载",
+        attachmentKinds: [],
+      },
+      {
+        toolCallId: "call-2",
+        toolName: "network_list_requests",
+        displayName: "列出 Network 请求",
+        status: "error",
+        startedAt: 3,
+        completedAt: 4,
+        evidence: "Network 500",
+        attachmentKinds: ["network"],
+      },
+    ],
+    failureSummary: {
+      failedStepCount: 1,
+      failedTools: ["列出 Network 请求"],
+      recoverableActions: ["检查失败步骤的参数、页面状态或授权边界后重试。"],
+    },
+    ...partial,
+  };
+}
+
 describe("MessageList 工具附件展示聚合", () => {
+  it("自动化报告附件展示步骤、失败摘要和完全访问标记", () => {
+    const message: ChatMessage = {
+      id: "assistant-report",
+      role: "assistant",
+      content: "已完成排查",
+      createdAt: 1,
+      modelId: "model-1",
+      endpointType: "openai_chat",
+      streamMode: false,
+      systemPrompt: "",
+      contextPrompt: "",
+      contextMode: "text",
+      toolAttachments: [createAutomationReportAttachment({ fullAccessIncluded: true })],
+    };
+
+    render(
+      <MessageList
+        messages={[message]}
+        retryProgressByMessageId={{}}
+        toolCallDisplayMode="assistant_grouped"
+        showToolCallProcessInAssistantMode
+        onRegenerateMessage={() => undefined}
+        onEditAndRegenerateUserMessage={() => undefined}
+        regenerating={false}
+      />,
+    );
+
+    expect(screen.getByText("自动化任务报告")).toBeInTheDocument();
+    expect(screen.getByText(/目标：排查登录失败/)).toBeInTheDocument();
+    expect(screen.getByText(/任务类型：接口分析/)).toBeInTheDocument();
+    expect(screen.getByText(/完全访问原文结果：是/)).toBeInTheDocument();
+    expect(screen.getByText(/时间线/)).toBeInTheDocument();
+    expect(screen.getByText(/调用浏览器页面状态/)).toBeInTheDocument();
+    expect(screen.getByText(/失败恢复建议/)).toBeInTheDocument();
+    expect(screen.getByText("浏览器页面状态")).toBeInTheDocument();
+    expect(screen.getByText(/失败工具：列出 Network 请求/)).toBeInTheDocument();
+  });
+
+  it("浏览器截图附件默认折叠且支持点击全屏预览", async () => {
+    const user = userEvent.setup();
+    const attachments = aggregateDisplayAttachmentsByKind([
+      createScreenshotAttachment({ id: "screenshot-a", summary: "当前视口截图，PNG，3 B。" }),
+      createScreenshotAttachment({ id: "screenshot-b", createdAt: 2, summary: "元素截图，PNG，3 B。", target: "element", uid: "1_1" }),
+    ]);
+    expect(attachments).toHaveLength(2);
+    expect(attachments[0]).toMatchObject({ kind: "browser-screenshot", dataUrl: "data:image/png;base64,QUJD" });
+
+    const message: ChatMessage = {
+      id: "assistant-screenshot",
+      role: "assistant",
+      content: "已截图",
+      createdAt: 1,
+      modelId: "model-1",
+      endpointType: "openai_chat",
+      streamMode: false,
+      systemPrompt: "",
+      contextPrompt: "",
+      contextMode: "text",
+      toolAttachments: attachments,
+    };
+
+    render(
+      <MessageList
+        messages={[message]}
+        retryProgressByMessageId={{}}
+        toolCallDisplayMode="assistant_grouped"
+        showToolCallProcessInAssistantMode
+        onRegenerateMessage={() => undefined}
+        onEditAndRegenerateUserMessage={() => undefined}
+        regenerating={false}
+      />,
+    );
+
+    const screenshotDetails = document.querySelectorAll(".message-browser-screenshot-attachment");
+    expect(screenshotDetails).toHaveLength(2);
+    screenshotDetails.forEach((details) => expect(details).not.toHaveAttribute("open"));
+    expect(screen.getAllByText("浏览器截图")).toHaveLength(2);
+    expect(screen.getAllByAltText("浏览器截图")).toHaveLength(2);
+    expect(screen.getByText("当前视口截图，PNG，3 B。")).toBeInTheDocument();
+    expect(screen.getByText("元素截图，PNG，3 B。")).toBeInTheDocument();
+
+    screenshotDetails[0]?.setAttribute("open", "");
+    await user.click(screen.getAllByRole("button", { name: "全屏预览浏览器截图" })[0]);
+    const previewDialog = screen.getByRole("dialog", { name: "图片预览" });
+    expect(previewDialog).toBeInTheDocument();
+    expect(within(previewDialog).getByAltText("浏览器截图")).toBeInTheDocument();
+  });
+
   it("当前一次性授权的 Network 附件展示时不再二次脱敏", () => {
     const message: ChatMessage = {
       id: "assistant-network",

@@ -245,45 +245,16 @@ describe("appStore 网络搜索", () => {
       "web_search.tavily",
       "browser.take_snapshot",
       "browser.click",
-      "browser.fill",
-      "browser.press_key",
-      "browser.wait_for",
-      "browser.navigate_page",
-      "browser.new_page",
-      "browser.list_pages",
-      "browser.select_page",
-      "browser.close_page",
-      "network.list_requests",
-      "network.get_request_details",
-      "network.clear_requests",
-      "network.wait_for_requests",
-      "network.compare_requests",
-      "network.find_parameter_candidates",
-      "network.extract_js_candidates",
-      "js.list_resources",
-      "js.search_sources",
-      "js.extract_context",
-      "sourcemap.list_candidates",
-      "sourcemap.resolve_location",
-      "sourcemap.extract_original_context",
       "runtime.inspect_globals",
-      "runtime.search_modules",
-      "runtime.describe_function",
     ]);
     expect(chatRequests[2].enabledToolIds).toEqual([
       ...chatRequests[1].enabledToolIds!,
       "boundary.request_user_choice",
       "replay.prepare_request",
-      "replay.send_request",
-      "replay.compare_responses",
     ]);
     expect(chatRequests[3].enabledToolIds).toEqual([
       ...chatRequests[1].enabledToolIds!,
       "full_access.execute_script",
-      "full_access.fetch",
-      "full_access.get_network_details",
-      "full_access.read_storage",
-      "full_access.revoke",
     ]);
   });
 });
@@ -1503,7 +1474,7 @@ describe("appStore", () => {
     await useAppStore.getState().loadChannelConfig();
 
     expect(useAppStore.getState().chatPreferences.toolCallingEnabled).toBe(false);
-    expect(useAppStore.getState().chatPreferences.enabledToolIds).toEqual(["page.read_context"]);
+    expect(useAppStore.getState().chatPreferences.enabledToolIds).toEqual(["page.read_context", "browser.take_snapshot"]);
     expect(useAppStore.getState().chatPreferences.showToolCallProcessInAssistantMode).toBe(false);
   });
 
@@ -1576,7 +1547,7 @@ describe("appStore", () => {
     await useAppStore.getState().loadChannelConfig();
     await useAppStore.getState().loadChatData();
     await useAppStore.getState().updateChatPreferences({ browserAutomationMaxToolIterations: 64 });
-    await useAppStore.getState().updateActiveSessionChatPreferences({ browserAutomationMaxToolIterations: 12 });
+    await useAppStore.getState().updateActiveSessionChatPreferences({ browserAutomationMaxToolIterations: 12, enabledToolIds: ["browser.click"] });
     useAppStore.setState((state) => ({
       browserControlEnabled: true,
       chatPreferences: {

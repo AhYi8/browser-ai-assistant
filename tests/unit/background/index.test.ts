@@ -1102,7 +1102,14 @@ describe("background 入口", () => {
         expect.objectContaining({
           type: "complete",
           content: "最终回答",
-          toolAttachments: undefined,
+          toolAttachments: [
+            expect.objectContaining({
+              id: "tool-attachment-call-1",
+              kind: "web-search",
+              provider: "tavily",
+              query: "Tavily API",
+            }),
+          ],
         }),
       );
     });

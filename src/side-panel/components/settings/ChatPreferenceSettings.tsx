@@ -1,5 +1,15 @@
 import { useState } from "react";
-import { MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID, getModelToolGroups, getRegisteredModelTools, isBrowserAutomationToolId } from "../../../shared/models/toolRegistry";
+import {
+  MODEL_TOOL_CAPABILITY_VALUES,
+  MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
+  MODEL_TOOL_RISK_VALUES,
+  MODEL_TOOL_RUNTIME_VALUES,
+  filterModelToolsByClassification,
+  getModelToolGroups,
+  getRegisteredModelTools,
+  isToolRuntimeAvailable,
+} from "../../../shared/models/toolRegistry";
+import type { ModelToolCapability, ModelToolRisk, ModelToolRuntimeRequirement } from "../../../shared/models/types";
 import type { ChatPreferenceValues, SendShortcut } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
 import { useComposedTextInput } from "../useComposedTextInput";
@@ -13,21 +23,68 @@ const sendShortcutOptions: Array<{ value: SendShortcut; label: string }> = [
   { value: "alt_enter", label: "Alt+Enter" },
 ];
 
+const toolRuntimeLabels: Record<ModelToolRuntimeRequirement, string> = {
+  local: "本地工具",
+  external_web: "公开网页搜索",
+  browser_control: "浏览器控制",
+  controlled_enhanced: "受控增强",
+  full_access: "完全访问",
+};
+
+const toolCapabilityLabels: Record<ModelToolCapability, string> = {
+  observe_page: "观察页面",
+  operate_page: "操作页面",
+  analyze_site: "分析现场",
+  confirm_boundary: "请求确认",
+  deliver_result: "交付结果",
+  search_public_web: "公开搜索",
+  system_context: "系统上下文",
+};
+
+const toolRiskLabels: Record<ModelToolRisk, string> = {
+  low: "低风险",
+  medium: "中风险",
+  high: "高风险",
+  critical: "最高风险",
+};
+
 export function ChatPreferenceSettings() {
+  const [runtimeFilter, setRuntimeFilter] = useState<ModelToolRuntimeRequirement | "">("");
+  const [capabilityFilter, setCapabilityFilter] = useState<ModelToolCapability | "">("");
+  const [riskFilter, setRiskFilter] = useState<ModelToolRisk | "">("");
   const chatPreferences = useAppStore((state) => state.chatPreferences);
   const browserControlEnabled = useAppStore((state) => state.browserControlEnabled);
+  const browserAutomationMode = useAppStore((state) => state.browserAutomationMode);
   const updateChatPreferences = useAppStore((state) => state.updateChatPreferences);
   const registeredTools = getRegisteredModelTools();
-  const registeredToolGroups = getModelToolGroups(registeredTools);
+  const filteredTools = filterModelToolsByClassification(registeredTools, {
+    ...(runtimeFilter ? { runtime: runtimeFilter } : {}),
+    ...(capabilityFilter ? { capability: capabilityFilter } : {}),
+    ...(riskFilter ? { risk: riskFilter } : {}),
+  });
+  const registeredToolGroups = getModelToolGroups(filteredTools);
   const systemPromptInput = useComposedTextInput(chatPreferences.systemPrompt, (systemPrompt) => {
     void updateChatPreferences({ systemPrompt });
   });
   const handleToolToggle = (toolId: string, checked: boolean) => {
-    if (isBrowserAutomationToolId(toolId)) {
+    const tool = registeredTools.find((item) => item.id === toolId);
+    if (tool && !isToolRuntimeAvailable(tool, browserControlEnabled, browserAutomationMode)) {
       return;
     }
     const nextToolIds = checked ? [...chatPreferences.enabledToolIds, toolId] : chatPreferences.enabledToolIds.filter((id) => id !== toolId);
     void updateChatPreferences({ enabledToolIds: Array.from(new Set(nextToolIds)) });
+  };
+  const runtimeAvailableFilteredToolIds = filteredTools
+    .filter((tool) => isToolRuntimeAvailable(tool, browserControlEnabled, browserAutomationMode))
+    .map((tool) => tool.id);
+  const handleEnableFilteredTools = () => {
+    void updateChatPreferences({
+      enabledToolIds: Array.from(new Set([...chatPreferences.enabledToolIds, ...runtimeAvailableFilteredToolIds])),
+    });
+  };
+  const handleDisableFilteredTools = () => {
+    const filteredIds = new Set(filteredTools.map((tool) => tool.id));
+    void updateChatPreferences({ enabledToolIds: chatPreferences.enabledToolIds.filter((toolId) => !filteredIds.has(toolId)) });
   };
 
   return (
@@ -94,26 +151,77 @@ export function ChatPreferenceSettings() {
           <span className="chat-preference-switch-label">启用工具调用</span>
         </label>
         <p className="ui-muted text-xs">启用工具后，工具决策阶段使用非流式请求；最终回复仍跟随流式响应开关。</p>
+        <div className="chat-preference-tool-filter-grid">
+          <label className="chat-preference-field">
+            能力
+            <select
+              className="ui-input chat-preference-shortcut-select"
+              aria-label="工具能力筛选"
+              value={capabilityFilter}
+              onChange={(event) => setCapabilityFilter(event.target.value as ModelToolCapability | "")}
+            >
+              <option value="">全部能力</option>
+              {MODEL_TOOL_CAPABILITY_VALUES.map((capability) => (
+                <option key={capability} value={capability}>{toolCapabilityLabels[capability]}</option>
+              ))}
+            </select>
+          </label>
+          <label className="chat-preference-field">
+            运行要求
+            <select
+              className="ui-input chat-preference-shortcut-select"
+              aria-label="工具运行要求筛选"
+              value={runtimeFilter}
+              onChange={(event) => setRuntimeFilter(event.target.value as ModelToolRuntimeRequirement | "")}
+            >
+              <option value="">全部运行要求</option>
+              {MODEL_TOOL_RUNTIME_VALUES.map((runtime) => (
+                <option key={runtime} value={runtime}>{toolRuntimeLabels[runtime]}</option>
+              ))}
+            </select>
+          </label>
+          <label className="chat-preference-field">
+            风险
+            <select
+              className="ui-input chat-preference-shortcut-select"
+              aria-label="工具风险筛选"
+              value={riskFilter}
+              onChange={(event) => setRiskFilter(event.target.value as ModelToolRisk | "")}
+            >
+              <option value="">全部风险</option>
+              {MODEL_TOOL_RISK_VALUES.map((risk) => (
+                <option key={risk} value={risk}>{toolRiskLabels[risk]}</option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <div className="chat-preference-tool-bulk-actions">
+          <button className="ui-button-secondary" type="button" onClick={handleEnableFilteredTools}>启用筛选结果</button>
+          <button className="ui-button-secondary" type="button" onClick={handleDisableFilteredTools}>禁用筛选结果</button>
+        </div>
         {registeredTools.length > 0 ? (
           <div className="chat-preference-tool-group-list">
             {registeredToolGroups.map((group) => (
               <div key={group.id} className="chat-preference-tool-group">
                 <div className="chat-preference-tool-group-title">{group.label}</div>
                 {group.id === MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID && !browserControlEnabled ? (
-                  <p className="ui-muted text-xs">开启浏览器控制后自动启用本组工具。</p>
+                  <p className="ui-muted text-xs">需开启浏览器控制后才能启用本组工具。</p>
                 ) : null}
-                {group.tools.map((tool) => (
-                  <label key={tool.id} className="chat-preference-network-type-chip">
-                    <input
-                      type="checkbox"
-                      aria-label={`启用工具 ${tool.name}`}
-                      checked={isBrowserAutomationToolId(tool.id) ? browserControlEnabled : chatPreferences.enabledToolIds.includes(tool.id)}
-                      disabled={!chatPreferences.toolCallingEnabled || isBrowserAutomationToolId(tool.id)}
-                      onChange={(event) => handleToolToggle(tool.id, event.target.checked)}
-                    />
-                    <span>{tool.name}</span>
-                  </label>
-                ))}
+                {group.tools.map((tool) => {
+                  const runtimeAvailable = isToolRuntimeAvailable(tool, browserControlEnabled, browserAutomationMode);
+                  return (
+                    <label key={tool.id} className="chat-preference-network-type-chip">
+                      <input
+                        type="checkbox"
+                        aria-label={`启用工具 ${tool.name}`}
+                        checked={runtimeAvailable && chatPreferences.enabledToolIds.includes(tool.id)}
+                        disabled={!chatPreferences.toolCallingEnabled || !runtimeAvailable}
+                        onChange={(event) => handleToolToggle(tool.id, event.target.checked)}
+                      />
+                      <span>{tool.name}</span>
+                    </label>
+                  );
+                })}
               </div>
             ))}
           </div>

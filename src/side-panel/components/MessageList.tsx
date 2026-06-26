@@ -7,6 +7,9 @@ import {
   aggregateToolAttachmentGroupByKind,
   collectMessageToolAttachments,
   collectRawMessageToolAttachments,
+  formatAutomationReportTypeLabel,
+  isAutomationReportToolAttachment,
+  isBrowserScreenshotToolAttachment,
   isJsSourceToolAttachment,
   isNetworkToolAttachment,
   isSourceMapToolAttachment,
@@ -275,7 +278,7 @@ export function MessageList({
                 {hasVisibleContent ? <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ code: MarkdownCodeBlock, pre: MarkdownCodePre }}>{message.content}</ReactMarkdown> : null}
               </div>
             ) : null}
-            {message.role === "assistant" ? <ToolAttachmentList attachments={displayAttachments} /> : null}
+            {message.role === "assistant" ? <ToolAttachmentList attachments={displayAttachments} onPreviewImage={setPreviewAttachment} /> : null}
             {!isToolCallTurn ? (
               <div className={`message-regenerate-action message-regenerate-action-${message.role}`}>
               {message.role === "user" ? (
@@ -478,7 +481,7 @@ function ToolCallTimeline({
   );
 }
 
-function ToolAttachmentList({ attachments }: { attachments: ChatToolAttachment[] }) {
+function ToolAttachmentList({ attachments, onPreviewImage }: { attachments: ChatToolAttachment[]; onPreviewImage: (attachment: ChatImageAttachment) => void }) {
   if (attachments.length === 0) {
     return null;
   }
@@ -486,7 +489,7 @@ function ToolAttachmentList({ attachments }: { attachments: ChatToolAttachment[]
   return (
     <>
       {attachments.map((attachment) => (
-        <ToolAttachmentView key={attachment.id} attachment={attachment} />
+        <ToolAttachmentView key={attachment.id} attachment={attachment} onPreviewImage={onPreviewImage} />
       ))}
     </>
   );
@@ -517,6 +520,12 @@ export function aggregateDisplayAttachmentsByKind(attachments: ChatToolAttachmen
   const groups = new Map<string, ChatToolAttachment[]>();
   const order: string[] = [];
   for (const attachment of attachments) {
+    if (isBrowserScreenshotToolAttachment(attachment)) {
+      const key = `${attachment.kind}:${attachment.id}`;
+      groups.set(key, [attachment]);
+      order.push(key);
+      continue;
+    }
     if (!groups.has(attachment.kind)) {
       groups.set(attachment.kind, []);
       order.push(attachment.kind);
@@ -524,7 +533,7 @@ export function aggregateDisplayAttachmentsByKind(attachments: ChatToolAttachmen
     groups.get(attachment.kind)?.push(attachment);
   }
 
-  return order.map((kind) => aggregateDisplayAttachmentKindGroup(kind, groups.get(kind) ?? [])).filter((attachment): attachment is ChatToolAttachment => Boolean(attachment));
+  return order.map((kind) => aggregateDisplayAttachmentKindGroup(kind.split(":")[0] ?? kind, groups.get(kind) ?? [])).filter((attachment): attachment is ChatToolAttachment => Boolean(attachment));
 }
 
 function aggregateDisplayAttachmentKindGroup(kind: string, attachments: ChatToolAttachment[]): ChatToolAttachment | undefined {
@@ -665,7 +674,7 @@ function uniqueNonEmptyStrings(values: Array<string | undefined>): string[] {
   return result;
 }
 
-function ToolAttachmentView({ attachment }: { attachment: ChatToolAttachment }) {
+function ToolAttachmentView({ attachment, onPreviewImage }: { attachment: ChatToolAttachment; onPreviewImage: (attachment: ChatImageAttachment) => void }) {
   if (isNetworkToolAttachment(attachment)) {
     return <NetworkToolAttachmentView attachment={attachment} />;
   }
@@ -682,6 +691,14 @@ function ToolAttachmentView({ attachment }: { attachment: ChatToolAttachment }) 
     return <SourceMapToolAttachmentView attachment={attachment} />;
   }
 
+  if (isBrowserScreenshotToolAttachment(attachment)) {
+    return <BrowserScreenshotToolAttachmentView attachment={attachment} onPreviewImage={onPreviewImage} />;
+  }
+
+  if (isAutomationReportToolAttachment(attachment)) {
+    return <AutomationReportToolAttachmentView attachment={attachment} />;
+  }
+
   return (
     <details className={`message-tool-attachment message-${attachment.kind}-attachment`}>
       <summary>
@@ -689,6 +706,78 @@ function ToolAttachmentView({ attachment }: { attachment: ChatToolAttachment }) 
       </summary>
       <p className="message-tool-attachment-summary">{attachment.summary}</p>
       {attachment.details ? <pre>{attachment.details}</pre> : null}
+    </details>
+  );
+}
+
+function AutomationReportToolAttachmentView({ attachment }: { attachment: ChatToolAttachment }) {
+  if (!isAutomationReportToolAttachment(attachment)) {
+    return null;
+  }
+
+  return (
+    <details className="message-tool-attachment message-automation-report-attachment">
+      <summary>
+        <span>自动化任务报告</span>
+        <span className="message-network-count">{attachment.steps.length}</span>
+      </summary>
+      <p className="message-tool-attachment-summary">{attachment.summary}</p>
+      <p className="message-tool-attachment-summary">目标：{attachment.objective}</p>
+      <p className="message-tool-attachment-summary">任务类型：{formatAutomationReportTypeLabel(attachment.reportType)}</p>
+      <p className="message-tool-attachment-summary">结论：{attachment.conclusion}</p>
+      <p className="message-tool-attachment-summary">完全访问原文结果：{attachment.fullAccessIncluded ? "是" : "否"}</p>
+      {attachment.timeline.length > 0 ? (
+        <>
+          <p className="message-tool-attachment-summary">时间线</p>
+          <ol className="message-automation-report-timeline-list">
+            {attachment.timeline.map((event) => (
+              <li key={event.id}>
+                <strong>{event.label}</strong> [{event.type}]：{event.detail}
+              </li>
+            ))}
+          </ol>
+        </>
+      ) : null}
+      <ol className="message-automation-report-step-list">
+        {attachment.steps.map((step) => (
+          <li key={step.toolCallId}>
+            <strong>{step.displayName}</strong> [{step.status}]：{step.evidence}
+          </li>
+        ))}
+      </ol>
+      {attachment.failureSummary ? (
+        <p className="message-tool-attachment-summary">
+          失败工具：{attachment.failureSummary.failedTools.join("、") || "无"}；可恢复动作：{attachment.failureSummary.recoverableActions.join("；") || "无"}
+        </p>
+      ) : null}
+    </details>
+  );
+}
+
+function BrowserScreenshotToolAttachmentView({ attachment, onPreviewImage }: { attachment: ChatToolAttachment; onPreviewImage: (attachment: ChatImageAttachment) => void }) {
+  if (!isBrowserScreenshotToolAttachment(attachment)) {
+    return null;
+  }
+
+  return (
+    <details className="message-tool-attachment message-browser-screenshot-attachment">
+      <summary>
+        <span>{attachment.title || "浏览器截图"}</span>
+      </summary>
+      <p className="message-tool-attachment-summary">{attachment.summary}</p>
+      <button
+        className="message-browser-screenshot-preview"
+        type="button"
+        aria-label="全屏预览浏览器截图"
+        onClick={() => onPreviewImage({
+          id: attachment.id,
+          name: attachment.title || "浏览器截图",
+          mediaType: attachment.mediaType,
+          dataUrl: attachment.dataUrl,
+        })}
+      >
+        <img src={attachment.dataUrl} alt="浏览器截图" />
+      </button>
     </details>
   );
 }

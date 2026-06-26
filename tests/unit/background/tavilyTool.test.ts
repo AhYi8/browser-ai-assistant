@@ -148,7 +148,14 @@ describe("Tavily 工具调用", () => {
       throw new Error("Tavily 工具调用应返回成功结果");
     }
     expect(result.toolTurnMessages).toHaveLength(1);
-    expect(result).not.toHaveProperty("toolAttachments");
+    expect(result.toolAttachments).toEqual([
+      expect.objectContaining({
+        kind: "web-search",
+        provider: "tavily",
+        query: "Tavily API",
+        answer: "Tavily 是搜索 API。",
+      }),
+    ]);
     expect(fetcher.mock.calls[1][0]).toBe("https://api.tavily.com/search");
     expect(JSON.parse(String(fetcher.mock.calls[1][1]?.body))).toMatchObject({
       query: "Tavily API",
@@ -275,7 +282,14 @@ describe("Tavily 工具调用", () => {
       throw new Error("Tavily 流式工具调用应返回成功结果");
     }
     expect(result.toolTurnMessages).toHaveLength(1);
-    expect(result).not.toHaveProperty("toolAttachments");
+    expect(result.toolAttachments).toEqual([
+      expect.objectContaining({
+        kind: "web-search",
+        provider: "tavily",
+        query: "Tavily API",
+        answer: "Tavily 是搜索 API。",
+      }),
+    ]);
     expect(onContentChunk).toHaveBeenNthCalledWith(1, "结合");
     expect(onContentChunk).toHaveBeenNthCalledWith(2, "搜索回答");
     const toolDecisionBody = JSON.parse(String(fetcher.mock.calls[0][1]?.body)) as { stream: boolean; tool_choice?: string };

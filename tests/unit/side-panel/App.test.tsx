@@ -1276,6 +1276,58 @@ describe("App", () => {
     expect(updateChatPreferences).toHaveBeenCalledWith({ toolCallingEnabled: true });
   });
 
+  it("聊天偏好工具列表支持按分类筛选并批量启用当前可用工具", async () => {
+    const user = userEvent.setup();
+    const updateChatPreferences = vi.fn(async () => undefined);
+    registeredModelToolsMock.tools = [
+      {
+        id: "web_search.tavily",
+        name: "tavily_search",
+        description: "搜索公开网页",
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+        toolClassification: { runtime: "external_web", capabilities: ["search_public_web"], risk: "low" },
+      },
+      {
+        id: "browser.take_snapshot",
+        name: "take_snapshot",
+        description: "读取当前页面结构快照",
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+        toolClassification: { runtime: "browser_control", capabilities: ["observe_page"], risk: "low" },
+      },
+      {
+        id: "browser.click",
+        name: "click",
+        description: "点击页面上的目标元素",
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+        toolClassification: { runtime: "browser_control", capabilities: ["operate_page"], risk: "medium" },
+      },
+    ];
+    useAppStore.setState({
+      browserControlEnabled: true,
+      chatPreferences: {
+        ...useAppStore.getState().chatPreferences,
+        toolCallingEnabled: true,
+        enabledToolIds: [],
+      },
+      updateChatPreferences,
+    });
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("tab", { name: "聊天偏好" }));
+    await user.selectOptions(screen.getByRole("combobox", { name: "工具能力筛选" }), "observe_page");
+    await user.selectOptions(screen.getByRole("combobox", { name: "工具运行要求筛选" }), "browser_control");
+    await user.selectOptions(screen.getByRole("combobox", { name: "工具风险筛选" }), "low");
+
+    expect(screen.getByRole("checkbox", { name: "启用工具 take_snapshot" })).toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "启用工具 click" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "启用筛选结果" }));
+
+    expect(updateChatPreferences).toHaveBeenCalledWith({ enabledToolIds: ["browser.take_snapshot"] });
+  });
+
   it("聊天偏好可以保存工具调用展示方式", async () => {
     const user = userEvent.setup();
     const updateChatPreferences = vi.fn(async () => undefined);
@@ -4026,12 +4078,14 @@ describe("App", () => {
         name: "take_snapshot",
         description: "读取当前页面结构快照",
         parameters: { type: "object", properties: {}, additionalProperties: false },
+        toolClassification: { runtime: "browser_control", capabilities: ["observe_page"], risk: "low" },
       },
       {
         id: "browser.click",
         name: "click",
         description: "点击页面上的目标元素",
         parameters: { type: "object", properties: {}, additionalProperties: false },
+        toolClassification: { runtime: "browser_control", capabilities: ["operate_page"], risk: "medium" },
       },
     ];
 
@@ -4067,22 +4121,22 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "启用全部" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "关闭" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /take_snapshot/ })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: /click/ })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: /take_snapshot/ })).toBeDisabled();
-    expect(screen.getByRole("button", { name: /click/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /click/ })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: /take_snapshot/ })).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: /click/ })).not.toBeDisabled();
     expect(screen.getByText("读取当前页面结构快照")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "启用全部" }));
 
     expect(updateActiveSessionChatPreferences).toHaveBeenCalledWith({
       toolCallingEnabled: true,
-      enabledToolIds: [],
+      enabledToolIds: ["browser.take_snapshot", "browser.click"],
     });
     await waitFor(() => expect(screen.getByRole("button", { name: "工具调用：已启用" })).toHaveAttribute("aria-pressed", "true"));
 
     await user.click(screen.getByRole("button", { name: /click/ }));
 
-    expect(updateActiveSessionChatPreferences).toHaveBeenCalledTimes(1);
+    expect(updateActiveSessionChatPreferences).toHaveBeenLastCalledWith({ enabledToolIds: ["browser.take_snapshot"] });
 
     await user.click(document.body);
 
@@ -4107,6 +4161,7 @@ describe("App", () => {
         name: "take_snapshot",
         description: "读取当前页面结构快照",
         parameters: { type: "object", properties: {}, additionalProperties: false },
+        toolClassification: { runtime: "browser_control", capabilities: ["observe_page"], risk: "low" },
       },
     ];
 

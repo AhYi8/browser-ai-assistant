@@ -1,12 +1,14 @@
 import type { ChatMessage, ChatToolAttachment, ChatToolCallRecord } from "../../shared/types";
 import type { ModelRequestMessage, ModelResponseData, ModelToolCall, ModelToolExecutor, ModelToolRegistryEntry, ModelToolResultMessage } from "../../shared/models/types";
 import { isBrowserAutomationToolId } from "../../shared/models/toolRegistry";
+import { createAutomationReportToolAttachment } from "../../shared/toolArtifacts";
 import { truncateText } from "../../shared/utils/text";
 
 const DEFAULT_MAX_TOOL_ITERATIONS = 8;
 const FINAL_RESPONSE_INSTRUCTION = [
   "工具调用阶段已经结束，当前请求不会再执行任何工具。",
   "请只基于上文用户问题和已经返回的工具结果，直接给出面向用户的最终中文答复。",
+  "最终答复必须区分事实证据、模型推断和未验证假设：工具结果可作为事实证据，基于证据的判断要标明为模型推断，未被工具或用户确认的信息要标明为未验证假设。",
   "上一轮工具决策阶段的自然语言正文只作为过程参考，不要把其中的待办话术当作还会继续执行的计划。",
   "不要再声称将继续调用、测试或等待工具；如果信息不足，请明确说明已完成的部分和无法继续验证的原因。",
 ].join("\n");
@@ -59,6 +61,7 @@ export async function runModelToolLoop(input: RunModelToolLoopInput): Promise<Mo
         content: response.content,
         thinking: response.thinking,
         ...(response.reasoningContent ? { reasoningContent: response.reasoningContent } : {}),
+        ...(toolAttachments.length ? { toolAttachments } : {}),
         ...(toolTurnMessages.length ? { toolTurnMessages } : {}),
       };
       break;
@@ -122,6 +125,18 @@ export async function runModelToolLoop(input: RunModelToolLoopInput): Promise<Mo
       appendUniqueToolAttachments(toolAttachments, toolResultMessage.toolAttachments ?? []);
       appendUniqueToolAttachments(currentTurnAttachments, toolResultMessage.toolAttachments ?? []);
     }
+    if (hasBrowserAutomationToolCall) {
+      const report = createAutomationReportToolAttachment({
+        objective: getAutomationObjective(input.initialMessages),
+        conclusion: summarizeAutomationConclusion(currentTurnRecords),
+        records: currentTurnRecords,
+        attachments: currentTurnAttachments,
+      });
+      if (report) {
+        appendUniqueToolAttachments(toolAttachments, [report]);
+        appendUniqueToolAttachments(currentTurnAttachments, [report]);
+      }
+    }
     const toolTurnMessage = createToolTurnMessage({
       id: toolTurnMessageId,
       initialMessages: input.initialMessages,
@@ -160,6 +175,7 @@ export async function runModelToolLoop(input: RunModelToolLoopInput): Promise<Mo
       content: finalResponse.content,
       thinking: finalResponse.thinking,
       ...(finalResponse.reasoningContent ? { reasoningContent: finalResponse.reasoningContent } : {}),
+      ...(toolAttachments.length ? { toolAttachments } : {}),
       ...(toolTurnMessages.length ? { toolTurnMessages } : {}),
     };
   }
@@ -212,6 +228,23 @@ function createToolTurnMessage(input: {
 
 function createToolTurnMessageId(firstToolCallId: string | undefined): string {
   return `message-${Date.now()}-tool-turn-${firstToolCallId ?? "unknown"}`;
+}
+
+function getAutomationObjective(messages: ModelRequestMessage[]): string {
+  const userMessage = messages.find((message): message is Extract<ModelRequestMessage, { role: "user"; content: string }> =>
+    message.role === "user" && typeof message.content === "string" && Boolean(message.content.trim()),
+  );
+  return truncateText(userMessage?.content.trim() || "未记录任务目标", 500).text;
+}
+
+function summarizeAutomationConclusion(records: ChatToolCallRecord[]): string {
+  const successCount = records.filter((record) => record.status === "success").length;
+  const errorRecords = records.filter((record) => record.status === "error");
+  if (errorRecords.length > 0) {
+    const failedTools = Array.from(new Set(errorRecords.map((record) => record.displayName || record.name))).join("、");
+    return `已执行 ${records.length} 个自动化步骤，其中 ${successCount} 个成功、${errorRecords.length} 个失败；失败工具：${failedTools}。`;
+  }
+  return `已执行 ${records.length} 个自动化步骤，全部成功完成。`;
 }
 
 async function executeAllowedTool(

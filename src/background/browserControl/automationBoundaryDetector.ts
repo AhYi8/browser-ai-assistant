@@ -65,6 +65,43 @@ const SENSITIVE_FIELD_PATTERNS = [
   /凭据/,
   /敏感字段/,
 ];
+const PAGE_EFFECT_CONFIRMATION_PATTERNS = [
+  /页面操作可能触发/,
+  /可能触发表单提交/,
+  /可能触发删除/,
+  /可能触发付款/,
+  /可能触发发布/,
+  /可能触发发送消息/,
+  /页面副作用操作/,
+  /请先向用户确认本次页面副作用操作/,
+];
+const CROSS_SITE_NAVIGATION_CONFIRMATION_PATTERNS = [
+  /跨站点跳转/,
+  /跨站导航/,
+  /跨 origin 跳转/i,
+  /跨域跳转/,
+  /第三方授权页/,
+  /第三方登录页/,
+  /OAuth 授权页/i,
+  /OIDC 授权页/i,
+  /授权回调/,
+  /身份提供方/,
+  /identity provider/i,
+];
+const FILE_ACCESS_CONFIRMATION_PATTERNS = [
+  /文件上传/,
+  /上传文件/,
+  /选择本地文件/,
+  /确认本地文件/,
+  /本地文件路径/,
+  /读取本地文件/,
+  /文件下载/,
+  /触发文件下载/,
+  /下载文件/,
+  /保存文件/,
+  /download/i,
+  /upload/i,
+];
 
 export async function applyAutomationBoundaryConfirmation(
   result: ModelToolResult,
@@ -128,6 +165,27 @@ export function detectAutomationBoundarySignals(content: string): BoundarySignal
     grants: ["expand_runtime_summary_depth"],
     risk: "high",
   }, RUNTIME_BOUNDARY_PATTERNS);
+  appendSignalIfMatch(signals, content, {
+    id: "page_effect_confirmation",
+    label: "页面副作用操作确认",
+    reason: "工具结果提示后续页面操作可能产生真实业务副作用，必须先由用户确认是否继续。",
+    grants: [],
+    risk: "high",
+  }, PAGE_EFFECT_CONFIRMATION_PATTERNS);
+  appendSignalIfMatch(signals, content, {
+    id: "cross_site_navigation_confirmation",
+    label: "跨站点跳转或第三方授权页确认",
+    reason: "工具结果提示后续操作可能离开当前站点或进入第三方授权页，必须先由用户确认是否继续。",
+    grants: [],
+    risk: "high",
+  }, CROSS_SITE_NAVIGATION_CONFIRMATION_PATTERNS);
+  appendSignalIfMatch(signals, content, {
+    id: "file_access_confirmation",
+    label: "文件上传下载或本地文件访问确认",
+    reason: "工具结果提示后续操作可能上传、下载或读取本地文件信息，必须先由用户确认是否继续。",
+    grants: [],
+    risk: "high",
+  }, FILE_ACCESS_CONFIRMATION_PATTERNS);
   return signals;
 }
 

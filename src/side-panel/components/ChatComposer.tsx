@@ -4,7 +4,8 @@ import {
   MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
   getModelToolGroups,
   getRegisteredModelTools,
-  isBrowserAutomationToolId,
+  isDebuggerRuntimeRequirement,
+  isToolRuntimeAvailable,
 } from "../../shared/models/toolRegistry";
 import { isPngDataUrl, isTabCaptureImageAttachment, TAB_CAPTURE_VISIBLE_MESSAGE_TYPE, type TabCaptureVisibleResponse } from "../../shared/tabCapture";
 import type { ChatImageAttachment, ChatPromptInvocation, PromptTemplate, SendShortcut } from "../../shared/types";
@@ -134,7 +135,13 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   const respondBoundaryChoice = useAppStore((state) => state.respondBoundaryChoice);
   const registeredTools = useMemo(() => getRegisteredModelTools(), []);
   const registeredToolGroups = useMemo(() => getModelToolGroups(registeredTools), [registeredTools]);
-  const userEditableToolIds = useMemo(() => registeredTools.filter((tool) => !isBrowserAutomationToolId(tool.id)).map((tool) => tool.id), [registeredTools]);
+  const effectiveBrowserAutomationMode: BrowserAutomationMode = browserControlEnabled ? browserAutomationMode : "normal_restricted";
+  const runtimeEditableToolIds = useMemo(
+    () => registeredTools
+      .filter((tool) => isToolRuntimeAvailable(tool, browserControlEnabled, effectiveBrowserAutomationMode))
+      .map((tool) => tool.id),
+    [browserControlEnabled, effectiveBrowserAutomationMode, registeredTools],
+  );
 
   useEffect(() => {
     setComposerHasDraft(input.trim().length > 0 || attachments.length > 0 || promptInvocations.length > 0);
@@ -405,7 +412,8 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   };
 
   const handleToolToggle = (toolId: string, checked: boolean) => {
-    if (isBrowserAutomationToolId(toolId)) {
+    const tool = registeredTools.find((item) => item.id === toolId);
+    if (tool && !isToolRuntimeAvailable(tool, browserControlEnabled, effectiveBrowserAutomationMode)) {
       return;
     }
     const nextToolIds = checked ? [...enabledToolIds, toolId] : enabledToolIds.filter((id) => id !== toolId);
@@ -435,7 +443,6 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
 
   const contextModeLabel = contextMode === "all" ? "提取所有" : "提取文本";
   const toolCallingLabel = `工具调用：${toolCallingEnabled ? "已启用" : "已关闭"}`;
-  const effectiveBrowserAutomationMode: BrowserAutomationMode = browserControlEnabled ? browserAutomationMode : "normal_restricted";
   const browserAutomationModeLabel = BROWSER_AUTOMATION_MODE_OPTIONS.find((option) => option.mode === effectiveBrowserAutomationMode)?.label ?? "普通模式";
   const filteredPromptTemplates = filterPromptTemplates(promptTemplates, slashQuery);
   const hasDraft = input.trim().length > 0 || attachments.length > 0 || promptInvocations.length > 0;
@@ -631,7 +638,7 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
                     onClick={() =>
                       void updateActiveSessionChatPreferences({
                         toolCallingEnabled: true,
-                        enabledToolIds: userEditableToolIds,
+                        enabledToolIds: runtimeEditableToolIds,
                       })
                     }
                   >
@@ -651,12 +658,13 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
                       <div key={group.id} className="composer-tool-menu-group">
                         <div className="composer-tool-menu-group-title">{group.label}</div>
                         {group.id === MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID && !browserControlEnabled ? (
-                          <p className="composer-tool-menu-group-hint">开启浏览器控制后自动启用本组工具。</p>
+                          <p className="composer-tool-menu-group-hint">需开启浏览器控制后才能启用本组工具。</p>
                         ) : null}
                         {group.tools.map((tool) => {
-                          const browserAutomationTool = isBrowserAutomationToolId(tool.id);
-                          const active = browserAutomationTool ? browserControlEnabled : enabledToolIds.includes(tool.id);
-                          const disabled = browserAutomationTool;
+                          const runtimeAvailable = isToolRuntimeAvailable(tool, browserControlEnabled, effectiveBrowserAutomationMode);
+                          const debuggerRuntime = tool.toolClassification ? isDebuggerRuntimeRequirement(tool.toolClassification.runtime) : false;
+                          const active = runtimeAvailable && enabledToolIds.includes(tool.id);
+                          const disabled = !runtimeAvailable;
                           return (
                             <button
                               key={tool.id}
@@ -664,7 +672,7 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
                                 [
                                   "composer-tool-menu-item",
                                   active ? "composer-tool-menu-item-active" : "",
-                                  browserAutomationTool ? "composer-tool-menu-item-readonly" : "",
+                                  debuggerRuntime ? "composer-tool-menu-item-readonly" : "",
                                 ]
                                   .filter(Boolean)
                                   .join(" ")
@@ -676,6 +684,7 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
                               onClick={() => handleToolToggle(tool.id, !active)}
                             >
                               <span className="composer-tool-menu-item-name">{tool.name}</span>
+                              {!runtimeAvailable ? <span className="composer-tool-menu-item-description">需开启浏览器控制</span> : null}
                               {tool.description ? <span className="composer-tool-menu-item-description">{tool.description}</span> : null}
                             </button>
                           );

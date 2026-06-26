@@ -13,11 +13,31 @@ export interface ModelToolDefinition {
   parameters: Record<string, unknown>;
 }
 
+export type ModelToolRuntimeRequirement = "local" | "external_web" | "browser_control" | "controlled_enhanced" | "full_access";
+
+export type ModelToolCapability =
+  | "observe_page"
+  | "operate_page"
+  | "analyze_site"
+  | "confirm_boundary"
+  | "deliver_result"
+  | "search_public_web"
+  | "system_context";
+
+export type ModelToolRisk = "low" | "medium" | "high" | "critical";
+
+export interface ModelToolClassification {
+  runtime: ModelToolRuntimeRequirement;
+  capabilities: ModelToolCapability[];
+  risk: ModelToolRisk;
+}
+
 export interface ModelToolRegistryEntry extends ModelToolDefinition {
   id: string;
   displayName?: string;
   groupId?: string;
   requiredCapabilities?: ToolRiskCapability[];
+  toolClassification?: ModelToolClassification;
 }
 
 export interface ModelToolCall {

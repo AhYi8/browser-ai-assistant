@@ -4,8 +4,32 @@ import {
   BOUNDARY_REQUEST_USER_CHOICE_TOOL_NAME,
   BROWSER_CLICK_TOOL_ID,
   BROWSER_CLICK_TOOL_NAME,
+  BROWSER_COLLECT_DIAGNOSTICS_TOOL_ID,
+  BROWSER_COLLECT_DIAGNOSTICS_TOOL_NAME,
+  BROWSER_ANALYZE_INTERACTION_BLOCKER_TOOL_ID,
+  BROWSER_ANALYZE_INTERACTION_BLOCKER_TOOL_NAME,
+  BROWSER_ANALYZE_FORM_TOOL_ID,
+  BROWSER_ANALYZE_FORM_TOOL_NAME,
+  BROWSER_CONTEXT_CLICK_TOOL_ID,
+  BROWSER_CONTEXT_CLICK_TOOL_NAME,
+  BROWSER_DOUBLE_CLICK_TOOL_ID,
+  BROWSER_DOUBLE_CLICK_TOOL_NAME,
+  BROWSER_DRAG_TOOL_ID,
+  BROWSER_DRAG_TOOL_NAME,
   BROWSER_FILL_TOOL_ID,
   BROWSER_FILL_TOOL_NAME,
+  BROWSER_FIND_ELEMENTS_TOOL_ID,
+  BROWSER_FIND_ELEMENTS_TOOL_NAME,
+  BROWSER_GET_CONSOLE_MESSAGES_TOOL_ID,
+  BROWSER_GET_CONSOLE_MESSAGES_TOOL_NAME,
+  BROWSER_GET_PERFORMANCE_SUMMARY_TOOL_ID,
+  BROWSER_GET_PERFORMANCE_SUMMARY_TOOL_NAME,
+  BROWSER_GET_PAGE_STATE_TOOL_ID,
+  BROWSER_GET_PAGE_STATE_TOOL_NAME,
+  BROWSER_HOVER_TOOL_ID,
+  BROWSER_HOVER_TOOL_NAME,
+  BROWSER_INSPECT_ELEMENT_TOOL_ID,
+  BROWSER_INSPECT_ELEMENT_TOOL_NAME,
   BROWSER_LIST_PAGES_TOOL_ID,
   BROWSER_LIST_PAGES_TOOL_NAME,
   BROWSER_NAVIGATE_PAGE_TOOL_ID,
@@ -16,10 +40,16 @@ import {
   BROWSER_PRESS_KEY_TOOL_NAME,
   BROWSER_SELECT_PAGE_TOOL_ID,
   BROWSER_SELECT_PAGE_TOOL_NAME,
+  BROWSER_SCREENSHOT_TOOL_ID,
+  BROWSER_SCREENSHOT_TOOL_NAME,
+  BROWSER_SCROLL_TOOL_ID,
+  BROWSER_SCROLL_TOOL_NAME,
   BROWSER_TAKE_SNAPSHOT_TOOL_ID,
   BROWSER_TAKE_SNAPSHOT_TOOL_NAME,
   BROWSER_WAIT_FOR_TOOL_ID,
   BROWSER_WAIT_FOR_TOOL_NAME,
+  BROWSER_WAIT_FOR_STATE_TOOL_ID,
+  BROWSER_WAIT_FOR_STATE_TOOL_NAME,
   BROWSER_CLOSE_PAGE_TOOL_ID,
   BROWSER_CLOSE_PAGE_TOOL_NAME,
   CURRENT_TIME_TOOL_ID,
@@ -61,6 +91,10 @@ import {
   SOURCEMAP_RESOLVE_LOCATION_TOOL_ID,
   TAVILY_SEARCH_TOOL_ID,
   TAVILY_SEARCH_TOOL_NAME,
+  MODEL_TOOL_CAPABILITY_VALUES,
+  MODEL_TOOL_RUNTIME_VALUES,
+  MODEL_TOOL_RISK_VALUES,
+  filterModelToolsByClassification,
   getRegisteredModelTools,
   getModelToolGroups,
 } from "../../../src/shared/models/toolRegistry";
@@ -110,12 +144,125 @@ describe("模型工具注册表", () => {
     });
   });
 
+  it("注册浏览器页面状态工具且声明低风险观察分类", () => {
+    const pageStateTool = getRegisteredModelTools().find((tool) => tool.id === BROWSER_GET_PAGE_STATE_TOOL_ID);
+
+    expect(pageStateTool).toMatchObject({
+      id: BROWSER_GET_PAGE_STATE_TOOL_ID,
+      name: BROWSER_GET_PAGE_STATE_TOOL_NAME,
+      displayName: "浏览器页面状态",
+      toolClassification: {
+        runtime: "browser_control",
+        capabilities: ["observe_page"],
+        risk: "low",
+      },
+      parameters: {
+        type: "object",
+        required: [],
+        additionalProperties: false,
+      },
+    });
+  });
+
+  it("注册浏览器 Console 消息工具且声明现场分析分类", () => {
+    const consoleTool = getRegisteredModelTools().find((tool) => tool.id === BROWSER_GET_CONSOLE_MESSAGES_TOOL_ID);
+
+    expect(consoleTool).toMatchObject({
+      id: BROWSER_GET_CONSOLE_MESSAGES_TOOL_ID,
+      name: BROWSER_GET_CONSOLE_MESSAGES_TOOL_NAME,
+      displayName: "浏览器 Console 消息",
+      toolClassification: {
+        runtime: "browser_control",
+        capabilities: ["observe_page", "analyze_site"],
+        risk: "medium",
+      },
+      parameters: {
+        type: "object",
+        required: [],
+        additionalProperties: false,
+      },
+    });
+  });
+
+  it("注册浏览器元素检查工具且只接受 UID 参数", () => {
+    const inspectTool = getRegisteredModelTools().find((tool) => tool.id === BROWSER_INSPECT_ELEMENT_TOOL_ID);
+
+    expect(inspectTool).toMatchObject({
+      id: BROWSER_INSPECT_ELEMENT_TOOL_ID,
+      name: BROWSER_INSPECT_ELEMENT_TOOL_NAME,
+      displayName: "浏览器检查元素",
+      toolClassification: {
+        runtime: "browser_control",
+        capabilities: ["observe_page", "analyze_site"],
+        risk: "low",
+      },
+      parameters: {
+        type: "object",
+        required: ["uid"],
+        additionalProperties: false,
+      },
+    });
+    expect(inspectTool?.parameters.properties).toMatchObject({
+      uid: { type: "string" },
+    });
+  });
+
+  it("注册浏览器元素查找工具且限制查询策略和数量", () => {
+    const findTool = getRegisteredModelTools().find((tool) => tool.id === BROWSER_FIND_ELEMENTS_TOOL_ID);
+
+    expect(findTool).toMatchObject({
+      id: BROWSER_FIND_ELEMENTS_TOOL_ID,
+      name: BROWSER_FIND_ELEMENTS_TOOL_NAME,
+      displayName: "浏览器查找元素",
+      toolClassification: {
+        runtime: "browser_control",
+        capabilities: ["observe_page"],
+        risk: "low",
+      },
+      parameters: {
+        type: "object",
+        required: ["query"],
+        additionalProperties: false,
+      },
+    });
+    expect(findTool?.parameters.properties).toMatchObject({
+      query: { type: "string" },
+      strategy: { type: "string", enum: ["text", "role", "label", "placeholder", "css"] },
+      limit: { type: "integer", minimum: 1, maximum: 50 },
+    });
+  });
+
+  it("注册浏览器截图工具且限制截图目标", () => {
+    const screenshotTool = getRegisteredModelTools().find((tool) => tool.id === BROWSER_SCREENSHOT_TOOL_ID);
+
+    expect(screenshotTool).toMatchObject({
+      id: BROWSER_SCREENSHOT_TOOL_ID,
+      name: BROWSER_SCREENSHOT_TOOL_NAME,
+      displayName: "浏览器截图",
+      toolClassification: {
+        runtime: "browser_control",
+        capabilities: ["observe_page"],
+        risk: "medium",
+      },
+      parameters: {
+        type: "object",
+        required: [],
+        additionalProperties: false,
+      },
+    });
+    expect(screenshotTool?.parameters.properties).toMatchObject({
+      target: { type: "string", enum: ["viewport", "element"] },
+      uid: { type: "string" },
+    });
+  });
+
   it("注册阶段三浏览器基础操作工具并收紧参数 schema", () => {
     const tools = getRegisteredModelTools();
     const clickTool = tools.find((tool) => tool.id === BROWSER_CLICK_TOOL_ID);
     const fillTool = tools.find((tool) => tool.id === BROWSER_FILL_TOOL_ID);
     const pressKeyTool = tools.find((tool) => tool.id === BROWSER_PRESS_KEY_TOOL_ID);
     const waitForTool = tools.find((tool) => tool.id === BROWSER_WAIT_FOR_TOOL_ID);
+    const waitForStateTool = tools.find((tool) => tool.id === BROWSER_WAIT_FOR_STATE_TOOL_ID);
 
     expect(clickTool).toMatchObject({
       id: BROWSER_CLICK_TOOL_ID,
@@ -176,6 +323,244 @@ describe("模型工具注册表", () => {
     expect(waitForTool?.parameters.properties).toMatchObject({
       text: { type: "array", items: { type: "string" } },
       timeout: { type: "number", minimum: 1, maximum: 30000 },
+    });
+
+    expect(waitForStateTool).toMatchObject({
+      id: BROWSER_WAIT_FOR_STATE_TOOL_ID,
+      name: BROWSER_WAIT_FOR_STATE_TOOL_NAME,
+      displayName: "浏览器等待状态",
+      toolClassification: {
+        runtime: "browser_control",
+        capabilities: ["observe_page", "operate_page"],
+        risk: "low",
+      },
+      parameters: {
+        type: "object",
+        required: ["state"],
+        additionalProperties: false,
+      },
+    });
+    expect(waitForStateTool?.parameters.properties).toMatchObject({
+      state: { type: "string", enum: ["url_contains", "ready_state", "element_visible", "element_hidden", "network_idle"] },
+      value: { type: "string" },
+      uid: { type: "string" },
+      timeout: { type: "number", minimum: 1, maximum: 30000 },
+      includeSnapshot: { type: "boolean" },
+    });
+  });
+
+  it("注册浏览器滚动工具并限制滚动目标", () => {
+    const scrollTool = getRegisteredModelTools().find((tool) => tool.id === BROWSER_SCROLL_TOOL_ID);
+
+    expect(scrollTool).toMatchObject({
+      id: BROWSER_SCROLL_TOOL_ID,
+      name: BROWSER_SCROLL_TOOL_NAME,
+      displayName: "浏览器滚动页面",
+      toolClassification: {
+        runtime: "browser_control",
+        capabilities: ["operate_page"],
+        risk: "medium",
+      },
+      parameters: {
+        type: "object",
+        required: ["direction"],
+        additionalProperties: false,
+      },
+    });
+    expect(scrollTool?.parameters.properties).toMatchObject({
+      direction: { type: "string", enum: ["up", "down", "left", "right", "top", "bottom"] },
+      amount: { type: "integer", minimum: 1, maximum: 5000 },
+      uid: { type: "string" },
+      includeSnapshot: { type: "boolean" },
+    });
+  });
+
+  it("注册浏览器悬停工具且只接受快照 UID", () => {
+    const hoverTool = getRegisteredModelTools().find((tool) => tool.id === BROWSER_HOVER_TOOL_ID);
+
+    expect(hoverTool).toMatchObject({
+      id: BROWSER_HOVER_TOOL_ID,
+      name: BROWSER_HOVER_TOOL_NAME,
+      displayName: "浏览器悬停元素",
+      toolClassification: {
+        runtime: "browser_control",
+        capabilities: ["operate_page"],
+        risk: "medium",
+      },
+      parameters: {
+        type: "object",
+        required: ["uid"],
+        additionalProperties: false,
+      },
+    });
+    expect(hoverTool?.parameters.properties).toMatchObject({
+      uid: { type: "string" },
+      includeSnapshot: { type: "boolean" },
+    });
+  });
+
+  it("注册浏览器双击工具且只接受快照 UID", () => {
+    const doubleClickTool = getRegisteredModelTools().find((tool) => tool.id === BROWSER_DOUBLE_CLICK_TOOL_ID);
+
+    expect(doubleClickTool).toMatchObject({
+      id: BROWSER_DOUBLE_CLICK_TOOL_ID,
+      name: BROWSER_DOUBLE_CLICK_TOOL_NAME,
+      displayName: "浏览器双击元素",
+      toolClassification: {
+        runtime: "browser_control",
+        capabilities: ["operate_page"],
+        risk: "medium",
+      },
+      parameters: {
+        type: "object",
+        required: ["uid"],
+        additionalProperties: false,
+      },
+    });
+    expect(doubleClickTool?.parameters.properties).toMatchObject({
+      uid: { type: "string" },
+      includeSnapshot: { type: "boolean" },
+    });
+  });
+
+  it("注册浏览器右键工具且只接受快照 UID", () => {
+    const contextClickTool = getRegisteredModelTools().find((tool) => tool.id === BROWSER_CONTEXT_CLICK_TOOL_ID);
+
+    expect(contextClickTool).toMatchObject({
+      id: BROWSER_CONTEXT_CLICK_TOOL_ID,
+      name: BROWSER_CONTEXT_CLICK_TOOL_NAME,
+      displayName: "浏览器右键元素",
+      toolClassification: {
+        runtime: "browser_control",
+        capabilities: ["operate_page"],
+        risk: "medium",
+      },
+      parameters: {
+        type: "object",
+        required: ["uid"],
+        additionalProperties: false,
+      },
+    });
+    expect(contextClickTool?.parameters.properties).toMatchObject({
+      uid: { type: "string" },
+      includeSnapshot: { type: "boolean" },
+    });
+  });
+
+  it("注册浏览器拖拽工具且只接受快照 UID 或有限偏移", () => {
+    const dragTool = getRegisteredModelTools().find((tool) => tool.id === BROWSER_DRAG_TOOL_ID);
+
+    expect(dragTool).toMatchObject({
+      id: BROWSER_DRAG_TOOL_ID,
+      name: BROWSER_DRAG_TOOL_NAME,
+      displayName: "浏览器拖拽元素",
+      toolClassification: {
+        runtime: "browser_control",
+        capabilities: ["operate_page"],
+        risk: "high",
+      },
+      parameters: {
+        type: "object",
+        required: ["sourceUid"],
+        additionalProperties: false,
+      },
+    });
+    expect(dragTool?.parameters.properties).toMatchObject({
+      sourceUid: { type: "string" },
+      targetUid: { type: "string" },
+      deltaX: { type: "integer", minimum: -2000, maximum: 2000 },
+      deltaY: { type: "integer", minimum: -2000, maximum: 2000 },
+      includeSnapshot: { type: "boolean" },
+    });
+  });
+
+  it("注册交互阻塞分析工具且只接受快照 UID", () => {
+    const tool = getRegisteredModelTools().find((item) => item.id === BROWSER_ANALYZE_INTERACTION_BLOCKER_TOOL_ID);
+
+    expect(tool).toMatchObject({
+      id: BROWSER_ANALYZE_INTERACTION_BLOCKER_TOOL_ID,
+      name: BROWSER_ANALYZE_INTERACTION_BLOCKER_TOOL_NAME,
+      displayName: "浏览器交互阻塞分析",
+      toolClassification: {
+        runtime: "browser_control",
+        capabilities: ["analyze_site"],
+        risk: "low",
+      },
+      parameters: {
+        type: "object",
+        required: ["uid"],
+        additionalProperties: false,
+      },
+    });
+    expect(tool?.parameters.properties).toMatchObject({
+      uid: { type: "string" },
+      expectedAction: { type: "string", enum: ["click", "fill", "view"] },
+    });
+  });
+
+  it("注册表单分析工具且只接受可选快照 UID", () => {
+    const tool = getRegisteredModelTools().find((item) => item.id === BROWSER_ANALYZE_FORM_TOOL_ID);
+
+    expect(tool).toMatchObject({
+      id: BROWSER_ANALYZE_FORM_TOOL_ID,
+      name: BROWSER_ANALYZE_FORM_TOOL_NAME,
+      displayName: "浏览器表单分析",
+      toolClassification: {
+        runtime: "browser_control",
+        capabilities: ["analyze_site"],
+        risk: "medium",
+      },
+      parameters: {
+        type: "object",
+        required: [],
+        additionalProperties: false,
+      },
+    });
+    expect(tool?.parameters.properties).toMatchObject({
+      uid: { type: "string" },
+      includeFieldDetails: { type: "boolean" },
+    });
+  });
+
+  it("注册性能摘要工具且不接受模型参数", () => {
+    const tool = getRegisteredModelTools().find((item) => item.id === BROWSER_GET_PERFORMANCE_SUMMARY_TOOL_ID);
+
+    expect(tool).toMatchObject({
+      id: BROWSER_GET_PERFORMANCE_SUMMARY_TOOL_ID,
+      name: BROWSER_GET_PERFORMANCE_SUMMARY_TOOL_NAME,
+      displayName: "浏览器性能摘要",
+      toolClassification: {
+        runtime: "browser_control",
+        capabilities: ["analyze_site"],
+        risk: "low",
+      },
+      parameters: {
+        type: "object",
+        properties: {},
+        required: [],
+        additionalProperties: false,
+      },
+    });
+  });
+
+  it("注册浏览器聚合诊断工具且不接受模型参数", () => {
+    const tool = getRegisteredModelTools().find((item) => item.id === BROWSER_COLLECT_DIAGNOSTICS_TOOL_ID);
+
+    expect(tool).toMatchObject({
+      id: BROWSER_COLLECT_DIAGNOSTICS_TOOL_ID,
+      name: BROWSER_COLLECT_DIAGNOSTICS_TOOL_NAME,
+      displayName: "浏览器聚合诊断",
+      toolClassification: {
+        runtime: "browser_control",
+        capabilities: ["observe_page", "analyze_site", "deliver_result"],
+        risk: "medium",
+      },
+      parameters: {
+        type: "object",
+        properties: {},
+        required: [],
+        additionalProperties: false,
+      },
     });
   });
 
@@ -270,10 +655,25 @@ describe("模型工具注册表", () => {
     });
     expect(browserGroup?.tools.map((tool) => tool.id)).toEqual([
       BROWSER_TAKE_SNAPSHOT_TOOL_ID,
+      BROWSER_GET_PAGE_STATE_TOOL_ID,
+      BROWSER_GET_CONSOLE_MESSAGES_TOOL_ID,
+      BROWSER_INSPECT_ELEMENT_TOOL_ID,
+      BROWSER_FIND_ELEMENTS_TOOL_ID,
+      BROWSER_SCREENSHOT_TOOL_ID,
+      BROWSER_ANALYZE_INTERACTION_BLOCKER_TOOL_ID,
+      BROWSER_ANALYZE_FORM_TOOL_ID,
+      BROWSER_GET_PERFORMANCE_SUMMARY_TOOL_ID,
+      BROWSER_COLLECT_DIAGNOSTICS_TOOL_ID,
+      BROWSER_SCROLL_TOOL_ID,
+      BROWSER_HOVER_TOOL_ID,
+      BROWSER_DOUBLE_CLICK_TOOL_ID,
+      BROWSER_CONTEXT_CLICK_TOOL_ID,
+      BROWSER_DRAG_TOOL_ID,
       BROWSER_CLICK_TOOL_ID,
       BROWSER_FILL_TOOL_ID,
       BROWSER_PRESS_KEY_TOOL_ID,
       BROWSER_WAIT_FOR_TOOL_ID,
+      BROWSER_WAIT_FOR_STATE_TOOL_ID,
       BROWSER_NAVIGATE_PAGE_TOOL_ID,
       BROWSER_NEW_PAGE_TOOL_ID,
       BROWSER_LIST_PAGES_TOOL_ID,
@@ -495,5 +895,155 @@ describe("模型工具注册表", () => {
 
   it("注册工具列表返回稳定引用，避免设置页渲染时重复创建对象", () => {
     expect(getRegisteredModelTools()).toBe(getRegisteredModelTools());
+  });
+
+  it("所有注册工具都声明结构化分类且分类值来自固定枚举", () => {
+    const tools = getRegisteredModelTools();
+
+    expect(tools.every((tool) => Boolean(tool.toolClassification))).toBe(true);
+    for (const tool of tools) {
+      expect(MODEL_TOOL_RUNTIME_VALUES).toContain(tool.toolClassification?.runtime);
+      expect(MODEL_TOOL_RISK_VALUES).toContain(tool.toolClassification?.risk);
+      expect(tool.toolClassification?.capabilities.length).toBeGreaterThan(0);
+      for (const capability of tool.toolClassification?.capabilities ?? []) {
+        expect(MODEL_TOOL_CAPABILITY_VALUES).toContain(capability);
+      }
+    }
+  });
+
+  it("现有工具分类矩阵覆盖本地、公开搜索、浏览器控制、受控增强和完全访问边界", () => {
+    const tools = getRegisteredModelTools();
+    const classificationById = new Map(tools.map((tool) => [tool.id, tool.toolClassification]));
+
+    expect(classificationById.get(CURRENT_TIME_TOOL_ID)).toEqual({
+      runtime: "local",
+      capabilities: ["system_context"],
+      risk: "low",
+    });
+    expect(classificationById.get(TAVILY_SEARCH_TOOL_ID)).toEqual({
+      runtime: "external_web",
+      capabilities: ["search_public_web"],
+      risk: "low",
+    });
+    expect(classificationById.get(BROWSER_TAKE_SNAPSHOT_TOOL_ID)).toEqual({
+      runtime: "browser_control",
+      capabilities: ["observe_page"],
+      risk: "low",
+    });
+    expect(classificationById.get(BROWSER_GET_PAGE_STATE_TOOL_ID)).toEqual({
+      runtime: "browser_control",
+      capabilities: ["observe_page"],
+      risk: "low",
+    });
+    expect(classificationById.get(BROWSER_GET_CONSOLE_MESSAGES_TOOL_ID)).toEqual({
+      runtime: "browser_control",
+      capabilities: ["observe_page", "analyze_site"],
+      risk: "medium",
+    });
+    expect(classificationById.get(BROWSER_INSPECT_ELEMENT_TOOL_ID)).toEqual({
+      runtime: "browser_control",
+      capabilities: ["observe_page", "analyze_site"],
+      risk: "low",
+    });
+    expect(classificationById.get(BROWSER_FIND_ELEMENTS_TOOL_ID)).toEqual({
+      runtime: "browser_control",
+      capabilities: ["observe_page"],
+      risk: "low",
+    });
+    expect(classificationById.get(BROWSER_SCREENSHOT_TOOL_ID)).toEqual({
+      runtime: "browser_control",
+      capabilities: ["observe_page"],
+      risk: "medium",
+    });
+    expect(classificationById.get(BROWSER_SCROLL_TOOL_ID)).toEqual({
+      runtime: "browser_control",
+      capabilities: ["operate_page"],
+      risk: "medium",
+    });
+    expect(classificationById.get(BROWSER_HOVER_TOOL_ID)).toEqual({
+      runtime: "browser_control",
+      capabilities: ["operate_page"],
+      risk: "medium",
+    });
+    expect(classificationById.get(BROWSER_DOUBLE_CLICK_TOOL_ID)).toEqual({
+      runtime: "browser_control",
+      capabilities: ["operate_page"],
+      risk: "medium",
+    });
+    expect(classificationById.get(BROWSER_CONTEXT_CLICK_TOOL_ID)).toEqual({
+      runtime: "browser_control",
+      capabilities: ["operate_page"],
+      risk: "medium",
+    });
+    expect(classificationById.get(BROWSER_DRAG_TOOL_ID)).toEqual({
+      runtime: "browser_control",
+      capabilities: ["operate_page"],
+      risk: "high",
+    });
+    expect(classificationById.get(BROWSER_COLLECT_DIAGNOSTICS_TOOL_ID)).toEqual({
+      runtime: "browser_control",
+      capabilities: ["observe_page", "analyze_site", "deliver_result"],
+      risk: "medium",
+    });
+    expect(classificationById.get(BROWSER_CLICK_TOOL_ID)).toEqual({
+      runtime: "browser_control",
+      capabilities: ["operate_page"],
+      risk: "medium",
+    });
+    expect(classificationById.get(BROWSER_WAIT_FOR_STATE_TOOL_ID)).toEqual({
+      runtime: "browser_control",
+      capabilities: ["observe_page", "operate_page"],
+      risk: "low",
+    });
+    expect(classificationById.get(NETWORK_GET_REQUEST_DETAILS_TOOL_ID)).toEqual({
+      runtime: "browser_control",
+      capabilities: ["observe_page", "analyze_site"],
+      risk: "medium",
+    });
+    expect(classificationById.get(BOUNDARY_REQUEST_USER_CHOICE_TOOL_ID)).toEqual({
+      runtime: "controlled_enhanced",
+      capabilities: ["confirm_boundary"],
+      risk: "high",
+    });
+    expect(classificationById.get(REPLAY_SEND_REQUEST_TOOL_ID)).toEqual({
+      runtime: "controlled_enhanced",
+      capabilities: ["analyze_site", "confirm_boundary"],
+      risk: "high",
+    });
+    expect(classificationById.get(FULL_ACCESS_EXECUTE_SCRIPT_TOOL_ID)).toEqual({
+      runtime: "full_access",
+      capabilities: ["observe_page", "operate_page", "analyze_site"],
+      risk: "critical",
+    });
+  });
+
+  it("可以按运行要求、能力和风险组合筛选工具", () => {
+    const tools = getRegisteredModelTools();
+
+    expect(filterModelToolsByClassification(tools, {
+      runtime: "browser_control",
+      capability: "observe_page",
+      risk: "low",
+    }).map((tool) => tool.id)).toEqual([
+      BROWSER_TAKE_SNAPSHOT_TOOL_ID,
+      BROWSER_GET_PAGE_STATE_TOOL_ID,
+      BROWSER_INSPECT_ELEMENT_TOOL_ID,
+      BROWSER_FIND_ELEMENTS_TOOL_ID,
+      BROWSER_WAIT_FOR_TOOL_ID,
+      BROWSER_WAIT_FOR_STATE_TOOL_ID,
+      BROWSER_LIST_PAGES_TOOL_ID,
+      NETWORK_LIST_REQUESTS_TOOL_ID,
+      NETWORK_CLEAR_REQUESTS_TOOL_ID,
+      NETWORK_WAIT_FOR_REQUESTS_TOOL_ID,
+    ]);
+
+    expect(filterModelToolsByClassification(tools, {
+      capability: "confirm_boundary",
+    }).map((tool) => tool.id)).toEqual([
+      BOUNDARY_REQUEST_USER_CHOICE_TOOL_ID,
+      REPLAY_PREPARE_REQUEST_TOOL_ID,
+      REPLAY_SEND_REQUEST_TOOL_ID,
+      FULL_ACCESS_REVOKE_TOOL_ID,
+    ]);
   });
 });

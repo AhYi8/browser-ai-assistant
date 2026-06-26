@@ -361,6 +361,71 @@ describe("通用模型工具循环", () => {
     );
   });
 
+  it("浏览器自动化工具完成后会基于真实工具记录生成自动化报告附件", async () => {
+    const requestModel = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        content: "先观察页面，再检查 Network。",
+        toolCalls: [
+          { id: "call-page", name: "network_list_requests", arguments: {} },
+          { id: "call-console", name: "network_list_requests", arguments: { status: 500 } },
+        ],
+      })
+      .mockResolvedValueOnce({ ok: true, content: "工具决策完成" });
+    const requestFinalModel = vi.fn().mockResolvedValue({ ok: true, content: "最终回答：发现一个 500 请求。" });
+    const executeTool: ModelToolExecutor = vi.fn(async (call) => ({
+      toolCallId: call.id,
+      name: call.name,
+      content: call.id === "call-page" ? "页面状态：已加载" : "Network 请求失败：500 token=secret",
+      isError: call.id === "call-console",
+    }));
+
+    const result = await runModelToolLoop({
+      initialMessages: baseMessages,
+      tools: [browserTool],
+      enabledToolIds: [browserTool.id],
+      requestModel,
+      requestFinalModel,
+      executeTool,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      content: "最终回答：发现一个 500 请求。",
+      toolAttachments: [
+        expect.objectContaining({
+          kind: "automation-report",
+          title: "自动化任务报告",
+          summary: expect.stringContaining("总步骤=2，成功=1，失败=1"),
+          steps: [
+            expect.objectContaining({ toolCallId: "call-page", status: "success", evidence: "页面状态：已加载" }),
+            expect.objectContaining({ toolCallId: "call-console", status: "error", evidence: "Network 请求失败：500 token=[已脱敏]" }),
+          ],
+          timeline: [
+            expect.objectContaining({ type: "tool_call", toolCallId: "call-page", status: "success", detail: "页面状态：已加载" }),
+            expect.objectContaining({ type: "tool_call", toolCallId: "call-console", status: "error", detail: "Network 请求失败：500 token=[已脱敏]" }),
+            expect.objectContaining({ type: "failure_recovery", toolCallId: "call-console", status: "error" }),
+          ],
+          failureSummary: expect.objectContaining({
+            failedStepCount: 1,
+            failedTools: ["列出 Network 请求"],
+            recoverableActions: expect.arrayContaining(["检查失败步骤的参数、页面状态或授权边界后重试。"]),
+          }),
+          redacted: true,
+        }),
+      ],
+      toolTurnMessages: [
+        expect.objectContaining({
+          toolAttachments: expect.arrayContaining([
+            expect.objectContaining({ kind: "automation-report", summary: expect.stringContaining("总步骤=2") }),
+          ]),
+        }),
+      ],
+    });
+    expect(result.ok && result.toolAttachments?.[0].summary).not.toContain("secret");
+  });
+
   it("最终模型请求会明确要求停止工具阶段并直接总结", async () => {
     const requestModel = vi
       .fn()
@@ -406,6 +471,10 @@ describe("通用模型工具循环", () => {
     expect(finalMessages.at(-1)).toMatchObject({
       role: "user",
       content: expect.stringContaining("不要再声称将继续调用、测试或等待工具"),
+    });
+    expect(finalMessages.at(-1)).toMatchObject({
+      role: "user",
+      content: expect.stringContaining("事实证据、模型推断和未验证假设"),
     });
     expect(finalMessages.at(-1)).toMatchObject({
       role: "user",

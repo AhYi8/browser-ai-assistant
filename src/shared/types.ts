@@ -285,12 +285,71 @@ export interface ChatSourceMapToolAttachment extends ChatToolAttachmentBase {
   failures: Array<{ resourceId?: string; url?: string; message: string }>;
 }
 
+export interface ChatBrowserScreenshotToolAttachment extends ChatToolAttachmentBase {
+  kind: "browser-screenshot";
+  mediaType: "image/png";
+  dataUrl: string;
+  target: "viewport" | "element";
+  uid?: string;
+  byteSize: number;
+  clip?: { x: number; y: number; width: number; height: number; scale: number };
+}
+
+export interface AutomationReportStep {
+  toolCallId: string;
+  toolName: string;
+  displayName: string;
+  status: ChatToolCallStatus;
+  startedAt: number;
+  completedAt?: number;
+  evidence: string;
+  attachmentKinds: string[];
+}
+
+export type AutomationTimelineEventType = "tool_call" | "page_change" | "wait" | "user_confirmation" | "failure_recovery";
+
+export interface AutomationTimelineEvent {
+  id: string;
+  type: AutomationTimelineEventType;
+  at: number;
+  label: string;
+  detail: string;
+  toolCallId?: string;
+  status?: ChatToolCallStatus;
+}
+
+export interface AutomationFailureSummary {
+  failedStepCount: number;
+  failedTools: string[];
+  recoverableActions: string[];
+}
+
+export type AutomationReportType = "general" | "page_inspection" | "form_diagnosis" | "interface_analysis";
+
+export interface ChatAutomationReportToolAttachment extends ChatToolAttachmentBase {
+  kind: "automation-report";
+  reportType: AutomationReportType;
+  objective: string;
+  conclusion: string;
+  steps: AutomationReportStep[];
+  timeline: AutomationTimelineEvent[];
+  failureSummary?: AutomationFailureSummary;
+  fullAccessIncluded: boolean;
+}
+
 export interface ChatGenericToolAttachment extends ChatToolAttachmentBase {
   kind: string;
   details?: string;
 }
 
-export type ChatToolAttachment = ChatWebSearchToolAttachment | ChatNetworkToolAttachment | ChatJsSourceToolAttachment | ChatSourceMapToolAttachment | ChatGenericToolAttachment;
+export type ChatToolAttachment =
+  | ChatWebSearchToolAttachment
+  | ChatNetworkToolAttachment
+  | ChatJsSourceToolAttachment
+  | ChatSourceMapToolAttachment
+  | ChatBrowserScreenshotToolAttachment
+  | ChatAutomationReportToolAttachment
+  | ChatGenericToolAttachment;
 
 export interface PromptTemplate {
   id: string;

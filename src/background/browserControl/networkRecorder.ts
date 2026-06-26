@@ -20,6 +20,11 @@ export interface NetworkWaitFilter extends NetworkRequestFilter {
   timeoutMs?: number;
 }
 
+export interface NetworkIdleWaitOptions {
+  idleMs?: number;
+  timeoutMs?: number;
+}
+
 interface CachedNetworkRequest {
   meta: NetworkRequestMeta;
   requestTimestamp?: number;
@@ -38,6 +43,8 @@ const MAX_CACHED_REQUESTS = 1000;
 const DEFAULT_LIST_LIMIT = 200;
 const DEFAULT_WAIT_TIMEOUT_MS = 5000;
 const MAX_WAIT_TIMEOUT_MS = 30000;
+const DEFAULT_IDLE_MS = 500;
+const MAX_IDLE_MS = 5000;
 
 export class BrowserNetworkRecorder {
   private enabledTabId: number | undefined;
@@ -132,6 +139,64 @@ export class BrowserNetworkRecorder {
       };
       this.waiters.add(waiter);
     });
+  }
+
+  waitForIdle(options: NetworkIdleWaitOptions = {}): Promise<{ ok: true; idleMs: number } | { ok: false; message: string }> {
+    const idleMs = normalizeIdleMs(options.idleMs);
+    const timeoutMs = normalizeTimeout(options.timeoutMs);
+    return new Promise((resolve) => {
+      let done = false;
+      let idleTimer: ReturnType<typeof setTimeout> | undefined;
+      let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+      const cleanup = () => {
+        done = true;
+        if (idleTimer) {
+          clearTimeout(idleTimer);
+        }
+        if (timeoutTimer) {
+          clearTimeout(timeoutTimer);
+        }
+        this.connection.removeEventListener(listener);
+      };
+      const finishIdle = () => {
+        if (done) {
+          return;
+        }
+        cleanup();
+        resolve({ ok: true, idleMs });
+      };
+      const scheduleIdleCheck = () => {
+        if (done) {
+          return;
+        }
+        if (idleTimer) {
+          clearTimeout(idleTimer);
+        }
+        if (this.getPendingRequestCount() > 0) {
+          return;
+        }
+        idleTimer = setTimeout(finishIdle, idleMs);
+      };
+      const listener = (method: string) => {
+        if (method === "Network.requestWillBeSent" || method === "Network.responseReceived" || method === "Network.loadingFinished" || method === "Network.loadingFailed") {
+          scheduleIdleCheck();
+        }
+      };
+      timeoutTimer = setTimeout(() => {
+        if (done) {
+          return;
+        }
+        const pendingCount = this.getPendingRequestCount();
+        cleanup();
+        resolve({ ok: false, message: `等待 Network 空闲超时，仍有 ${pendingCount} 个请求进行中。` });
+      }, timeoutMs);
+      this.connection.addEventListener(listener);
+      scheduleIdleCheck();
+    });
+  }
+
+  getPendingRequestCount(): number {
+    return Array.from(this.requestsById.values()).filter((request) => !request.loadingFinished && !request.failed).length;
   }
 
   private handleNetworkEvent(method: string, params: Record<string, unknown> | undefined): void {
@@ -324,6 +389,13 @@ function normalizeTimeout(value: unknown): number {
     return DEFAULT_WAIT_TIMEOUT_MS;
   }
   return Math.min(Math.floor(value), MAX_WAIT_TIMEOUT_MS);
+}
+
+function normalizeIdleMs(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return DEFAULT_IDLE_MS;
+  }
+  return Math.min(Math.floor(value), MAX_IDLE_MS);
 }
 
 function shouldReadResponseBody(meta: NetworkRequestMeta): boolean {

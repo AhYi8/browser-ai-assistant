@@ -206,6 +206,7 @@ describe("浏览器控制地基", () => {
     expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith({ tabId: 9 }, "DOM.enable", {}, expect.any(Function));
     expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith({ tabId: 9 }, "Accessibility.enable", {}, expect.any(Function));
     expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith({ tabId: 9 }, "Network.enable", {}, expect.any(Function));
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith({ tabId: 9 }, "Log.enable", {}, expect.any(Function));
   });
 
   it("底层调试连接运行时拒绝未允许的 CDP 方法", async () => {
@@ -975,16 +976,1171 @@ describe("浏览器控制地基", () => {
     const fillResult = await manager.executeBrowserTool(createNamedToolCall("fill", { uid: "1_1", value: "你好" }));
     const pressKeyResult = await manager.executeBrowserTool(createNamedToolCall("press_key", { key: "Enter" }));
     const waitForResult = await manager.executeBrowserTool(createNamedToolCall("wait_for", { text: ["完成"] }));
+    const pageStateResult = await manager.executeBrowserTool(createNamedToolCall("get_page_state"));
+    const consoleResult = await manager.executeBrowserTool(createNamedToolCall("get_console_messages"));
+    const inspectResult = await manager.executeBrowserTool(createNamedToolCall("inspect_element", { uid: "1_1" }));
+    const findResult = await manager.executeBrowserTool(createNamedToolCall("find_elements", { query: "提交" }));
+    const screenshotResult = await manager.executeBrowserTool(createNamedToolCall("screenshot"));
+    const scrollResult = await manager.executeBrowserTool(createNamedToolCall("scroll", { direction: "down" }));
+    const hoverResult = await manager.executeBrowserTool(createNamedToolCall("hover", { uid: "1_1" }));
+    const doubleClickResult = await manager.executeBrowserTool(createNamedToolCall("double_click", { uid: "1_1" }));
+    const contextClickResult = await manager.executeBrowserTool(createNamedToolCall("context_click", { uid: "1_1" }));
+    const waitForStateResult = await manager.executeBrowserTool(createNamedToolCall("wait_for_state", { state: "ready_state", value: "complete" }));
+    const dragResult = await manager.executeBrowserTool(createNamedToolCall("drag", { sourceUid: "1_1", targetUid: "1_2" }));
+    const blockerResult = await manager.executeBrowserTool(createNamedToolCall("analyze_interaction_blocker", { uid: "1_1" }));
+    const formAnalysisResult = await manager.executeBrowserTool(createNamedToolCall("analyze_form"));
+    const performanceResult = await manager.executeBrowserTool(createNamedToolCall("get_performance_summary"));
+    const diagnosticsResult = await manager.executeBrowserTool(createNamedToolCall("collect_diagnostics"));
 
     expect(clickResult.content).toBe("浏览器控制未开启，无法执行浏览器操作。请先在顶部浏览器控制按钮中显式开启。");
     expect(fillResult.content).toBe("浏览器控制未开启，无法执行浏览器操作。请先在顶部浏览器控制按钮中显式开启。");
     expect(pressKeyResult.content).toBe("浏览器控制未开启，无法执行浏览器操作。请先在顶部浏览器控制按钮中显式开启。");
     expect(waitForResult.content).toBe("浏览器控制未开启，无法执行浏览器操作。请先在顶部浏览器控制按钮中显式开启。");
+    expect(pageStateResult.content).toBe("浏览器控制未开启，无法执行浏览器操作。请先在顶部浏览器控制按钮中显式开启。");
+    expect(consoleResult.content).toBe("浏览器控制未开启，无法执行浏览器操作。请先在顶部浏览器控制按钮中显式开启。");
+    expect(inspectResult.content).toBe("浏览器控制未开启，无法执行浏览器操作。请先在顶部浏览器控制按钮中显式开启。");
+    expect(findResult.content).toBe("浏览器控制未开启，无法执行浏览器操作。请先在顶部浏览器控制按钮中显式开启。");
+    expect(screenshotResult.content).toBe("浏览器控制未开启，无法执行浏览器操作。请先在顶部浏览器控制按钮中显式开启。");
+    expect(scrollResult.content).toBe("浏览器控制未开启，无法执行浏览器操作。请先在顶部浏览器控制按钮中显式开启。");
+    expect(hoverResult.content).toBe("浏览器控制未开启，无法执行浏览器操作。请先在顶部浏览器控制按钮中显式开启。");
+    expect(doubleClickResult.content).toBe("浏览器控制未开启，无法执行浏览器操作。请先在顶部浏览器控制按钮中显式开启。");
+    expect(contextClickResult.content).toBe("浏览器控制未开启，无法执行浏览器操作。请先在顶部浏览器控制按钮中显式开启。");
+    expect(waitForStateResult.content).toBe("浏览器控制未开启，无法执行浏览器操作。请先在顶部浏览器控制按钮中显式开启。");
+    expect(dragResult.content).toBe("浏览器控制未开启，无法执行浏览器操作。请先在顶部浏览器控制按钮中显式开启。");
+    expect(blockerResult.content).toBe("浏览器控制未开启，无法执行浏览器操作。请先在顶部浏览器控制按钮中显式开启。");
+    expect(formAnalysisResult.content).toBe("浏览器控制未开启，无法执行浏览器操作。请先在顶部浏览器控制按钮中显式开启。");
+    expect(performanceResult.content).toBe("浏览器控制未开启，无法执行浏览器操作。请先在顶部浏览器控制按钮中显式开启。");
+    expect(diagnosticsResult.content).toBe("浏览器控制未开启，无法执行浏览器操作。请先在顶部浏览器控制按钮中显式开启。");
     expect(clickResult.isError).toBe(true);
     expect(fillResult.isError).toBe(true);
     expect(pressKeyResult.isError).toBe(true);
     expect(waitForResult.isError).toBe(true);
+    expect(pageStateResult.isError).toBe(true);
+    expect(consoleResult.isError).toBe(true);
+    expect(inspectResult.isError).toBe(true);
+    expect(findResult.isError).toBe(true);
+    expect(screenshotResult.isError).toBe(true);
+    expect(scrollResult.isError).toBe(true);
+    expect(hoverResult.isError).toBe(true);
+    expect(doubleClickResult.isError).toBe(true);
+    expect(contextClickResult.isError).toBe(true);
+    expect(waitForStateResult.isError).toBe(true);
+    expect(dragResult.isError).toBe(true);
+    expect(blockerResult.isError).toBe(true);
+    expect(formAnalysisResult.isError).toBe(true);
+    expect(performanceResult.isError).toBe(true);
+    expect(diagnosticsResult.isError).toBe(true);
     expect(chromeMock.debugger.attach).not.toHaveBeenCalled();
+  });
+
+  it("get_page_state 返回当前受控页状态摘要", async () => {
+    const chromeMock = createChromeMock({
+      title: "控制台页面",
+      url: "https://example.com/dashboard?token=secret",
+      sendCommandResults: {
+        "Runtime.evaluate": {
+          result: {
+            value: {
+              url: "https://example.com/dashboard?token=secret",
+              title: "控制台页面",
+              readyState: "complete",
+              viewport: { width: 1280, height: 720, deviceScaleFactor: 1 },
+              scroll: { x: 12, y: 340, maxX: 0, maxY: 900 },
+              focusedElement: { tagName: "INPUT", id: "search", name: "q", type: "search", text: "搜索" },
+            },
+          },
+        },
+      },
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const result = await manager.executeBrowserTool(createNamedToolCall("get_page_state"));
+
+    expect(result).toMatchObject({
+      toolCallId: "call-1",
+      name: "get_page_state",
+      content: expect.stringContaining("页面状态："),
+    });
+    expect(result.content).toContain("- 标题：控制台页面");
+    expect(result.content).toContain("- URL：https://example.com/dashboard?token=[已脱敏]");
+    expect(result.content).toContain("- readyState：complete");
+    expect(result.content).toContain("- viewport：1280x720，deviceScaleFactor=1");
+    expect(result.content).toContain("- scroll：x=12，y=340，maxX=0，maxY=900");
+    expect(result.content).toContain("- 焦点元素：INPUT#search[name=\"q\"][type=\"search\"] 搜索");
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith(
+      { tabId: 9 },
+      "Runtime.evaluate",
+      expect.objectContaining({ returnByValue: true }),
+      expect.any(Function),
+    );
+  });
+
+  it("get_console_messages 返回已采集 Console、异常和资源错误摘要", async () => {
+    const chromeMock = createChromeMock();
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    chromeMock.eventListeners[0]?.({ tabId: 9 }, "Runtime.consoleAPICalled", {
+      type: "error",
+      timestamp: 1710000000000,
+      args: [
+        { type: "string", value: "登录失败 token=secret" },
+        { type: "number", value: 401 },
+      ],
+      stackTrace: {
+        callFrames: [{ url: "https://example.com/app.js?token=secret", lineNumber: 10, columnNumber: 2 }],
+      },
+    });
+    chromeMock.eventListeners[0]?.({ tabId: 9 }, "Runtime.exceptionThrown", {
+      timestamp: 1710000001000,
+      exceptionDetails: {
+        text: "Uncaught",
+        exception: { description: "TypeError: Cannot read properties of undefined" },
+        url: "https://example.com/dashboard?session=abc",
+        lineNumber: 20,
+        columnNumber: 5,
+      },
+    });
+    chromeMock.eventListeners[0]?.({ tabId: 9 }, "Log.entryAdded", {
+      entry: {
+        level: "error",
+        source: "network",
+        text: "Failed to load resource: the server responded with a status of 500",
+        url: "https://example.com/api?password=123",
+        timestamp: 1710000002000,
+      },
+    });
+
+    const result = await manager.executeBrowserTool(createNamedToolCall("get_console_messages"));
+
+    expect(result).toMatchObject({
+      toolCallId: "call-1",
+      name: "get_console_messages",
+      content: expect.stringContaining("Console 消息摘要："),
+    });
+    expect(result.content).toContain("共 3 条");
+    expect(result.content).toContain("[error] 登录失败 token=[已脱敏] 401");
+    expect(result.content).toContain("https://example.com/app.js?token=[已脱敏]:11:3");
+    expect(result.content).toContain("[exception] TypeError: Cannot read properties of undefined");
+    expect(result.content).toContain("https://example.com/dashboard?session=[已脱敏]:20:5");
+    expect(result.content).toContain("[network:error] Failed to load resource");
+    expect(result.content).toContain("https://example.com/api?password=[已脱敏]");
+    expect(result.content).not.toContain("secret");
+    expect(result.content).not.toContain("password=123");
+  });
+
+  it("get_console_messages 不接受模型参数", async () => {
+    const chromeMock = createChromeMock();
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const result = await manager.executeBrowserTool(createNamedToolCall("get_console_messages", { level: "error" }));
+
+    expect(result).toEqual({
+      toolCallId: "call-1",
+      name: "get_console_messages",
+      content: "浏览器 Console 消息工具不接受任何参数。",
+      isError: true,
+    });
+  });
+
+  it("inspect_element 按快照 UID 返回元素属性、布局和可交互摘要", async () => {
+    const chromeMock = createChromeMock({
+      axNodes: [
+        { nodeId: "1", role: { value: "RootWebArea" }, name: { value: "示例页面" }, childIds: ["2"] },
+        {
+          nodeId: "2",
+          role: { value: "link" },
+          name: { value: "个人中心" },
+          properties: [{ name: "focused", value: { value: "true" } }],
+          backendDOMNodeId: 101,
+        },
+      ],
+      sendCommandResults: {
+        "DOM.resolveNode": { object: { objectId: "object-101" } },
+        "Runtime.callFunctionOn": {
+          result: {
+            value: {
+              tagName: "A",
+              id: "profile-link",
+              className: "nav active",
+              text: "个人中心 token=secret",
+              attributes: {
+                href: "https://example.com/me?token=secret",
+                title: "用户 token=secret",
+                "aria-label": "打开个人中心",
+              },
+              rect: { x: 10, y: 20, width: 120, height: 32 },
+              style: { display: "block", visibility: "visible", opacity: "1", pointerEvents: "auto", cursor: "pointer" },
+              state: { visible: true, disabled: false, editable: false },
+              outerHTML: "<a href=\"https://example.com/me?token=secret\">个人中心</a>",
+            },
+          },
+        },
+      },
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const snapshot = await manager.takeSnapshot(createToolCall());
+    const uid = snapshot.content.match(/uid=([^\s]+)/)?.[1] ?? "";
+    const result = await manager.executeBrowserTool(createNamedToolCall("inspect_element", { uid }));
+
+    expect(result).toMatchObject({
+      toolCallId: "call-1",
+      name: "inspect_element",
+      content: expect.stringContaining("元素检查："),
+    });
+    expect(result.content).toContain(`- UID：${uid}`);
+    expect(result.content).toContain("- AX：role=link，name=个人中心，focused=true");
+    expect(result.content).toContain("- DOM：A#profile-link.nav.active");
+    expect(result.content).toContain("href=\"https://example.com/me?token=[已脱敏]\"");
+    expect(result.content).toContain("title=\"用户 token=[已脱敏]\"");
+    expect(result.content).toContain("- 文本：个人中心 token=[已脱敏]");
+    expect(result.content).toContain("- 布局：x=10，y=20，width=120，height=32");
+    expect(result.content).toContain("- 样式：display=block，visibility=visible，opacity=1，pointerEvents=auto，cursor=pointer");
+    expect(result.content).toContain("- 状态：visible=true，disabled=false，editable=false");
+    expect(result.content).not.toContain("outerHTML");
+    expect(result.content).not.toContain("secret");
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith(
+      { tabId: 9 },
+      "Runtime.callFunctionOn",
+      expect.objectContaining({
+        objectId: "object-101",
+        returnByValue: true,
+        functionDeclaration: expect.stringContaining("getBoundingClientRect"),
+      }),
+      expect.any(Function),
+    );
+  });
+
+  it("inspect_element 拒绝缺失 UID 或额外参数", async () => {
+    const chromeMock = createChromeMock();
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const missingUid = await manager.executeBrowserTool(createNamedToolCall("inspect_element"));
+    const extraArg = await manager.executeBrowserTool(createNamedToolCall("inspect_element", { uid: "1_1", selector: "a" }));
+
+    expect(missingUid).toEqual({
+      toolCallId: "call-1",
+      name: "inspect_element",
+      content: "inspect_element 需要非空 UID。",
+      isError: true,
+    });
+    expect(extraArg).toEqual({
+      toolCallId: "call-1",
+      name: "inspect_element",
+      content: "浏览器元素检查工具不接受参数：selector。",
+      isError: true,
+    });
+  });
+
+  it("analyze_interaction_blocker 按 UID 返回交互阻塞诊断", async () => {
+    const chromeMock = createChromeMock({
+      axNodes: [
+        { nodeId: "1", role: { value: "RootWebArea" }, name: { value: "示例页面" }, childIds: ["2"] },
+        {
+          nodeId: "2",
+          role: { value: "button" },
+          name: { value: "提交订单 token=secret" },
+          properties: [{ name: "disabled", value: { value: "true" } }],
+          backendDOMNodeId: 101,
+        },
+      ],
+      sendCommandResults: {
+        "DOM.resolveNode": { object: { objectId: "object-101" } },
+        "Runtime.callFunctionOn": {
+          result: {
+            value: {
+              tagName: "BUTTON",
+              text: "提交订单 token=secret",
+              rect: { x: 10, y: 20, width: 120, height: 32 },
+              style: { display: "block", visibility: "visible", opacity: "1", pointerEvents: "none", cursor: "not-allowed" },
+              state: {
+                visible: true,
+                disabled: true,
+                editable: false,
+                connected: true,
+                inViewport: true,
+                occluded: true,
+                coveredBy: "DIV.modal-mask token=secret",
+              },
+              form: { disabledFieldset: true, invalidFields: 2 },
+            },
+          },
+        },
+      },
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const snapshot = await manager.takeSnapshot(createToolCall());
+    const uid = snapshot.content.match(/uid=([^\s]+)/)?.[1] ?? "";
+    const result = await manager.executeBrowserTool(createNamedToolCall("analyze_interaction_blocker", { uid, expectedAction: "click" }));
+
+    expect(result).toMatchObject({
+      toolCallId: "call-1",
+      name: "analyze_interaction_blocker",
+      content: expect.stringContaining("交互阻塞分析："),
+    });
+    expect(result.content).toContain(`- UID：${uid}`);
+    expect(result.content).toContain("- 预期动作：click");
+    expect(result.content).toContain("- AX：role=button，name=提交订单 token=[已脱敏]，disabled=true");
+    expect(result.content).toContain("- 状态：visible=true，disabled=true，editable=false，connected=true，inViewport=true，occluded=true");
+    expect(result.content).toContain("- 阻塞原因：元素禁用；元素 pointer-events 为 none；元素被 DIV.modal-mask token=[已脱敏] 遮挡；元素位于禁用的 fieldset 内；表单存在 2 个非法字段");
+    expect(result.content).toContain("- 建议：先检查表单必填项、禁用条件或遮罩层状态，再重新观察页面；不要直接改 DOM 或强制触发脚本。");
+    expect(result.content).not.toContain("secret");
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith(
+      { tabId: 9 },
+      "Runtime.callFunctionOn",
+      expect.objectContaining({
+        objectId: "object-101",
+        returnByValue: true,
+        functionDeclaration: expect.stringContaining("elementFromPoint"),
+      }),
+      expect.any(Function),
+    );
+  });
+
+  it("analyze_interaction_blocker 拒绝缺失 UID、非法动作和额外参数", async () => {
+    const chromeMock = createChromeMock();
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const missingUid = await manager.executeBrowserTool(createNamedToolCall("analyze_interaction_blocker"));
+    const invalidAction = await manager.executeBrowserTool(createNamedToolCall("analyze_interaction_blocker", { uid: "1_1", expectedAction: "submit" }));
+    const extraArg = await manager.executeBrowserTool(createNamedToolCall("analyze_interaction_blocker", { uid: "1_1", selector: "button" }));
+
+    expect(missingUid).toEqual({
+      toolCallId: "call-1",
+      name: "analyze_interaction_blocker",
+      content: "analyze_interaction_blocker 需要非空 UID。",
+      isError: true,
+    });
+    expect(invalidAction.content).toBe("analyze_interaction_blocker 的 expectedAction 必须是 click、fill 或 view。");
+    expect(extraArg.content).toBe("浏览器交互阻塞分析工具不接受参数：selector。");
+  });
+
+  it("analyze_form 返回当前页面表单结构和校验摘要", async () => {
+    const chromeMock = createChromeMock({
+      sendCommandResults: {
+        "Runtime.evaluate": {
+          result: {
+            value: {
+              forms: [
+                {
+                  index: 1,
+                  name: "login token=secret",
+                  id: "login-form",
+                  action: "https://example.com/login?token=secret",
+                  method: "post",
+                  fieldCount: 3,
+                  invalidFieldCount: 1,
+                  disabledFieldCount: 1,
+                  requiredFieldCount: 2,
+                  submitButtons: [
+                    { text: "登录 token=secret", disabled: true, type: "submit" },
+                  ],
+                  errors: ["密码不能为空 token=secret"],
+                  fields: [
+                    { index: 1, tagName: "INPUT", type: "email", name: "email", label: "邮箱", required: true, disabled: false, readonly: false, invalid: false, hasValue: true },
+                    { index: 2, tagName: "INPUT", type: "password", name: "password", label: "密码 token=secret", required: true, disabled: false, readonly: false, invalid: true, hasValue: false },
+                    { index: 3, tagName: "BUTTON", type: "submit", name: "", label: "登录 token=secret", required: false, disabled: true, readonly: false, invalid: false, hasValue: false },
+                  ],
+                },
+              ],
+            },
+          },
+        },
+      },
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const result = await manager.executeBrowserTool(createNamedToolCall("analyze_form", { includeFieldDetails: true }));
+
+    expect(result).toMatchObject({
+      toolCallId: "call-1",
+      name: "analyze_form",
+      content: expect.stringContaining("表单分析："),
+    });
+    expect(result.content).toContain("共 1 个表单。");
+    expect(result.content).toContain("1. FORM#login-form[name=\"login token=[已脱敏]\"] method=post action=https://example.com/login?token=[已脱敏]");
+    expect(result.content).toContain("- 字段：总数=3，必填=2，非法=1，禁用=1");
+    expect(result.content).toContain("- 提交按钮：登录 token=[已脱敏] disabled=true type=submit");
+    expect(result.content).toContain("- 错误文案：密码不能为空 token=[已脱敏]");
+    expect(result.content).toContain("字段详情：");
+    expect(result.content).toContain("1. INPUT[type=email][name=\"email\"] label=邮箱 required=true disabled=false readonly=false invalid=false hasValue=true");
+    expect(result.content).toContain("2. INPUT[type=password][name=\"password\"] label=密码 token=[已脱敏] required=true disabled=false readonly=false invalid=true hasValue=false");
+    expect(result.content).not.toContain("secret");
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith(
+      { tabId: 9 },
+      "Runtime.evaluate",
+      expect.objectContaining({
+        returnByValue: true,
+        expression: expect.stringContaining("querySelectorAll"),
+      }),
+      expect.any(Function),
+    );
+  });
+
+  it("analyze_form 拒绝非法 UID、额外参数和非布尔字段详情开关", async () => {
+    const chromeMock = createChromeMock();
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const invalidUid = await manager.executeBrowserTool(createNamedToolCall("analyze_form", { uid: "" }));
+    const invalidDetails = await manager.executeBrowserTool(createNamedToolCall("analyze_form", { includeFieldDetails: "yes" }));
+    const extraArg = await manager.executeBrowserTool(createNamedToolCall("analyze_form", { selector: "form" }));
+
+    expect(invalidUid.content).toBe("analyze_form 的 uid 必须是 take_snapshot 返回的非空 UID。");
+    expect(invalidDetails.content).toBe("analyze_form 的 includeFieldDetails 必须是布尔值。");
+    expect(extraArg.content).toBe("浏览器表单分析工具不接受参数：selector。");
+  });
+
+  it("get_performance_summary 返回页面加载、慢资源和长任务摘要", async () => {
+    const chromeMock = createChromeMock({
+      sendCommandResults: {
+        "Runtime.evaluate": {
+          result: {
+            value: {
+              navigation: {
+                type: "navigate",
+                startTime: 0,
+                domContentLoaded: 420,
+                load: 900,
+                responseEnd: 260,
+                transferSize: 34567,
+                encodedBodySize: 20000,
+                decodedBodySize: 60000,
+              },
+              resources: {
+                totalCount: 3,
+                slowest: [
+                  { name: "https://example.com/api/data?token=secret", initiatorType: "fetch", duration: 620, transferSize: 1200 },
+                  { name: "https://cdn.example.com/app.js?password=123", initiatorType: "script", duration: 540, transferSize: 22000 },
+                ],
+                byType: [
+                  { type: "fetch", count: 1, duration: 620, transferSize: 1200 },
+                  { type: "script", count: 2, duration: 800, transferSize: 24000 },
+                ],
+              },
+              longTasks: { count: 2, maxDuration: 120, totalDuration: 210 },
+            },
+          },
+        },
+      },
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const result = await manager.executeBrowserTool(createNamedToolCall("get_performance_summary"));
+
+    expect(result).toMatchObject({
+      toolCallId: "call-1",
+      name: "get_performance_summary",
+      content: expect.stringContaining("性能摘要："),
+    });
+    expect(result.content).toContain("- 导航：type=navigate，responseEnd=260ms，domContentLoaded=420ms，load=900ms");
+    expect(result.content).toContain("- 传输：transfer=33.8 KB，encoded=19.5 KB，decoded=58.6 KB");
+    expect(result.content).toContain("- 资源：总数=3");
+    expect(result.content).toContain("fetch count=1 duration=620ms transfer=1.2 KB");
+    expect(result.content).toContain("script count=2 duration=800ms transfer=23.4 KB");
+    expect(result.content).toContain("1. fetch 620ms 1.2 KB https://example.com/api/data?token=[已脱敏]");
+    expect(result.content).toContain("2. script 540ms 21.5 KB https://cdn.example.com/app.js?password=[已脱敏]");
+    expect(result.content).toContain("- 长任务：count=2，max=120ms，total=210ms");
+    expect(result.content).not.toContain("secret");
+    expect(result.content).not.toContain("password=123");
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith(
+      { tabId: 9 },
+      "Runtime.evaluate",
+      expect.objectContaining({
+        returnByValue: true,
+        expression: expect.stringContaining("performance.getEntriesByType"),
+      }),
+      expect.any(Function),
+    );
+  });
+
+  it("get_performance_summary 不接受模型参数", async () => {
+    const chromeMock = createChromeMock();
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const result = await manager.executeBrowserTool(createNamedToolCall("get_performance_summary", { includeResources: true }));
+
+    expect(result).toEqual({
+      toolCallId: "call-1",
+      name: "get_performance_summary",
+      content: "浏览器性能摘要工具不接受任何参数。",
+      isError: true,
+    });
+  });
+
+  it("collect_diagnostics 聚合页面状态、Console、性能和 Network 脱敏摘要", async () => {
+    const chromeMock = createChromeMock({
+      title: "诊断页面",
+      url: "https://example.com/dashboard?token=secret",
+      sendCommandResults: {
+        "Runtime.evaluate": {
+          result: {
+            value: {
+              url: "https://example.com/dashboard?token=secret",
+              title: "诊断页面",
+              readyState: "complete",
+              viewport: { width: 1280, height: 720, deviceScaleFactor: 1 },
+              scroll: { x: 0, y: 240, maxX: 0, maxY: 900 },
+              focusedElement: { tagName: "BUTTON", id: "submit", text: "提交 token=secret" },
+              navigation: {
+                type: "navigate",
+                startTime: 0,
+                domContentLoaded: 420,
+                load: 900,
+                responseEnd: 260,
+                transferSize: 34567,
+                encodedBodySize: 20000,
+                decodedBodySize: 60000,
+              },
+              resources: {
+                totalCount: 2,
+                slowest: [
+                  { name: "https://example.com/api/data?token=secret", initiatorType: "fetch", duration: 620, transferSize: 1200 },
+                ],
+                byType: [
+                  { type: "fetch", count: 1, duration: 620, transferSize: 1200 },
+                ],
+              },
+              longTasks: { count: 1, maxDuration: 80, totalDuration: 80 },
+            },
+          },
+        },
+      },
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    chromeMock.eventListeners[0]?.({ tabId: 9 }, "Runtime.consoleAPICalled", {
+      type: "error",
+      timestamp: 1710000000000,
+      args: [{ type: "string", value: "登录失败 token=secret" }],
+    });
+    chromeMock.eventListeners[0]?.({ tabId: 9 }, "Network.requestWillBeSent", {
+      requestId: "req-1",
+      timestamp: 100,
+      wallTime: 1710000000,
+      type: "Fetch",
+      request: {
+        url: "https://example.com/api/orders?token=secret",
+        method: "POST",
+        headers: { Authorization: "Bearer secret" },
+        postData: "{\"password\":\"123456\"}",
+      },
+    });
+    chromeMock.eventListeners[0]?.({ tabId: 9 }, "Network.responseReceived", {
+      requestId: "req-1",
+      timestamp: 100.72,
+      type: "Fetch",
+      response: {
+        status: 500,
+        statusText: "Internal Server Error",
+        mimeType: "application/json",
+        headers: { "set-cookie": "sid=secret" },
+      },
+    });
+    chromeMock.eventListeners[0]?.({ tabId: 9 }, "Network.loadingFinished", {
+      requestId: "req-1",
+      timestamp: 100.72,
+    });
+
+    const result = await manager.executeBrowserTool(createNamedToolCall("collect_diagnostics"));
+
+    expect(result).toMatchObject({
+      toolCallId: "call-1",
+      name: "collect_diagnostics",
+      content: expect.stringContaining("聚合诊断："),
+    });
+    expect(result.content).toContain("## 页面状态");
+    expect(result.content).toContain("- 标题：诊断页面");
+    expect(result.content).toContain("- URL：https://example.com/dashboard?token=[已脱敏]");
+    expect(result.content).toContain("## Console");
+    expect(result.content).toContain("[error] 登录失败 token=[已脱敏]");
+    expect(result.content).toContain("## 性能");
+    expect(result.content).toContain("- 导航：type=navigate");
+    expect(result.content).toContain("## Network");
+    expect(result.content).toContain("POST 500 720ms Fetch https://example.com/api/orders?token=[已脱敏]");
+    expect(result.content).not.toContain("secret");
+    expect(result.content).not.toContain("123456");
+    expect(chromeMock.debugger.sendCommand).not.toHaveBeenCalledWith(
+      { tabId: 9 },
+      "Network.getResponseBody",
+      expect.anything(),
+      expect.any(Function),
+    );
+  });
+
+  it("collect_diagnostics 不接受模型参数", async () => {
+    const chromeMock = createChromeMock();
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const result = await manager.executeBrowserTool(createNamedToolCall("collect_diagnostics", { includeBodies: true }));
+
+    expect(result).toEqual({
+      toolCallId: "call-1",
+      name: "collect_diagnostics",
+      content: "浏览器聚合诊断工具不接受任何参数。",
+      isError: true,
+    });
+  });
+
+  it("find_elements 在最近快照中按文本和角色返回 UID 候选", async () => {
+    const chromeMock = createChromeMock({
+      axNodes: [
+        { nodeId: "1", role: { value: "RootWebArea" }, name: { value: "示例页面" }, childIds: ["2", "3", "4"] },
+        { nodeId: "2", role: { value: "button" }, name: { value: "提交订单" }, backendDOMNodeId: 101 },
+        { nodeId: "3", role: { value: "textbox" }, name: { value: "搜索商品" }, value: { value: "手机" }, backendDOMNodeId: 102 },
+        { nodeId: "4", role: { value: "link" }, name: { value: "帮助中心 token=secret" }, backendDOMNodeId: 103 },
+      ],
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const noSnapshot = await manager.executeBrowserTool(createNamedToolCall("find_elements", { query: "提交" }));
+    await manager.takeSnapshot(createToolCall());
+    const textResult = await manager.executeBrowserTool(createNamedToolCall("find_elements", { query: "提交" }));
+    const roleResult = await manager.executeBrowserTool(createNamedToolCall("find_elements", { query: "textbox", strategy: "role" }));
+
+    expect(noSnapshot).toEqual({
+      toolCallId: "call-1",
+      name: "find_elements",
+      content: "当前没有可搜索的页面快照，请先调用 take_snapshot。",
+      isError: true,
+    });
+    expect(textResult.content).toContain("元素查找结果：共 1 个候选。");
+    expect(textResult.content).toContain("1. uid=");
+    expect(textResult.content).toContain("role=button");
+    expect(textResult.content).toContain("name=提交订单");
+    expect(roleResult.content).toContain("role=textbox");
+    expect(roleResult.content).toContain("value=手机");
+    expect(textResult.content).not.toContain("secret");
+  });
+
+  it("find_elements 校验查询参数并限制 CSS 选择器复杂度", async () => {
+    const chromeMock = createChromeMock();
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const emptyQuery = await manager.executeBrowserTool(createNamedToolCall("find_elements", { query: "" }));
+    const invalidStrategy = await manager.executeBrowserTool(createNamedToolCall("find_elements", { query: "提交", strategy: "xpath" }));
+    const invalidLimit = await manager.executeBrowserTool(createNamedToolCall("find_elements", { query: "提交", limit: 100 }));
+    const complexCss = await manager.executeBrowserTool(createNamedToolCall("find_elements", { query: "div > form input", strategy: "css" }));
+    const extraArg = await manager.executeBrowserTool(createNamedToolCall("find_elements", { query: "提交", script: "alert(1)" }));
+
+    expect(emptyQuery.content).toBe("find_elements 的 query 必须是非空字符串。");
+    expect(invalidStrategy.content).toBe("find_elements 的 strategy 必须是 text、role、label、placeholder 或 css。");
+    expect(invalidLimit.content).toBe("find_elements 的 limit 必须是 1 到 50 的整数。");
+    expect(complexCss.content).toBe("find_elements 的 CSS 查询只允许简单标签、类、ID 或单个属性选择器。");
+    expect(extraArg.content).toBe("浏览器元素查找工具不接受参数：script。");
+  });
+
+  it("screenshot 截取当前视口并返回图片工具附件", async () => {
+    const chromeMock = createChromeMock({
+      sendCommandResults: {
+        "Page.captureScreenshot": { data: "QUJD" },
+      },
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const result = await manager.executeBrowserTool(createNamedToolCall("screenshot"));
+
+    expect(result).toMatchObject({
+      toolCallId: "call-1",
+      name: "screenshot",
+      content: "已截取当前视口截图，图片已作为工具附件返回。",
+      toolAttachments: [
+        expect.objectContaining({
+          kind: "browser-screenshot",
+          title: "浏览器截图",
+          summary: "当前视口截图，PNG，3 B。",
+          dataUrl: "data:image/png;base64,QUJD",
+          mediaType: "image/png",
+          target: "viewport",
+          byteSize: 3,
+          redacted: false,
+          truncated: false,
+        }),
+      ],
+    });
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith(
+      { tabId: 9 },
+      "Page.captureScreenshot",
+      { format: "png", fromSurface: true },
+      expect.any(Function),
+    );
+  });
+
+  it("screenshot 支持按 UID 截取元素区域", async () => {
+    const chromeMock = createChromeMock({
+      axNodes: [
+        { nodeId: "1", role: { value: "RootWebArea" }, name: { value: "示例页面" }, childIds: ["2"] },
+        { nodeId: "2", role: { value: "button" }, name: { value: "提交" }, backendDOMNodeId: 101 },
+      ],
+      sendCommandResults: {
+        "DOM.resolveNode": { object: { objectId: "object-101" } },
+        "DOM.getBoxModel": {
+          model: {
+            border: [4, 14, 124, 14, 124, 74, 4, 74],
+            content: [10, 20, 110, 20, 110, 60, 10, 60],
+          },
+        },
+        "Page.captureScreenshot": { data: "QUJD" },
+      },
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const snapshot = await manager.takeSnapshot(createToolCall());
+    const uid = snapshot.content.match(/uid=([^\s]+)/)?.[1] ?? "";
+    const result = await manager.executeBrowserTool(createNamedToolCall("screenshot", { target: "element", uid }));
+
+    expect(result.content).toBe(`已截取元素 ${uid} 截图，图片已作为工具附件返回。`);
+    expect(result.toolAttachments?.[0]).toMatchObject({
+      kind: "browser-screenshot",
+      target: "element",
+      uid,
+      clip: { x: 4, y: 14, width: 120, height: 60, scale: 1 },
+    });
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith(
+      { tabId: 9 },
+      "DOM.scrollIntoViewIfNeeded",
+      { objectId: "object-101" },
+      expect.any(Function),
+    );
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith(
+      { tabId: 9 },
+      "Page.captureScreenshot",
+      { format: "png", fromSurface: true, captureBeyondViewport: true, clip: { x: 4, y: 14, width: 120, height: 60, scale: 1 } },
+      expect.any(Function),
+    );
+  });
+
+  it("screenshot 校验参数、图片格式和大小", async () => {
+    const chromeMock = createChromeMock({
+      sendCommandResults: {
+        "Page.captureScreenshot": { data: "not base64!" },
+      },
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const invalidTarget = await manager.executeBrowserTool(createNamedToolCall("screenshot", { target: "page" }));
+    const missingUid = await manager.executeBrowserTool(createNamedToolCall("screenshot", { target: "element" }));
+    const invalidData = await manager.executeBrowserTool(createNamedToolCall("screenshot"));
+
+    expect(invalidTarget.content).toBe("screenshot 的 target 必须是 viewport 或 element。");
+    expect(missingUid.content).toBe("截取元素截图时必须提供 take_snapshot 返回的 UID。");
+    expect(invalidData.content).toBe("浏览器截图结果无效，请重试。");
+    expect(invalidData.isError).toBe(true);
+  });
+
+  it("scroll 默认滚动当前视口并支持附带最新快照", async () => {
+    const chromeMock = createChromeMock({
+      axNodes: [
+        { nodeId: "1", role: { value: "RootWebArea" }, name: { value: "示例页面" } },
+      ],
+      sendCommandResults: {
+        "Runtime.evaluate": { result: { value: true } },
+      },
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const result = await manager.executeBrowserTool(createNamedToolCall("scroll", { direction: "down", amount: 480, includeSnapshot: true }));
+
+    expect(result.content).toContain("已向下滚动当前视口 480 像素。");
+    expect(result.content).toContain("# 浏览器页面快照");
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith(
+      { tabId: 9 },
+      "Runtime.evaluate",
+      expect.objectContaining({
+        expression: expect.stringContaining("window.scrollBy"),
+        awaitPromise: true,
+        returnByValue: true,
+      }),
+      expect.any(Function),
+    );
+  });
+
+  it("scroll 支持按 UID 滚动元素并校验参数", async () => {
+    const chromeMock = createChromeMock({
+      axNodes: [
+        { nodeId: "1", role: { value: "RootWebArea" }, name: { value: "示例页面" }, childIds: ["2"] },
+        { nodeId: "2", role: { value: "list" }, name: { value: "结果列表" }, backendDOMNodeId: 101 },
+      ],
+      sendCommandResults: {
+        "DOM.resolveNode": { object: { objectId: "object-101" } },
+        "Runtime.callFunctionOn": { result: { value: true } },
+      },
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const snapshot = await manager.takeSnapshot(createToolCall());
+    const uid = snapshot.content.match(/uid=([^\s]+)/)?.[1] ?? "";
+    const success = await manager.executeBrowserTool(createNamedToolCall("scroll", { direction: "bottom", uid }));
+    const invalidDirection = await manager.executeBrowserTool(createNamedToolCall("scroll", { direction: "center" }));
+    const invalidAmount = await manager.executeBrowserTool(createNamedToolCall("scroll", { direction: "down", amount: 6000 }));
+    const extraArg = await manager.executeBrowserTool(createNamedToolCall("scroll", { direction: "down", selector: "main" }));
+
+    expect(success.content).toBe(`已将元素 ${uid} 滚动到底部。`);
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith(
+      { tabId: 9 },
+      "Runtime.callFunctionOn",
+      expect.objectContaining({
+        objectId: "object-101",
+        functionDeclaration: expect.stringContaining("this.scrollTo"),
+        arguments: [{ value: "bottom" }, { value: 800 }],
+        returnByValue: true,
+      }),
+      expect.any(Function),
+    );
+    expect(invalidDirection.content).toBe("scroll 的 direction 必须是 up、down、left、right、top 或 bottom。");
+    expect(invalidAmount.content).toBe("scroll 的 amount 必须是 1 到 5000 的整数。");
+    expect(extraArg.content).toBe("浏览器滚动工具不接受参数：selector。");
+  });
+
+  it("wait_for_state 等待 URL 和 readyState 并支持附带最新快照", async () => {
+    const chromeMock = createChromeMock({
+      axNodes: [
+        { nodeId: "1", role: { value: "RootWebArea" }, name: { value: "示例页面" } },
+      ],
+      sendCommandResults: {
+        "Runtime.evaluate": { result: { value: { matched: true, state: "ready_state", value: "complete" } } },
+      },
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const readyResult = await manager.executeBrowserTool(createNamedToolCall("wait_for_state", { state: "ready_state", value: "complete", includeSnapshot: true }));
+    const urlResult = await manager.executeBrowserTool(createNamedToolCall("wait_for_state", { state: "url_contains", value: "/dashboard" }));
+
+    expect(readyResult.content).toContain("已等待到页面状态：ready_state=complete。");
+    expect(readyResult.content).toContain("# 浏览器页面快照");
+    expect(urlResult.content).toBe("已等待到页面状态：url_contains=/dashboard。");
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith(
+      { tabId: 9 },
+      "Runtime.evaluate",
+      expect.objectContaining({
+        expression: expect.stringContaining("waitForBrowserState"),
+        awaitPromise: true,
+        returnByValue: true,
+      }),
+      expect.any(Function),
+    );
+  });
+
+  it("wait_for_state 等待 UID 元素可见性并拒绝选择器", async () => {
+    const chromeMock = createChromeMock({
+      axNodes: [
+        { nodeId: "1", role: { value: "RootWebArea" }, name: { value: "示例页面" }, childIds: ["2"] },
+        { nodeId: "2", role: { value: "button" }, name: { value: "保存" }, backendDOMNodeId: 101 },
+      ],
+      sendCommandResults: {
+        "DOM.resolveNode": { object: { objectId: "object-101" } },
+        "Runtime.callFunctionOn": { result: { value: { matched: true, state: "element_visible", value: "visible" } } },
+      },
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const snapshot = await manager.takeSnapshot(createToolCall());
+    const uid = snapshot.content.match(/uid=([^\s]+)/)?.[1] ?? "";
+    const success = await manager.executeBrowserTool(createNamedToolCall("wait_for_state", { state: "element_visible", uid }));
+    const missingUid = await manager.executeBrowserTool(createNamedToolCall("wait_for_state", { state: "element_hidden" }));
+    const extraArg = await manager.executeBrowserTool(createNamedToolCall("wait_for_state", { state: "element_visible", uid, selector: "button" }));
+
+    expect(success.content).toBe(`已等待到页面状态：element_visible=${uid}。`);
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith(
+      { tabId: 9 },
+      "Runtime.callFunctionOn",
+      expect.objectContaining({
+        objectId: "object-101",
+        functionDeclaration: expect.stringContaining("waitForBrowserElementState"),
+        arguments: [{ value: "element_visible" }, { value: 5000 }],
+        returnByValue: true,
+        awaitPromise: true,
+      }),
+      expect.any(Function),
+    );
+    expect(missingUid.content).toBe("wait_for_state 等待元素状态时必须提供 take_snapshot 返回的非空 UID。");
+    expect(extraArg.content).toBe("浏览器状态等待工具不接受参数：selector。");
+  });
+
+  it("wait_for_state 校验状态类型、目标值和超时时间", async () => {
+    const chromeMock = createChromeMock();
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const invalidState = await manager.executeBrowserTool(createNamedToolCall("wait_for_state", { state: "unknown_state" }));
+    const missingValue = await manager.executeBrowserTool(createNamedToolCall("wait_for_state", { state: "url_contains" }));
+    const invalidTimeout = await manager.executeBrowserTool(createNamedToolCall("wait_for_state", { state: "ready_state", value: "complete", timeout: 60000 }));
+    const invalidSnapshot = await manager.executeBrowserTool(createNamedToolCall("wait_for_state", { state: "ready_state", value: "complete", includeSnapshot: "yes" }));
+
+    expect(invalidState.content).toBe("wait_for_state 的 state 必须是 url_contains、ready_state、element_visible、element_hidden 或 network_idle。");
+    expect(missingValue.content).toBe("wait_for_state 等待 URL 或 readyState 时必须提供非空 value。");
+    expect(invalidTimeout.content).toBe("wait_for_state 的 timeout 必须是 1 到 30000 的数字。");
+    expect(invalidSnapshot.content).toBe("includeSnapshot 必须是布尔值。");
+  });
+
+  it("wait_for_state 支持等待 Network 空闲", async () => {
+    vi.useFakeTimers();
+    const chromeMock = createChromeMock();
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 7);
+
+    chromeMock.eventListeners[0]?.({ tabId: 7 }, "Network.requestWillBeSent", {
+      requestId: "req-pending",
+      timestamp: 1,
+      type: "XHR",
+      request: { url: "https://api.example.com/pending", method: "GET", headers: {} },
+    });
+    const waitPromise = manager.executeBrowserTool(createNamedToolCall("wait_for_state", { state: "network_idle", timeout: 1000 }));
+
+    await vi.advanceTimersByTimeAsync(200);
+    chromeMock.eventListeners[0]?.({ tabId: 7 }, "Network.loadingFinished", { requestId: "req-pending", timestamp: 1.2 });
+    await vi.advanceTimersByTimeAsync(500);
+
+    const result = await waitPromise;
+    expect(result.isError).not.toBe(true);
+    expect(result.content).toBe("已等待到页面状态：network_idle。");
+    vi.useRealTimers();
+  });
+
+  it("hover 使用 UID 解析 DOM 节点并发送真实鼠标悬停事件", async () => {
+    const chromeMock = createChromeMock({
+      axNodes: [
+        { nodeId: "1", role: { value: "RootWebArea" }, name: { value: "示例页面" }, childIds: ["2"] },
+        { nodeId: "2", role: { value: "button" }, name: { value: "更多操作" }, backendDOMNodeId: 101 },
+      ],
+      sendCommandResults: {
+        "DOM.resolveNode": { object: { objectId: "object-101" } },
+        "DOM.getBoxModel": { model: { content: [20, 30, 120, 30, 120, 70, 20, 70] } },
+      },
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const snapshot = await manager.takeSnapshot(createToolCall());
+    const uid = snapshot.content.match(/uid=([^\s]+)/)?.[1] ?? "";
+    const result = await manager.executeBrowserTool(createNamedToolCall("hover", { uid }));
+
+    expect(result.content).toBe(`已悬停元素 ${uid}。`);
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith({ tabId: 9 }, "DOM.scrollIntoViewIfNeeded", { objectId: "object-101" }, expect.any(Function));
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith({ tabId: 9 }, "Input.dispatchMouseEvent", { type: "mouseMoved", x: 70, y: 50 }, expect.any(Function));
+  });
+
+  it("hover 校验 UID 参数并拒绝选择器", async () => {
+    const chromeMock = createChromeMock();
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const missingUid = await manager.executeBrowserTool(createNamedToolCall("hover"));
+    const extraArg = await manager.executeBrowserTool(createNamedToolCall("hover", { uid: "1_1", selector: "button" }));
+    const invalidSnapshot = await manager.executeBrowserTool(createNamedToolCall("hover", { uid: "1_1" }));
+
+    expect(missingUid.content).toBe("浏览器操作需要非空 UID。");
+    expect(extraArg.content).toBe("浏览器操作工具 hover 不接受参数：selector。");
+    expect(invalidSnapshot.content).toContain("UID 1_1");
+    expect(invalidSnapshot.isError).toBe(true);
+  });
+
+  it("double_click 使用 UID 解析 DOM 节点并发送真实双击鼠标事件", async () => {
+    const chromeMock = createChromeMock({
+      axNodes: [
+        { nodeId: "1", role: { value: "RootWebArea" }, name: { value: "示例页面" }, childIds: ["2"] },
+        { nodeId: "2", role: { value: "textbox" }, name: { value: "名称" }, backendDOMNodeId: 101 },
+      ],
+      sendCommandResults: {
+        "DOM.resolveNode": { object: { objectId: "object-101" } },
+        "DOM.getBoxModel": { model: { content: [10, 10, 110, 10, 110, 50, 10, 50] } },
+      },
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const snapshot = await manager.takeSnapshot(createToolCall());
+    const uid = snapshot.content.match(/uid=([^\s]+)/)?.[1] ?? "";
+    const result = await manager.executeBrowserTool(createNamedToolCall("double_click", { uid }));
+
+    expect(result.content).toBe(`已双击元素 ${uid}。`);
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith({ tabId: 9 }, "Input.dispatchMouseEvent", { type: "mouseMoved", x: 60, y: 30 }, expect.any(Function));
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith({ tabId: 9 }, "Input.dispatchMouseEvent", { type: "mousePressed", x: 60, y: 30, button: "left", clickCount: 1 }, expect.any(Function));
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith({ tabId: 9 }, "Input.dispatchMouseEvent", { type: "mouseReleased", x: 60, y: 30, button: "left", clickCount: 1 }, expect.any(Function));
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith({ tabId: 9 }, "Input.dispatchMouseEvent", { type: "mousePressed", x: 60, y: 30, button: "left", clickCount: 2 }, expect.any(Function));
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith({ tabId: 9 }, "Input.dispatchMouseEvent", { type: "mouseReleased", x: 60, y: 30, button: "left", clickCount: 2 }, expect.any(Function));
+  });
+
+  it("double_click 校验 UID 参数并拒绝选择器", async () => {
+    const chromeMock = createChromeMock();
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const missingUid = await manager.executeBrowserTool(createNamedToolCall("double_click"));
+    const extraArg = await manager.executeBrowserTool(createNamedToolCall("double_click", { uid: "1_1", selector: "button" }));
+
+    expect(missingUid.content).toBe("浏览器操作需要非空 UID。");
+    expect(extraArg.content).toBe("浏览器操作工具 double_click 不接受参数：selector。");
+  });
+
+  it("context_click 使用 UID 解析 DOM 节点并发送真实右键鼠标事件", async () => {
+    const chromeMock = createChromeMock({
+      axNodes: [
+        { nodeId: "1", role: { value: "RootWebArea" }, name: { value: "示例页面" }, childIds: ["2"] },
+        { nodeId: "2", role: { value: "button" }, name: { value: "更多操作" }, backendDOMNodeId: 101 },
+      ],
+      sendCommandResults: {
+        "DOM.resolveNode": { object: { objectId: "object-101" } },
+        "DOM.getBoxModel": { model: { content: [10, 10, 110, 10, 110, 50, 10, 50] } },
+      },
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const snapshot = await manager.takeSnapshot(createToolCall());
+    const uid = snapshot.content.match(/uid=([^\s]+)/)?.[1] ?? "";
+    const result = await manager.executeBrowserTool(createNamedToolCall("context_click", { uid }));
+
+    expect(result.content).toBe(`已右键元素 ${uid}。`);
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith({ tabId: 9 }, "DOM.scrollIntoViewIfNeeded", { objectId: "object-101" }, expect.any(Function));
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith({ tabId: 9 }, "Input.dispatchMouseEvent", { type: "mouseMoved", x: 60, y: 30 }, expect.any(Function));
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith({ tabId: 9 }, "Input.dispatchMouseEvent", { type: "mousePressed", x: 60, y: 30, button: "right", clickCount: 1 }, expect.any(Function));
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith({ tabId: 9 }, "Input.dispatchMouseEvent", { type: "mouseReleased", x: 60, y: 30, button: "right", clickCount: 1 }, expect.any(Function));
+  });
+
+  it("context_click 校验 UID 参数并拒绝选择器", async () => {
+    const chromeMock = createChromeMock();
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const missingUid = await manager.executeBrowserTool(createNamedToolCall("context_click"));
+    const extraArg = await manager.executeBrowserTool(createNamedToolCall("context_click", { uid: "1_1", selector: "button" }));
+
+    expect(missingUid.content).toBe("浏览器操作需要非空 UID。");
+    expect(extraArg.content).toBe("浏览器操作工具 context_click 不接受参数：selector。");
+  });
+
+  it("drag 使用源 UID 和目标 UID 发送真实拖拽鼠标事件序列", async () => {
+    const chromeMock = createChromeMock({
+      axNodes: [
+        { nodeId: "1", role: { value: "RootWebArea" }, name: { value: "示例页面" }, childIds: ["2", "3"] },
+        { nodeId: "2", role: { value: "listitem" }, name: { value: "待拖拽项" }, backendDOMNodeId: 101 },
+        { nodeId: "3", role: { value: "listitem" }, name: { value: "目标位置" }, backendDOMNodeId: 102 },
+      ],
+    });
+    chromeMock.debugger.sendCommand.mockImplementation((_debuggee: chrome.debugger.Debuggee, method: string, params: { backendNodeId?: number }, callback: (result?: unknown) => void) => {
+      chromeMock.runtime.lastError = undefined;
+      if (method === "Accessibility.getFullAXTree") {
+        callback({ nodes: [
+          { nodeId: "1", role: { value: "RootWebArea" }, name: { value: "示例页面" }, childIds: ["2", "3"] },
+          { nodeId: "2", role: { value: "listitem" }, name: { value: "待拖拽项" }, backendDOMNodeId: 101 },
+          { nodeId: "3", role: { value: "listitem" }, name: { value: "目标位置" }, backendDOMNodeId: 102 },
+        ] });
+        return;
+      }
+      if (method === "DOM.resolveNode") {
+        callback({ object: { objectId: `object-${params.backendNodeId}` } });
+        return;
+      }
+      if (method === "DOM.getBoxModel" && params.backendNodeId === 101) {
+        callback({ model: { content: [10, 10, 50, 10, 50, 50, 10, 50] } });
+        return;
+      }
+      if (method === "DOM.getBoxModel" && params.backendNodeId === 102) {
+        callback({ model: { content: [110, 20, 150, 20, 150, 60, 110, 60] } });
+        return;
+      }
+      callback({});
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const snapshot = await manager.takeSnapshot(createToolCall());
+    const uids = Array.from(snapshot.content.matchAll(/uid=([^\s]+)/g)).map((match) => match[1]);
+    const result = await manager.executeBrowserTool(createNamedToolCall("drag", { sourceUid: uids[0], targetUid: uids[1] }));
+
+    expect(result.content).toBe(`已将元素 ${uids[0]} 拖拽到元素 ${uids[1]}。`);
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith({ tabId: 9 }, "Input.dispatchMouseEvent", { type: "mouseMoved", x: 30, y: 30 }, expect.any(Function));
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith({ tabId: 9 }, "Input.dispatchMouseEvent", { type: "mousePressed", x: 30, y: 30, button: "left", clickCount: 1 }, expect.any(Function));
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith({ tabId: 9 }, "Input.dispatchMouseEvent", { type: "mouseMoved", x: 130, y: 40, button: "left", buttons: 1 }, expect.any(Function));
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith({ tabId: 9 }, "Input.dispatchMouseEvent", { type: "mouseReleased", x: 130, y: 40, button: "left", clickCount: 1 }, expect.any(Function));
+  });
+
+  it("drag 支持源 UID 加有限偏移并校验参数", async () => {
+    const chromeMock = createChromeMock({
+      axNodes: [
+        { nodeId: "1", role: { value: "RootWebArea" }, name: { value: "示例页面" }, childIds: ["2"] },
+        { nodeId: "2", role: { value: "slider" }, name: { value: "进度" }, backendDOMNodeId: 101 },
+      ],
+      sendCommandResults: {
+        "DOM.resolveNode": { object: { objectId: "object-101" } },
+        "DOM.getBoxModel": { model: { content: [20, 20, 60, 20, 60, 60, 20, 60] } },
+      },
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const snapshot = await manager.takeSnapshot(createToolCall());
+    const uid = snapshot.content.match(/uid=([^\s]+)/)?.[1] ?? "";
+    const success = await manager.executeBrowserTool(createNamedToolCall("drag", { sourceUid: uid, deltaX: 120, deltaY: 0 }));
+    const missingSource = await manager.executeBrowserTool(createNamedToolCall("drag", { deltaX: 10, deltaY: 0 }));
+    const missingTarget = await manager.executeBrowserTool(createNamedToolCall("drag", { sourceUid: uid }));
+    const mixedTarget = await manager.executeBrowserTool(createNamedToolCall("drag", { sourceUid: uid, targetUid: uid, deltaX: 10, deltaY: 0 }));
+    const invalidDelta = await manager.executeBrowserTool(createNamedToolCall("drag", { sourceUid: uid, deltaX: 3000, deltaY: 0 }));
+    const extraArg = await manager.executeBrowserTool(createNamedToolCall("drag", { sourceUid: uid, deltaX: 10, deltaY: 0, x: 100 }));
+
+    expect(success.content).toBe(`已将元素 ${uid} 拖拽偏移 x=120，y=0。`);
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith({ tabId: 9 }, "Input.dispatchMouseEvent", { type: "mouseMoved", x: 160, y: 40, button: "left", buttons: 1 }, expect.any(Function));
+    expect(missingSource.content).toBe("drag 需要非空 sourceUid。");
+    expect(missingTarget.content).toBe("drag 必须提供 targetUid，或同时提供 deltaX 和 deltaY。");
+    expect(mixedTarget.content).toBe("drag 不能同时提供 targetUid 和 deltaX/deltaY。");
+    expect(invalidDelta.content).toBe("drag 的 deltaX 和 deltaY 必须是 -2000 到 2000 的整数。");
+    expect(extraArg.content).toBe("浏览器拖拽工具不接受参数：x。");
   });
 
   it("click 使用 UID 解析 DOM 节点并优先发送真实鼠标事件", async () => {

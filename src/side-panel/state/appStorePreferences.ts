@@ -1,5 +1,5 @@
 import { DEFAULT_MODEL_REQUEST_RETRY_COUNT, normalizeModelRequestRetryCount } from "../../shared/models/modelRequestRetry";
-import { getRegisteredModelTools, isBrowserAutomationToolId, isControlledEnhancedToolId, normalizeEnabledToolIds } from "../../shared/models/toolRegistry";
+import { getRegisteredModelTools, isToolRuntimeAvailable, normalizeEnabledToolIds } from "../../shared/models/toolRegistry";
 import type { BrowserAutomationMode } from "../../shared/toolAuthorization";
 import type {
   ChatPreferenceValues,
@@ -145,32 +145,15 @@ export function resolveEffectiveChatPreferences(
 }
 
 function normalizeUserEditableToolIds(value: unknown): string[] {
-  return normalizeEnabledToolIds(value).filter((toolId) => !isBrowserAutomationToolId(toolId));
+  return normalizeEnabledToolIds(value);
 }
 
 export function resolveRuntimeEnabledToolIds(enabledToolIds: string[], browserControlEnabled: boolean, browserAutomationMode: BrowserAutomationMode = "normal_restricted"): string[] {
-  const enhancedEnabled = browserAutomationMode === "controlled_enhanced";
-  const fullAccessEnabled = browserAutomationMode === "full_access";
-  const registeredTools = getRegisteredModelTools();
-  const browserToolIds = registeredTools
-    .filter((tool) =>
-      isBrowserAutomationToolId(tool.id) &&
-      (enhancedEnabled || !isControlledEnhancedToolId(tool.id)) &&
-      (fullAccessEnabled || !tool.id.startsWith("full_access."))
-    )
-    .map((tool) => tool.id);
-  const baseIds = enabledToolIds.filter((toolId) =>
-    (browserControlEnabled || !isBrowserAutomationToolId(toolId)) &&
-    (enhancedEnabled || !isControlledEnhancedToolId(toolId)) &&
-    (fullAccessEnabled || !toolId.startsWith("full_access."))
-  );
-
-  if (!browserControlEnabled) {
-    return baseIds;
-  }
-
-  // 浏览器控制是显式调试能力，开启后需要整组自动可用，避免单个工具缺失导致自动化链路中断。
-  return Array.from(new Set([...baseIds, ...browserToolIds]));
+  const registeredToolsById = new Map(getRegisteredModelTools().map((tool) => [tool.id, tool]));
+  return enabledToolIds.filter((toolId) => {
+    const tool = registeredToolsById.get(toolId);
+    return !tool || isToolRuntimeAvailable(tool, browserControlEnabled, browserAutomationMode);
+  });
 }
 
 function normalizeNumber(value: unknown, fallback: number, min: number, max: number): number {

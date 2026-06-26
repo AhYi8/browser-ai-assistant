@@ -65,6 +65,81 @@ describe("浏览器自动化权限边界检测", () => {
     expect(signals.map((signal) => signal.id)).toEqual(["request_replay_confirmation"]);
   });
 
+  it("检测页面副作用操作边界并要求先请求用户确认", async () => {
+    const signals = detectAutomationBoundarySignals([
+      "即将执行的页面操作可能触发表单提交、删除、付款、发布或发送消息。",
+      "请先向用户确认本次页面副作用操作。",
+    ].join("\n"));
+
+    expect(signals).toEqual([
+      expect.objectContaining({
+        id: "page_effect_confirmation",
+        label: "页面副作用操作确认",
+        risk: "high",
+        grants: [],
+      }),
+    ]);
+
+    const result = await applyAutomationBoundaryConfirmation({
+      toolCallId: "call-1",
+      name: "click",
+      content: "页面操作可能触发表单提交，请先请求用户确认。",
+    });
+
+    expect(result.content).toContain("页面副作用操作确认");
+    expect(result.content).toContain("下一步必须先调用 boundary_request_user_choice");
+  });
+
+  it("检测跨站点跳转和第三方授权页边界并要求先请求用户确认", async () => {
+    const signals = detectAutomationBoundarySignals([
+      "即将从 https://app.example.com 跳转到 https://accounts.example-idp.com，属于跨站点跳转。",
+      "目标页面可能是第三方授权页，请先请求用户确认。",
+    ].join("\n"));
+
+    expect(signals).toEqual([
+      expect.objectContaining({
+        id: "cross_site_navigation_confirmation",
+        label: "跨站点跳转或第三方授权页确认",
+        risk: "high",
+        grants: [],
+      }),
+    ]);
+
+    const result = await applyAutomationBoundaryConfirmation({
+      toolCallId: "call-1",
+      name: "new_page",
+      content: "操作将打开第三方授权页，请先请求用户确认。",
+    });
+
+    expect(result.content).toContain("跨站点跳转或第三方授权页确认");
+    expect(result.content).toContain("下一步必须先调用 boundary_request_user_choice");
+  });
+
+  it("检测文件上传下载和本地文件访问边界并要求先请求用户确认", async () => {
+    const signals = detectAutomationBoundarySignals([
+      "即将处理文件上传，需要用户选择或确认本地文件。",
+      "页面可能触发文件下载，请先请求用户确认。",
+    ].join("\n"));
+
+    expect(signals).toEqual([
+      expect.objectContaining({
+        id: "file_access_confirmation",
+        label: "文件上传下载或本地文件访问确认",
+        risk: "high",
+        grants: [],
+      }),
+    ]);
+
+    const result = await applyAutomationBoundaryConfirmation({
+      toolCallId: "call-1",
+      name: "upload_file",
+      content: "工具涉及读取本地文件路径或触发文件上传，请先请求用户确认。",
+    });
+
+    expect(result.content).toContain("文件上传下载或本地文件访问确认");
+    expect(result.content).toContain("下一步必须先调用 boundary_request_user_choice");
+  });
+
   it("检测运行时只读授权和安全路径边界", () => {
     const signals = detectAutomationBoundarySignals([
       "运行时只读分析未授权，无法执行 runtime.* 工具。",

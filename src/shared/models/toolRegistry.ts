@@ -1,4 +1,11 @@
-import type { ModelToolRegistryEntry } from "./types";
+import type { BrowserAutomationMode } from "../toolAuthorization";
+import type {
+  ModelToolCapability,
+  ModelToolClassification,
+  ModelToolRegistryEntry,
+  ModelToolRisk,
+  ModelToolRuntimeRequirement,
+} from "./types";
 
 export const TAVILY_SEARCH_TOOL_ID = "web_search.tavily";
 export const TAVILY_SEARCH_TOOL_NAME = "tavily_search";
@@ -6,6 +13,34 @@ export const CURRENT_TIME_TOOL_ID = "system.current_time";
 export const CURRENT_TIME_TOOL_NAME = "get_current_time";
 export const BROWSER_TAKE_SNAPSHOT_TOOL_ID = "browser.take_snapshot";
 export const BROWSER_TAKE_SNAPSHOT_TOOL_NAME = "take_snapshot";
+export const BROWSER_GET_PAGE_STATE_TOOL_ID = "browser.get_page_state";
+export const BROWSER_GET_PAGE_STATE_TOOL_NAME = "get_page_state";
+export const BROWSER_GET_CONSOLE_MESSAGES_TOOL_ID = "browser.get_console_messages";
+export const BROWSER_GET_CONSOLE_MESSAGES_TOOL_NAME = "get_console_messages";
+export const BROWSER_INSPECT_ELEMENT_TOOL_ID = "browser.inspect_element";
+export const BROWSER_INSPECT_ELEMENT_TOOL_NAME = "inspect_element";
+export const BROWSER_FIND_ELEMENTS_TOOL_ID = "browser.find_elements";
+export const BROWSER_FIND_ELEMENTS_TOOL_NAME = "find_elements";
+export const BROWSER_SCREENSHOT_TOOL_ID = "browser.screenshot";
+export const BROWSER_SCREENSHOT_TOOL_NAME = "screenshot";
+export const BROWSER_ANALYZE_INTERACTION_BLOCKER_TOOL_ID = "browser.analyze_interaction_blocker";
+export const BROWSER_ANALYZE_INTERACTION_BLOCKER_TOOL_NAME = "analyze_interaction_blocker";
+export const BROWSER_ANALYZE_FORM_TOOL_ID = "browser.analyze_form";
+export const BROWSER_ANALYZE_FORM_TOOL_NAME = "analyze_form";
+export const BROWSER_GET_PERFORMANCE_SUMMARY_TOOL_ID = "browser.get_performance_summary";
+export const BROWSER_GET_PERFORMANCE_SUMMARY_TOOL_NAME = "get_performance_summary";
+export const BROWSER_COLLECT_DIAGNOSTICS_TOOL_ID = "browser.collect_diagnostics";
+export const BROWSER_COLLECT_DIAGNOSTICS_TOOL_NAME = "collect_diagnostics";
+export const BROWSER_SCROLL_TOOL_ID = "browser.scroll";
+export const BROWSER_SCROLL_TOOL_NAME = "scroll";
+export const BROWSER_HOVER_TOOL_ID = "browser.hover";
+export const BROWSER_HOVER_TOOL_NAME = "hover";
+export const BROWSER_DOUBLE_CLICK_TOOL_ID = "browser.double_click";
+export const BROWSER_DOUBLE_CLICK_TOOL_NAME = "double_click";
+export const BROWSER_CONTEXT_CLICK_TOOL_ID = "browser.context_click";
+export const BROWSER_CONTEXT_CLICK_TOOL_NAME = "context_click";
+export const BROWSER_DRAG_TOOL_ID = "browser.drag";
+export const BROWSER_DRAG_TOOL_NAME = "drag";
 export const BROWSER_CLICK_TOOL_ID = "browser.click";
 export const BROWSER_CLICK_TOOL_NAME = "click";
 export const BROWSER_FILL_TOOL_ID = "browser.fill";
@@ -14,6 +49,8 @@ export const BROWSER_PRESS_KEY_TOOL_ID = "browser.press_key";
 export const BROWSER_PRESS_KEY_TOOL_NAME = "press_key";
 export const BROWSER_WAIT_FOR_TOOL_ID = "browser.wait_for";
 export const BROWSER_WAIT_FOR_TOOL_NAME = "wait_for";
+export const BROWSER_WAIT_FOR_STATE_TOOL_ID = "browser.wait_for_state";
+export const BROWSER_WAIT_FOR_STATE_TOOL_NAME = "wait_for_state";
 export const BROWSER_NAVIGATE_PAGE_TOOL_ID = "browser.navigate_page";
 export const BROWSER_NAVIGATE_PAGE_TOOL_NAME = "navigate_page";
 export const BROWSER_NEW_PAGE_TOOL_ID = "browser.new_page";
@@ -78,13 +115,86 @@ export const FULL_ACCESS_REVOKE_TOOL_NAME = "full_access_revoke";
 export const MODEL_TOOL_GROUP_SYSTEM_ID = "system";
 export const MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID = "browser_automation";
 
+export const MODEL_TOOL_RUNTIME_VALUES = ["local", "external_web", "browser_control", "controlled_enhanced", "full_access"] as const;
+export const MODEL_TOOL_CAPABILITY_VALUES = [
+  "observe_page",
+  "operate_page",
+  "analyze_site",
+  "confirm_boundary",
+  "deliver_result",
+  "search_public_web",
+  "system_context",
+] as const;
+export const MODEL_TOOL_RISK_VALUES = ["low", "medium", "high", "critical"] as const;
+
+const TOOL_CLASSIFICATION_BY_ID: Record<string, ModelToolClassification> = {
+  [CURRENT_TIME_TOOL_ID]: { runtime: "local", capabilities: ["system_context"], risk: "low" },
+  [TAVILY_SEARCH_TOOL_ID]: { runtime: "external_web", capabilities: ["search_public_web"], risk: "low" },
+  [BROWSER_TAKE_SNAPSHOT_TOOL_ID]: { runtime: "browser_control", capabilities: ["observe_page"], risk: "low" },
+  [BROWSER_GET_PAGE_STATE_TOOL_ID]: { runtime: "browser_control", capabilities: ["observe_page"], risk: "low" },
+  [BROWSER_GET_CONSOLE_MESSAGES_TOOL_ID]: { runtime: "browser_control", capabilities: ["observe_page", "analyze_site"], risk: "medium" },
+  [BROWSER_INSPECT_ELEMENT_TOOL_ID]: { runtime: "browser_control", capabilities: ["observe_page", "analyze_site"], risk: "low" },
+  [BROWSER_FIND_ELEMENTS_TOOL_ID]: { runtime: "browser_control", capabilities: ["observe_page"], risk: "low" },
+  [BROWSER_SCREENSHOT_TOOL_ID]: { runtime: "browser_control", capabilities: ["observe_page"], risk: "medium" },
+  [BROWSER_ANALYZE_INTERACTION_BLOCKER_TOOL_ID]: { runtime: "browser_control", capabilities: ["analyze_site"], risk: "low" },
+  [BROWSER_ANALYZE_FORM_TOOL_ID]: { runtime: "browser_control", capabilities: ["analyze_site"], risk: "medium" },
+  [BROWSER_GET_PERFORMANCE_SUMMARY_TOOL_ID]: { runtime: "browser_control", capabilities: ["analyze_site"], risk: "low" },
+  [BROWSER_COLLECT_DIAGNOSTICS_TOOL_ID]: { runtime: "browser_control", capabilities: ["observe_page", "analyze_site", "deliver_result"], risk: "medium" },
+  [BROWSER_SCROLL_TOOL_ID]: { runtime: "browser_control", capabilities: ["operate_page"], risk: "medium" },
+  [BROWSER_HOVER_TOOL_ID]: { runtime: "browser_control", capabilities: ["operate_page"], risk: "medium" },
+  [BROWSER_DOUBLE_CLICK_TOOL_ID]: { runtime: "browser_control", capabilities: ["operate_page"], risk: "medium" },
+  [BROWSER_CONTEXT_CLICK_TOOL_ID]: { runtime: "browser_control", capabilities: ["operate_page"], risk: "medium" },
+  [BROWSER_DRAG_TOOL_ID]: { runtime: "browser_control", capabilities: ["operate_page"], risk: "high" },
+  [BROWSER_CLICK_TOOL_ID]: { runtime: "browser_control", capabilities: ["operate_page"], risk: "medium" },
+  [BROWSER_FILL_TOOL_ID]: { runtime: "browser_control", capabilities: ["operate_page"], risk: "medium" },
+  [BROWSER_PRESS_KEY_TOOL_ID]: { runtime: "browser_control", capabilities: ["operate_page"], risk: "medium" },
+  [BROWSER_WAIT_FOR_TOOL_ID]: { runtime: "browser_control", capabilities: ["observe_page"], risk: "low" },
+  [BROWSER_WAIT_FOR_STATE_TOOL_ID]: { runtime: "browser_control", capabilities: ["observe_page", "operate_page"], risk: "low" },
+  [BROWSER_NAVIGATE_PAGE_TOOL_ID]: { runtime: "browser_control", capabilities: ["operate_page"], risk: "medium" },
+  [BROWSER_NEW_PAGE_TOOL_ID]: { runtime: "browser_control", capabilities: ["operate_page"], risk: "medium" },
+  [BROWSER_LIST_PAGES_TOOL_ID]: { runtime: "browser_control", capabilities: ["observe_page"], risk: "low" },
+  [BROWSER_SELECT_PAGE_TOOL_ID]: { runtime: "browser_control", capabilities: ["operate_page"], risk: "medium" },
+  [BROWSER_CLOSE_PAGE_TOOL_ID]: { runtime: "browser_control", capabilities: ["operate_page"], risk: "medium" },
+  [NETWORK_CLEAR_REQUESTS_TOOL_ID]: { runtime: "browser_control", capabilities: ["observe_page", "analyze_site"], risk: "low" },
+  [NETWORK_WAIT_FOR_REQUESTS_TOOL_ID]: { runtime: "browser_control", capabilities: ["observe_page", "analyze_site"], risk: "low" },
+  [NETWORK_LIST_REQUESTS_TOOL_ID]: { runtime: "browser_control", capabilities: ["observe_page", "analyze_site"], risk: "low" },
+  [NETWORK_GET_REQUEST_DETAILS_TOOL_ID]: { runtime: "browser_control", capabilities: ["observe_page", "analyze_site"], risk: "medium" },
+  [NETWORK_COMPARE_REQUESTS_TOOL_ID]: { runtime: "browser_control", capabilities: ["analyze_site"], risk: "medium" },
+  [NETWORK_FIND_PARAMETER_CANDIDATES_TOOL_ID]: { runtime: "browser_control", capabilities: ["analyze_site"], risk: "medium" },
+  [NETWORK_EXTRACT_JS_CANDIDATES_TOOL_ID]: { runtime: "browser_control", capabilities: ["analyze_site"], risk: "medium" },
+  [JS_LIST_RESOURCES_TOOL_ID]: { runtime: "browser_control", capabilities: ["analyze_site"], risk: "low" },
+  [JS_SEARCH_SOURCES_TOOL_ID]: { runtime: "browser_control", capabilities: ["analyze_site"], risk: "medium" },
+  [JS_EXTRACT_CONTEXT_TOOL_ID]: { runtime: "browser_control", capabilities: ["analyze_site"], risk: "medium" },
+  [SOURCEMAP_LIST_CANDIDATES_TOOL_ID]: { runtime: "browser_control", capabilities: ["analyze_site"], risk: "medium" },
+  [SOURCEMAP_RESOLVE_LOCATION_TOOL_ID]: { runtime: "browser_control", capabilities: ["analyze_site"], risk: "medium" },
+  [SOURCEMAP_EXTRACT_ORIGINAL_CONTEXT_TOOL_ID]: { runtime: "browser_control", capabilities: ["analyze_site"], risk: "medium" },
+  [RUNTIME_INSPECT_GLOBALS_TOOL_ID]: { runtime: "browser_control", capabilities: ["observe_page", "analyze_site"], risk: "medium" },
+  [RUNTIME_SEARCH_MODULES_TOOL_ID]: { runtime: "browser_control", capabilities: ["analyze_site"], risk: "medium" },
+  [RUNTIME_DESCRIBE_FUNCTION_TOOL_ID]: { runtime: "browser_control", capabilities: ["analyze_site"], risk: "medium" },
+  [BOUNDARY_REQUEST_USER_CHOICE_TOOL_ID]: { runtime: "controlled_enhanced", capabilities: ["confirm_boundary"], risk: "high" },
+  [REPLAY_PREPARE_REQUEST_TOOL_ID]: { runtime: "controlled_enhanced", capabilities: ["analyze_site", "confirm_boundary"], risk: "high" },
+  [REPLAY_SEND_REQUEST_TOOL_ID]: { runtime: "controlled_enhanced", capabilities: ["analyze_site", "confirm_boundary"], risk: "high" },
+  [REPLAY_COMPARE_RESPONSES_TOOL_ID]: { runtime: "controlled_enhanced", capabilities: ["analyze_site"], risk: "high" },
+  [FULL_ACCESS_EXECUTE_SCRIPT_TOOL_ID]: { runtime: "full_access", capabilities: ["observe_page", "operate_page", "analyze_site"], risk: "critical" },
+  [FULL_ACCESS_FETCH_TOOL_ID]: { runtime: "full_access", capabilities: ["operate_page", "analyze_site"], risk: "critical" },
+  [FULL_ACCESS_GET_NETWORK_DETAILS_TOOL_ID]: { runtime: "full_access", capabilities: ["observe_page", "analyze_site"], risk: "critical" },
+  [FULL_ACCESS_READ_STORAGE_TOOL_ID]: { runtime: "full_access", capabilities: ["observe_page", "analyze_site"], risk: "critical" },
+  [FULL_ACCESS_REVOKE_TOOL_ID]: { runtime: "full_access", capabilities: ["confirm_boundary"], risk: "critical" },
+};
+
 export interface ModelToolGroup {
   id: string;
   label: string;
   tools: ModelToolRegistryEntry[];
 }
 
-export const AVAILABLE_MODEL_TOOLS: ModelToolRegistryEntry[] = [
+export interface ModelToolClassificationFilters {
+  runtime?: ModelToolRuntimeRequirement;
+  capability?: ModelToolCapability;
+  risk?: ModelToolRisk;
+}
+
+const RAW_AVAILABLE_MODEL_TOOLS: Omit<ModelToolRegistryEntry, "toolClassification">[] = [
   {
     id: CURRENT_TIME_TOOL_ID,
     name: CURRENT_TIME_TOOL_NAME,
@@ -127,6 +237,324 @@ export const AVAILABLE_MODEL_TOOLS: ModelToolRegistryEntry[] = [
       type: "object",
       properties: {},
       required: [],
+      additionalProperties: false,
+    },
+  },
+  {
+    id: BROWSER_GET_PAGE_STATE_TOOL_ID,
+    name: BROWSER_GET_PAGE_STATE_TOOL_NAME,
+    groupId: MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
+    requiredCapabilities: ["browser_control"],
+    displayName: "浏览器页面状态",
+    description: "读取当前受控网页 URL、标题、readyState、viewport、滚动位置和焦点元素摘要。仅返回脱敏截断后的页面状态，不读取完整 DOM。",
+    parameters: {
+      type: "object",
+      properties: {},
+      required: [],
+      additionalProperties: false,
+    },
+  },
+  {
+    id: BROWSER_GET_CONSOLE_MESSAGES_TOOL_ID,
+    name: BROWSER_GET_CONSOLE_MESSAGES_TOOL_NAME,
+    groupId: MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
+    requiredCapabilities: ["browser_control"],
+    displayName: "浏览器 Console 消息",
+    description: "读取当前受控网页已采集的 Console 日志、JS 异常和资源错误摘要。只返回脱敏、截断后的现场诊断信息，不读取完整 DOM 或执行模型自定义脚本。",
+    parameters: {
+      type: "object",
+      properties: {},
+      required: [],
+      additionalProperties: false,
+    },
+  },
+  {
+    id: BROWSER_INSPECT_ELEMENT_TOOL_ID,
+    name: BROWSER_INSPECT_ELEMENT_TOOL_NAME,
+    groupId: MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
+    requiredCapabilities: ["browser_control"],
+    displayName: "浏览器检查元素",
+    description: "按 take_snapshot 返回的 UID 读取元素 DOM 属性、可见性、尺寸、样式和可交互摘要。不会返回完整 DOM 子树，也不接受 CSS 选择器或自定义脚本。",
+    parameters: {
+      type: "object",
+      properties: {
+        uid: {
+          type: "string",
+          description: "take_snapshot 返回的元素 UID。",
+        },
+      },
+      required: ["uid"],
+      additionalProperties: false,
+    },
+  },
+  {
+    id: BROWSER_FIND_ELEMENTS_TOOL_ID,
+    name: BROWSER_FIND_ELEMENTS_TOOL_NAME,
+    groupId: MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
+    requiredCapabilities: ["browser_control"],
+    displayName: "浏览器查找元素",
+    description: "在最近一次 take_snapshot 的 UID 候选中按文本、role、label、placeholder 或简单 CSS 查询元素。返回的 UID 可继续用于 inspect_element、click 或 fill；不会扫描完整 DOM 或执行模型自定义脚本。",
+    parameters: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "要查找的文本、role、label、placeholder 或简单 CSS 查询。",
+        },
+        strategy: {
+          type: "string",
+          enum: ["text", "role", "label", "placeholder", "css"],
+          description: "查找策略；默认 text。css 只允许简单标签、类、ID 或单个属性选择器。",
+        },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 50,
+          description: "最多返回候选数量，默认 20。",
+        },
+      },
+      required: ["query"],
+      additionalProperties: false,
+    },
+  },
+  {
+    id: BROWSER_SCREENSHOT_TOOL_ID,
+    name: BROWSER_SCREENSHOT_TOOL_NAME,
+    groupId: MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
+    requiredCapabilities: ["browser_control"],
+    displayName: "浏览器截图",
+    description: "截取当前受控页面的 PNG 图片。默认截取当前视口；也可以按 take_snapshot 返回的 UID 截取元素区域。图片通过工具附件返回，正文不会包含 base64。",
+    parameters: {
+      type: "object",
+      properties: {
+        target: {
+          type: "string",
+          enum: ["viewport", "element"],
+          description: "截图目标，默认 viewport；element 必须同时提供 take_snapshot 返回的 uid。",
+        },
+        uid: {
+          type: "string",
+          description: "target 为 element 时必填，必须来自最近一次 take_snapshot 返回的 UID。",
+        },
+      },
+      required: [],
+      additionalProperties: false,
+    },
+  },
+  {
+    id: BROWSER_ANALYZE_INTERACTION_BLOCKER_TOOL_ID,
+    name: BROWSER_ANALYZE_INTERACTION_BLOCKER_TOOL_NAME,
+    groupId: MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
+    requiredCapabilities: ["browser_control"],
+    displayName: "浏览器交互阻塞分析",
+    description: "按 take_snapshot 返回的 UID 分析元素无法点击、填写或查看的常见原因。只读诊断，不执行修复；不接受选择器、XPath、坐标或自定义脚本。",
+    parameters: {
+      type: "object",
+      properties: {
+        uid: {
+          type: "string",
+          description: "take_snapshot 返回的元素 UID。",
+        },
+        expectedAction: {
+          type: "string",
+          enum: ["click", "fill", "view"],
+          description: "期望诊断的交互动作，默认 click。",
+        },
+      },
+      required: ["uid"],
+      additionalProperties: false,
+    },
+  },
+  {
+    id: BROWSER_ANALYZE_FORM_TOOL_ID,
+    name: BROWSER_ANALYZE_FORM_TOOL_NAME,
+    groupId: MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
+    requiredCapabilities: ["browser_control"],
+    displayName: "浏览器表单分析",
+    description: "分析当前页面或指定 UID 所属表单的字段数量、必填项、非法字段、禁用字段、错误文案和提交按钮状态。只读诊断，不读取字段原文值，不提交表单；不接受选择器或自定义脚本。",
+    parameters: {
+      type: "object",
+      properties: {
+        uid: {
+          type: "string",
+          description: "可选。take_snapshot 返回的表单或表单内元素 UID；提供后只分析该元素所属表单。",
+        },
+        includeFieldDetails: {
+          type: "boolean",
+          description: "是否返回字段级摘要。字段摘要只包含标签和状态，不包含用户输入原文值。",
+        },
+      },
+      required: [],
+      additionalProperties: false,
+    },
+  },
+  {
+    id: BROWSER_GET_PERFORMANCE_SUMMARY_TOOL_ID,
+    name: BROWSER_GET_PERFORMANCE_SUMMARY_TOOL_NAME,
+    groupId: MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
+    requiredCapabilities: ["browser_control"],
+    displayName: "浏览器性能摘要",
+    description: "读取当前受控页面的导航时序、资源耗时分组、慢资源和长任务摘要。只返回脱敏后的性能元数据，不读取响应体、Header、Cookie 或完整资源内容。",
+    parameters: {
+      type: "object",
+      properties: {},
+      required: [],
+      additionalProperties: false,
+    },
+  },
+  {
+    id: BROWSER_COLLECT_DIAGNOSTICS_TOOL_ID,
+    name: BROWSER_COLLECT_DIAGNOSTICS_TOOL_NAME,
+    groupId: MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
+    requiredCapabilities: ["browser_control"],
+    displayName: "浏览器聚合诊断",
+    description: "一次性汇总当前受控页面的页面状态、Console、性能和最近 Network 错误/慢请求摘要。只返回脱敏后的现场元数据，不读取响应体、Header、Cookie 或完整资源内容。",
+    parameters: {
+      type: "object",
+      properties: {},
+      required: [],
+      additionalProperties: false,
+    },
+  },
+  {
+    id: BROWSER_SCROLL_TOOL_ID,
+    name: BROWSER_SCROLL_TOOL_NAME,
+    groupId: MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
+    requiredCapabilities: ["browser_control"],
+    displayName: "浏览器滚动页面",
+    description: "滚动当前受控页面视口，或按 take_snapshot 返回的 UID 滚动指定可滚动元素。用于长页面、懒加载列表和隐藏内容观察；不接受选择器或自定义脚本。",
+    parameters: {
+      type: "object",
+      properties: {
+        direction: {
+          type: "string",
+          enum: ["up", "down", "left", "right", "top", "bottom"],
+          description: "滚动方向。top 和 bottom 会滚动到顶部或底部。",
+        },
+        amount: {
+          type: "integer",
+          minimum: 1,
+          maximum: 5000,
+          description: "滚动像素距离，默认 800；top 和 bottom 可省略。",
+        },
+        uid: {
+          type: "string",
+          description: "可选。来自 take_snapshot 的元素 UID；提供后滚动该元素，否则滚动当前视口。",
+        },
+        includeSnapshot: {
+          type: "boolean",
+          description: "成功滚动后是否附带最新页面快照。",
+        },
+      },
+      required: ["direction"],
+      additionalProperties: false,
+    },
+  },
+  {
+    id: BROWSER_HOVER_TOOL_ID,
+    name: BROWSER_HOVER_TOOL_NAME,
+    groupId: MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
+    requiredCapabilities: ["browser_control"],
+    displayName: "浏览器悬停元素",
+    description: "把鼠标移动到 take_snapshot 返回的 UID 元素中心，用于展开悬停菜单、提示层或触发 hover 状态。不接受选择器或自定义脚本。",
+    parameters: {
+      type: "object",
+      properties: {
+        uid: {
+          type: "string",
+          description: "take_snapshot 返回的元素 UID。",
+        },
+        includeSnapshot: {
+          type: "boolean",
+          description: "成功悬停后是否附带最新页面快照。",
+        },
+      },
+      required: ["uid"],
+      additionalProperties: false,
+    },
+  },
+  {
+    id: BROWSER_DOUBLE_CLICK_TOOL_ID,
+    name: BROWSER_DOUBLE_CLICK_TOOL_NAME,
+    groupId: MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
+    requiredCapabilities: ["browser_control"],
+    displayName: "浏览器双击元素",
+    description: "双击 take_snapshot 返回的 UID 元素，用于触发编辑、打开条目等双击交互。不接受选择器或自定义脚本。",
+    parameters: {
+      type: "object",
+      properties: {
+        uid: {
+          type: "string",
+          description: "take_snapshot 返回的元素 UID。",
+        },
+        includeSnapshot: {
+          type: "boolean",
+          description: "成功双击后是否附带最新页面快照。",
+        },
+      },
+      required: ["uid"],
+      additionalProperties: false,
+    },
+  },
+  {
+    id: BROWSER_CONTEXT_CLICK_TOOL_ID,
+    name: BROWSER_CONTEXT_CLICK_TOOL_NAME,
+    groupId: MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
+    requiredCapabilities: ["browser_control"],
+    displayName: "浏览器右键元素",
+    description: "右键 take_snapshot 返回的 UID 元素，仅用于打开上下文菜单；不会自动选择菜单项，也不接受选择器或自定义脚本。",
+    parameters: {
+      type: "object",
+      properties: {
+        uid: {
+          type: "string",
+          description: "take_snapshot 返回的元素 UID。",
+        },
+        includeSnapshot: {
+          type: "boolean",
+          description: "成功右键后是否附带最新页面快照。",
+        },
+      },
+      required: ["uid"],
+      additionalProperties: false,
+    },
+  },
+  {
+    id: BROWSER_DRAG_TOOL_ID,
+    name: BROWSER_DRAG_TOOL_NAME,
+    groupId: MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
+    requiredCapabilities: ["browser_control"],
+    displayName: "浏览器拖拽元素",
+    description: "从 take_snapshot 返回的源 UID 拖拽到目标 UID，或拖拽有限像素偏移。属于高风险操作；不接受选择器、XPath、自定义脚本或绝对坐标。",
+    parameters: {
+      type: "object",
+      properties: {
+        sourceUid: {
+          type: "string",
+          description: "拖拽起点元素 UID，必须来自最近一次 take_snapshot。",
+        },
+        targetUid: {
+          type: "string",
+          description: "可选。拖拽目标元素 UID，必须来自最近一次 take_snapshot。不能和 deltaX/deltaY 同时提供。",
+        },
+        deltaX: {
+          type: "integer",
+          minimum: -2000,
+          maximum: 2000,
+          description: "可选。相对源元素中心的水平拖拽偏移，必须与 deltaY 同时提供。",
+        },
+        deltaY: {
+          type: "integer",
+          minimum: -2000,
+          maximum: 2000,
+          description: "可选。相对源元素中心的垂直拖拽偏移，必须与 deltaX 同时提供。",
+        },
+        includeSnapshot: {
+          type: "boolean",
+          description: "成功拖拽后是否附带最新页面快照。",
+        },
+      },
+      required: ["sourceUid"],
       additionalProperties: false,
     },
   },
@@ -226,6 +654,44 @@ export const AVAILABLE_MODEL_TOOLS: ModelToolRegistryEntry[] = [
         },
       },
       required: ["text"],
+      additionalProperties: false,
+    },
+  },
+  {
+    id: BROWSER_WAIT_FOR_STATE_TOOL_ID,
+    name: BROWSER_WAIT_FOR_STATE_TOOL_NAME,
+    groupId: MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
+    requiredCapabilities: ["browser_control"],
+    displayName: "浏览器等待状态",
+    description: "等待当前受控页面 URL、readyState、take_snapshot UID 元素可见性或 Network 空闲达到目标状态。用于操作后稳定确认；不接受选择器、XPath 或自定义脚本。",
+    parameters: {
+      type: "object",
+      properties: {
+        state: {
+          type: "string",
+          enum: ["url_contains", "ready_state", "element_visible", "element_hidden", "network_idle"],
+          description: "要等待的状态类型。元素状态必须同时提供 take_snapshot 返回的 uid；Network 空闲不需要 value 或 uid。",
+        },
+        value: {
+          type: "string",
+          description: "url_contains 的匹配片段，或 ready_state 的目标值 loading、interactive、complete。",
+        },
+        uid: {
+          type: "string",
+          description: "等待元素可见或隐藏时必填，必须来自最近一次 take_snapshot 返回的 UID。",
+        },
+        timeout: {
+          type: "number",
+          minimum: 1,
+          maximum: 30000,
+          description: "等待超时时间，单位毫秒，默认 5000，最大 30000。",
+        },
+        includeSnapshot: {
+          type: "boolean",
+          description: "成功等待到状态后是否附带最新页面快照。",
+        },
+      },
+      required: ["state"],
       additionalProperties: false,
     },
   },
@@ -862,7 +1328,21 @@ export const AVAILABLE_MODEL_TOOLS: ModelToolRegistryEntry[] = [
   },
 ];
 
+export const AVAILABLE_MODEL_TOOLS: ModelToolRegistryEntry[] = RAW_AVAILABLE_MODEL_TOOLS.map((tool) => ({
+  ...tool,
+  toolClassification: getRequiredToolClassification(tool.id),
+}));
+
 const TOOL_ID_PATTERN = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/;
+
+function getRequiredToolClassification(toolId: string): ModelToolClassification {
+  const classification = TOOL_CLASSIFICATION_BY_ID[toolId];
+  if (!classification) {
+    throw new Error(`模型工具 ${toolId} 缺少结构化分类`);
+  }
+
+  return classification;
+}
 
 export function getRegisteredModelTools(): ModelToolRegistryEntry[] {
   return AVAILABLE_MODEL_TOOLS;
@@ -903,6 +1383,35 @@ export function isRuntimeReadonlyToolId(toolId: string): boolean {
 
 export function isControlledEnhancedToolId(toolId: string): boolean {
   return toolId.startsWith("boundary.") || toolId.startsWith("replay.");
+}
+
+export function isDebuggerRuntimeRequirement(runtime: ModelToolRuntimeRequirement): boolean {
+  return runtime === "browser_control" || runtime === "controlled_enhanced" || runtime === "full_access";
+}
+
+export function isToolRuntimeAvailable(
+  tool: ModelToolRegistryEntry,
+  browserControlEnabled: boolean,
+  browserAutomationMode: BrowserAutomationMode = "normal_restricted",
+): boolean {
+  const runtime = tool.toolClassification?.runtime;
+  if (runtime === "local" || runtime === "external_web" || runtime === undefined) {
+    return true;
+  }
+
+  if (!browserControlEnabled) {
+    return false;
+  }
+
+  if (runtime === "browser_control") {
+    return true;
+  }
+
+  if (runtime === "controlled_enhanced") {
+    return browserAutomationMode === "controlled_enhanced";
+  }
+
+  return browserAutomationMode === "full_access";
 }
 
 function createNetworkRequestIdsSchema(): Record<string, unknown> {
@@ -969,4 +1478,20 @@ export function normalizeEnabledToolIds(value: unknown): string[] {
 export function resolveEnabledModelTools(tools: ModelToolRegistryEntry[], enabledToolIds: string[]): ModelToolRegistryEntry[] {
   const enabledIds = new Set(enabledToolIds);
   return tools.filter((tool) => enabledIds.has(tool.id));
+}
+
+export function filterModelToolsByClassification(
+  tools: ModelToolRegistryEntry[],
+  filters: ModelToolClassificationFilters,
+): ModelToolRegistryEntry[] {
+  return tools.filter((tool) => {
+    const classification = tool.toolClassification;
+    if (!classification) {
+      return false;
+    }
+
+    return (filters.runtime === undefined || classification.runtime === filters.runtime) &&
+      (filters.risk === undefined || classification.risk === filters.risk) &&
+      (filters.capability === undefined || classification.capabilities.includes(filters.capability));
+  });
 }

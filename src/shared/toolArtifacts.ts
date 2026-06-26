@@ -1,4 +1,10 @@
 import type {
+  AutomationFailureSummary,
+  AutomationReportType,
+  AutomationReportStep,
+  AutomationTimelineEvent,
+  ChatAutomationReportToolAttachment,
+  ChatBrowserScreenshotToolAttachment,
   ChatGenericToolAttachment,
   ChatJsSourceToolAttachment,
   ChatMessage,
@@ -18,12 +24,17 @@ import type {
   SourceMapOriginalContext,
   SourceMapResolvedLocation,
 } from "./types";
-import { formatNetworkAttachmentForExport, formatNetworkAttachmentSummary, redactNetworkRequestDetail } from "./networkContext";
+import { formatNetworkAttachmentForExport, formatNetworkAttachmentSummary, redactNetworkRequestDetail, redactNetworkText } from "./networkContext";
+import { isPngDataUrl } from "./tabCapture";
 import { createTavilySearchContextPrompt, formatTavilySearchAttachmentSummary } from "./webSearch/tavily";
 import { truncateText } from "./utils/text";
 
 const TOOL_ATTACHMENT_KIND_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const GENERIC_DETAIL_LIMIT = 4000;
+const AUTOMATION_EVIDENCE_LIMIT = 500;
+const AUTOMATION_CONCLUSION_LIMIT = 800;
+const SENSITIVE_INLINE_PATTERN = /\b(token|access_token|refresh_token|password|passwd|secret|api[_-]?key|authorization|session|cookie|csrf|jwt)\s*[:=]\s*([^\s,;&"'<>]+)/gi;
+const BEARER_INLINE_PATTERN = /\bBearer\s+[A-Za-z0-9._~+/=-]+/gi;
 
 type ToolAttachmentAggregateGroup = {
   attachments: ChatToolAttachment[];
@@ -62,6 +73,34 @@ export function createNetworkToolAttachment(attachment: ChatNetworkContextAttach
     truncated: attachment.truncated,
     requests,
   };
+}
+
+export function createAutomationReportToolAttachment(input: {
+  objective: string;
+  conclusion: string;
+  records: ChatToolCallRecord[];
+  attachments?: ChatToolAttachment[];
+  createdAt?: number;
+}): ChatAutomationReportToolAttachment | undefined {
+  const steps = input.records.map((record) => createAutomationReportStep(record, input.attachments ?? []));
+  const timeline = createAutomationTimeline(input.records, steps);
+  const createdAt = input.createdAt ?? Math.max(...input.records.map((record) => record.completedAt ?? record.startedAt), Date.now());
+  const report = normalizeAutomationReportToolAttachment({
+    id: `tool-attachment-automation-report-${createdAt}`,
+    kind: "automation-report",
+    title: "自动化任务报告",
+    reportType: inferAutomationReportType(input.records),
+    objective: input.objective,
+    conclusion: input.conclusion,
+    createdAt,
+    redacted: true,
+    truncated: false,
+    steps,
+    timeline,
+    failureSummary: createAutomationFailureSummary(steps),
+    fullAccessIncluded: input.records.some((record) => record.toolId.startsWith("full_access.")),
+  } as Partial<ChatToolAttachment>);
+  return report;
 }
 
 export function collectMessageToolAttachments(message: ChatMessage): ChatToolAttachment[] {
@@ -118,6 +157,17 @@ export function formatToolAttachmentForPrompt(attachment: ChatToolAttachment): s
     return ["后续追问需要继续参考以下历史 Source Map 解析结果：", formatSourceMapAttachmentForText(attachment)].join("\n");
   }
 
+  if (isBrowserScreenshotToolAttachment(attachment)) {
+    return [
+      "后续追问可参考一张历史浏览器截图附件，但正文只保留元数据，不注入图片 base64：",
+      formatBrowserScreenshotAttachmentSummary(attachment),
+    ].join("\n");
+  }
+
+  if (isAutomationReportToolAttachment(attachment)) {
+    return ["后续追问需要继续参考以下自动化任务报告：", formatAutomationReportAttachmentForText(attachment)].join("\n");
+  }
+
   if (attachment.details?.trim()) {
     return [`后续追问需要继续参考以下历史工具附件：${attachment.title}`, attachment.details.trim()].join("\n");
   }
@@ -141,6 +191,14 @@ export function formatToolAttachmentForExport(attachment: ChatToolAttachment): s
 
   if (isSourceMapToolAttachment(attachment)) {
     return ["# Source Map 解析附件", "", formatSourceMapAttachmentSummary(attachment), "", formatSourceMapAttachmentForText(attachment)].join("\n");
+  }
+
+  if (isBrowserScreenshotToolAttachment(attachment)) {
+    return ["# 浏览器截图附件", "", formatBrowserScreenshotAttachmentSummary(attachment)].join("\n");
+  }
+
+  if (isAutomationReportToolAttachment(attachment)) {
+    return ["# 自动化任务报告附件", "", formatAutomationReportAttachmentForText(attachment)].join("\n");
   }
 
   return ["# 工具结果附件", "", attachment.summary, "", attachment.details ?? ""].join("\n").trim();
@@ -173,6 +231,14 @@ export function normalizeToolAttachment(value: unknown): ChatToolAttachment | un
     return normalizeSourceMapToolAttachment(source);
   }
 
+  if (kind === "browser-screenshot") {
+    return normalizeBrowserScreenshotToolAttachment(source);
+  }
+
+  if (kind === "automation-report") {
+    return normalizeAutomationReportToolAttachment(source);
+  }
+
   return normalizeGenericToolAttachment(source, kind);
 }
 
@@ -190,6 +256,14 @@ export function isJsSourceToolAttachment(attachment: ChatToolAttachment): attach
 
 export function isSourceMapToolAttachment(attachment: ChatToolAttachment): attachment is ChatSourceMapToolAttachment {
   return attachment.kind === "source-map" && "candidates" in attachment && "resolvedLocations" in attachment && "originalContexts" in attachment;
+}
+
+export function isBrowserScreenshotToolAttachment(attachment: ChatToolAttachment): attachment is ChatBrowserScreenshotToolAttachment {
+  return attachment.kind === "browser-screenshot" && "dataUrl" in attachment && "mediaType" in attachment && "target" in attachment;
+}
+
+export function isAutomationReportToolAttachment(attachment: ChatToolAttachment): attachment is ChatAutomationReportToolAttachment {
+  return attachment.kind === "automation-report" && "steps" in attachment && Array.isArray(attachment.steps);
 }
 
 export function uniqueToolAttachmentsById(attachments: ChatToolAttachment[]): ChatToolAttachment[] {
@@ -249,6 +323,18 @@ function createToolAttachmentContentKey(attachment: ChatToolAttachment): string 
       ...attachment.candidates.map((candidate) => [candidate.resourceId, candidate.source, normalizeComparableText(candidate.url ?? ""), candidate.status].join("\u0001")),
       ...attachment.resolvedLocations.map((location) => [location.resourceId, String(location.generatedLine), String(location.generatedColumn), normalizeComparableText(location.source ?? "")].join("\u0001")),
       ...attachment.originalContexts.map((context) => [context.resourceId, String(context.generatedLine), String(context.generatedColumn), normalizeComparableText(context.source ?? "")].join("\u0001")),
+    ].join("\u0000");
+  }
+
+  if (isBrowserScreenshotToolAttachment(attachment)) {
+    return [attachment.kind, attachment.target, attachment.uid ?? "", attachment.dataUrl].join("\u0000");
+  }
+
+  if (isAutomationReportToolAttachment(attachment)) {
+    return [
+      attachment.kind,
+      normalizeComparableText(attachment.objective),
+      ...attachment.steps.map((step) => [step.toolCallId, step.toolName, step.status, normalizeComparableText(step.evidence)].join("\u0001")),
     ].join("\u0000");
   }
 
@@ -319,6 +405,14 @@ function aggregateToolAttachmentGroup(group: ToolAttachmentAggregateGroup): Chat
 
   if (kind === "source-map") {
     return aggregateSourceMapToolAttachments(attachments.filter(isSourceMapToolAttachment));
+  }
+
+  if (kind === "browser-screenshot") {
+    return attachments[0];
+  }
+
+  if (kind === "automation-report") {
+    return aggregateAutomationReportToolAttachments(attachments.filter(isAutomationReportToolAttachment));
   }
 
   if (attachments.length === 1) {
@@ -460,6 +554,37 @@ function aggregateSourceMapToolAttachments(attachments: ChatSourceMapToolAttachm
   return {
     ...aggregated,
     summary: formatSourceMapAttachmentSummary(aggregated),
+  };
+}
+
+function aggregateAutomationReportToolAttachments(attachments: ChatAutomationReportToolAttachment[]): ChatAutomationReportToolAttachment | undefined {
+  if (attachments.length === 0) {
+    return undefined;
+  }
+
+  const steps = uniqueBy(attachments.flatMap((attachment) => attachment.steps), (step) => step.toolCallId || `${step.toolName}\u0000${step.startedAt}`);
+  const timeline = uniqueBy(attachments.flatMap((attachment) => attachment.timeline), (event) => event.id || `${event.type}\u0000${event.at}\u0000${event.label}`);
+  const createdAt = Math.max(...attachments.map((attachment) => attachment.createdAt));
+  const fullAccessIncluded = attachments.some((attachment) => attachment.fullAccessIncluded);
+  const report: ChatAutomationReportToolAttachment = {
+    id: `tool-attachment-automation-report-aggregated-${attachments.map((attachment) => attachment.id).join("-")}`,
+    kind: "automation-report",
+    title: "自动化任务报告",
+    summary: "",
+    createdAt,
+    redacted: attachments.every((attachment) => attachment.redacted),
+    truncated: attachments.some((attachment) => attachment.truncated),
+    objective: uniqueNonEmptyStrings(attachments.map((attachment) => attachment.objective)).join("；") || "未记录任务目标",
+    conclusion: uniqueNonEmptyStrings(attachments.map((attachment) => attachment.conclusion)).join("\n") || "暂无结论",
+    reportType: aggregateAutomationReportType(attachments),
+    steps,
+    timeline: timeline.sort((a, b) => a.at - b.at),
+    failureSummary: createAutomationFailureSummary(steps),
+    fullAccessIncluded,
+  };
+  return {
+    ...report,
+    summary: formatAutomationReportSummary(report),
   };
 }
 
@@ -692,6 +817,72 @@ function normalizeSourceMapToolAttachment(source: Partial<ChatToolAttachment>): 
   };
 }
 
+function normalizeBrowserScreenshotToolAttachment(source: Partial<ChatToolAttachment>): ChatBrowserScreenshotToolAttachment | undefined {
+  const raw = source as Record<string, unknown>;
+  const dataUrl = isPngDataUrl(raw.dataUrl) ? raw.dataUrl : undefined;
+  const target = raw.target === "element" ? "element" : raw.target === "viewport" ? "viewport" : undefined;
+  const byteSize = typeof raw.byteSize === "number" && Number.isFinite(raw.byteSize) && raw.byteSize > 0
+    ? Math.floor(raw.byteSize)
+    : estimatePngDataUrlBytes(dataUrl);
+  if (!dataUrl || !target || byteSize <= 0) {
+    return undefined;
+  }
+
+  const attachment: ChatBrowserScreenshotToolAttachment = {
+    id: normalizeId(source.id, `tool-attachment-browser-screenshot-${normalizeTimestamp(source.createdAt)}`),
+    kind: "browser-screenshot",
+    title: normalizeOptionalString(source.title) ?? "浏览器截图",
+    summary: "",
+    sourceToolCallId: normalizeOptionalString(source.sourceToolCallId),
+    createdAt: normalizeTimestamp(source.createdAt),
+    redacted: false,
+    truncated: source.truncated === true,
+    mediaType: "image/png",
+    dataUrl,
+    target,
+    uid: normalizeOptionalString(raw.uid),
+    byteSize,
+    clip: normalizeScreenshotClip(raw.clip),
+  };
+
+  return {
+    ...attachment,
+    summary: normalizeOptionalString(source.summary) ?? formatBrowserScreenshotAttachmentSummary(attachment),
+  };
+}
+
+function normalizeAutomationReportToolAttachment(source: Partial<ChatToolAttachment>): ChatAutomationReportToolAttachment | undefined {
+  const raw = source as Partial<ChatAutomationReportToolAttachment>;
+  const steps = Array.isArray(raw.steps)
+    ? raw.steps.map(normalizeAutomationReportStep).filter((item): item is AutomationReportStep => Boolean(item))
+    : [];
+  if (steps.length === 0) {
+    return undefined;
+  }
+
+  const attachment: ChatAutomationReportToolAttachment = {
+    id: normalizeId(source.id, `tool-attachment-automation-report-${normalizeTimestamp(source.createdAt)}`),
+    kind: "automation-report",
+    title: "自动化任务报告",
+    summary: "",
+    sourceToolCallId: normalizeOptionalString(source.sourceToolCallId),
+    createdAt: normalizeTimestamp(source.createdAt),
+    redacted: true,
+    truncated: source.truncated === true || steps.some((step) => step.evidence.length >= 500),
+    reportType: normalizeAutomationReportType(raw.reportType, steps),
+    objective: redactAndTruncateAutomationText(raw.objective, 500) || "未记录任务目标",
+    conclusion: redactAndTruncateAutomationText(raw.conclusion, 800) || "暂无结论",
+    steps,
+    timeline: normalizeAutomationTimeline(raw.timeline, steps),
+    failureSummary: normalizeAutomationFailureSummary(raw.failureSummary, steps),
+    fullAccessIncluded: raw.fullAccessIncluded === true,
+  };
+  return {
+    ...attachment,
+    summary: formatAutomationReportSummary(attachment),
+  };
+}
+
 function normalizeGenericToolAttachment(source: Partial<ChatToolAttachment>, kind: string): ChatGenericToolAttachment | undefined {
   const title = normalizeOptionalString(source.title);
   const summary = normalizeOptionalString(source.summary);
@@ -711,6 +902,54 @@ function normalizeGenericToolAttachment(source: Partial<ChatToolAttachment>, kin
     truncated: source.truncated === true || Boolean(truncatedDetails?.truncated),
     details: truncatedDetails?.text,
   };
+}
+
+function estimatePngDataUrlBytes(dataUrl: string | undefined): number {
+  if (!dataUrl || !isPngDataUrl(dataUrl)) {
+    return 0;
+  }
+  const base64 = dataUrl.slice("data:image/png;base64,".length);
+  const padding = base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0;
+  return Math.floor((base64.length * 3) / 4) - padding;
+}
+
+function normalizeScreenshotClip(value: unknown): ChatBrowserScreenshotToolAttachment["clip"] | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const source = value as Partial<NonNullable<ChatBrowserScreenshotToolAttachment["clip"]>>;
+  const clip = {
+    x: normalizeFiniteNumber(source.x),
+    y: normalizeFiniteNumber(source.y),
+    width: normalizeFiniteNumber(source.width),
+    height: normalizeFiniteNumber(source.height),
+    scale: normalizeFiniteNumber(source.scale),
+  };
+  if (clip.x === undefined || clip.y === undefined || clip.width === undefined || clip.height === undefined || clip.scale === undefined || clip.width <= 0 || clip.height <= 0) {
+    return undefined;
+  }
+  return clip as NonNullable<ChatBrowserScreenshotToolAttachment["clip"]>;
+}
+
+function normalizeFiniteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function formatBrowserScreenshotAttachmentSummary(attachment: ChatBrowserScreenshotToolAttachment): string {
+  const target = attachment.target === "element" && attachment.uid ? `元素 ${attachment.uid}` : "当前视口";
+  const clip = attachment.clip ? `，区域 x=${attachment.clip.x} y=${attachment.clip.y} width=${attachment.clip.width} height=${attachment.clip.height}` : "";
+  return `${target}截图，PNG，${formatAttachmentByteSize(attachment.byteSize)}${clip}。`;
+}
+
+function formatAttachmentByteSize(value: number): string {
+  if (value < 1024) {
+    return `${value} B`;
+  }
+  const kb = value / 1024;
+  if (kb < 1024) {
+    return `${Math.round(kb * 10) / 10} KB`;
+  }
+  return `${Math.round((kb / 1024) * 10) / 10} MB`;
 }
 
 function normalizeJsSourceResource(value: unknown): JsSourceResource | undefined {
@@ -805,6 +1044,26 @@ export function formatSourceMapAttachmentSummary(attachment: ChatSourceMapToolAt
   return `Source Map 候选 ${attachment.candidates.length} 个，映射 ${attachment.resolvedLocations.length} 个，原始片段 ${attachment.originalContexts.length} 个，失败 ${attachment.failures.length} 个。`;
 }
 
+export function formatAutomationReportSummary(attachment: ChatAutomationReportToolAttachment): string {
+  const successCount = attachment.steps.filter((step) => step.status === "success").length;
+  const errorCount = attachment.steps.filter((step) => step.status === "error").length;
+  const fullAccess = attachment.fullAccessIncluded ? "，包含完全访问原文结果" : "";
+  return `任务报告：总步骤=${attachment.steps.length}，成功=${successCount}，失败=${errorCount}${fullAccess}。`;
+}
+
+export function formatAutomationReportTypeLabel(type: AutomationReportType): string {
+  if (type === "page_inspection") {
+    return "页面巡检";
+  }
+  if (type === "form_diagnosis") {
+    return "表单诊断";
+  }
+  if (type === "interface_analysis") {
+    return "接口分析";
+  }
+  return "通用自动化";
+}
+
 function formatJsSourceAttachmentForText(attachment: ChatJsSourceToolAttachment): string {
   const sections: string[] = [];
   if (attachment.query?.length) {
@@ -823,6 +1082,31 @@ function formatJsSourceAttachmentForText(attachment: ChatJsSourceToolAttachment)
     sections.push(["同源补位失败：", ...attachment.failedFetches.map((failure) => `- ${failure.url}: ${failure.message}`)].join("\n"));
   }
   return sections.join("\n\n").trim();
+}
+
+function formatAutomationReportAttachmentForText(attachment: ChatAutomationReportToolAttachment): string {
+  const lines = [
+    `目标：${attachment.objective}`,
+    `结论：${attachment.conclusion}`,
+    `任务类型：${formatAutomationReportTypeLabel(attachment.reportType)}`,
+    `摘要：${formatAutomationReportSummary(attachment)}`,
+    `完全访问原文结果：${attachment.fullAccessIncluded ? "是" : "否"}`,
+    "时间线：",
+    ...attachment.timeline.map((event, index) => `${index + 1}. [${event.type}] ${event.label} - ${event.detail}`),
+    "步骤：",
+    ...attachment.steps.map((step, index) =>
+      `${index + 1}. [${step.status}] ${step.displayName} (${step.toolName}) - ${step.evidence}${step.attachmentKinds.length ? `；附件=${step.attachmentKinds.join("、")}` : ""}`,
+    ),
+  ];
+  if (attachment.failureSummary && attachment.failureSummary.failedStepCount > 0) {
+    lines.push(
+      "失败摘要：",
+      `失败步骤数：${attachment.failureSummary.failedStepCount}`,
+      `失败工具：${attachment.failureSummary.failedTools.join("、") || "无"}`,
+      `可恢复动作：${attachment.failureSummary.recoverableActions.join("；") || "无"}`,
+    );
+  }
+  return lines.join("\n");
 }
 
 function formatSourceMapAttachmentForText(attachment: ChatSourceMapToolAttachment): string {
@@ -930,6 +1214,298 @@ function normalizeSourceMapFailure(value: unknown): ChatSourceMapToolAttachment[
     url: normalizeOptionalString(source.url),
     message,
   };
+}
+
+function normalizeAutomationReportStep(value: unknown): AutomationReportStep | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const source = value as Partial<AutomationReportStep>;
+  const toolCallId = normalizeOptionalString(source.toolCallId);
+  const toolName = normalizeOptionalString(source.toolName);
+  const displayName = normalizeOptionalString(source.displayName) ?? toolName;
+  if (!toolCallId || !toolName || !displayName || !isToolCallStatus(source.status)) {
+    return undefined;
+  }
+  return {
+    toolCallId,
+    toolName,
+    displayName,
+    status: source.status,
+    startedAt: normalizeTimestamp(source.startedAt),
+    completedAt: typeof source.completedAt === "number" && Number.isFinite(source.completedAt) ? source.completedAt : undefined,
+    evidence: redactAndTruncateAutomationText(source.evidence, 500) || "无工具结果摘要",
+    attachmentKinds: Array.isArray(source.attachmentKinds) ? uniqueNonEmptyStrings(source.attachmentKinds.filter((item): item is string => typeof item === "string")).slice(0, 20) : [],
+  };
+}
+
+function normalizeAutomationTimeline(value: unknown, steps: AutomationReportStep[]): AutomationTimelineEvent[] {
+  const timeline = Array.isArray(value)
+    ? value.map(normalizeAutomationTimelineEvent).filter((item): item is AutomationTimelineEvent => Boolean(item))
+    : [];
+  if (timeline.length > 0) {
+    return uniqueBy(timeline, (event) => event.id).sort((a, b) => a.at - b.at).slice(0, 100);
+  }
+  return createAutomationTimelineFromSteps(steps);
+}
+
+function normalizeAutomationTimelineEvent(value: unknown): AutomationTimelineEvent | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const source = value as Partial<AutomationTimelineEvent>;
+  const type = isAutomationTimelineEventType(source.type) ? source.type : undefined;
+  const label = redactAndTruncateAutomationText(source.label, 160);
+  const detail = redactAndTruncateAutomationText(source.detail, 500);
+  if (!type || !label || !detail) {
+    return undefined;
+  }
+  return {
+    id: normalizeId(source.id, `automation-timeline-${type}-${normalizeTimestamp(source.at)}`),
+    type,
+    at: normalizeTimestamp(source.at),
+    label,
+    detail,
+    toolCallId: normalizeOptionalString(source.toolCallId),
+    status: isToolCallStatus(source.status) ? source.status : undefined,
+  };
+}
+
+function createAutomationReportStep(record: ChatToolCallRecord, attachments: ChatToolAttachment[]): AutomationReportStep {
+  const attachmentKinds = uniqueNonEmptyStrings(
+    attachments
+      .filter((attachment) => record.attachmentIds?.includes(attachment.id) || attachment.sourceToolCallId === record.id)
+      .map((attachment) => attachment.kind),
+  );
+  return {
+    toolCallId: record.id,
+    toolName: record.name,
+    displayName: record.displayName || record.name,
+    status: record.status,
+    startedAt: record.startedAt,
+    completedAt: record.completedAt,
+    evidence: redactAndTruncateAutomationText(record.errorMessage || record.resultSummary || "无工具结果摘要", AUTOMATION_EVIDENCE_LIMIT),
+    attachmentKinds,
+  };
+}
+
+function createAutomationTimeline(records: ChatToolCallRecord[], steps: AutomationReportStep[]): AutomationTimelineEvent[] {
+  const stepByToolCallId = new Map(steps.map((step) => [step.toolCallId, step]));
+  const events = records.flatMap((record) => {
+    const step = stepByToolCallId.get(record.id);
+    if (!step) {
+      return [];
+    }
+    const toolEvent: AutomationTimelineEvent = {
+      id: `automation-timeline-tool-${record.id}`,
+      type: getAutomationTimelineEventType(record),
+      at: record.completedAt ?? record.startedAt,
+      label: step.displayName,
+      detail: step.evidence,
+      toolCallId: step.toolCallId,
+      status: step.status,
+    };
+    if (step.status !== "error") {
+      return [toolEvent];
+    }
+    const recoveryEvent: AutomationTimelineEvent = {
+      id: `automation-timeline-recovery-${record.id}`,
+      type: "failure_recovery",
+      at: (record.completedAt ?? record.startedAt) + 1,
+      label: "失败恢复建议",
+      detail: "检查失败步骤的参数、页面状态或授权边界后重试。",
+      toolCallId: step.toolCallId,
+      status: step.status,
+    };
+    return [toolEvent, recoveryEvent];
+  });
+  return events.sort((a, b) => a.at - b.at).slice(0, 100);
+}
+
+function createAutomationTimelineFromSteps(steps: AutomationReportStep[]): AutomationTimelineEvent[] {
+  return steps.flatMap((step) => {
+    const toolEvent: AutomationTimelineEvent = {
+      id: `automation-timeline-tool-${step.toolCallId}`,
+      type: getAutomationTimelineEventTypeFromStep(step),
+      at: step.completedAt ?? step.startedAt,
+      label: step.displayName,
+      detail: step.evidence,
+      toolCallId: step.toolCallId,
+      status: step.status,
+    };
+    if (step.status !== "error") {
+      return [toolEvent];
+    }
+    const recoveryEvent: AutomationTimelineEvent = {
+      id: `automation-timeline-recovery-${step.toolCallId}`,
+      type: "failure_recovery",
+      at: (step.completedAt ?? step.startedAt) + 1,
+      label: "失败恢复建议",
+      detail: "检查失败步骤的参数、页面状态或授权边界后重试。",
+      toolCallId: step.toolCallId,
+      status: step.status,
+    };
+    return [toolEvent, recoveryEvent];
+  });
+}
+
+function getAutomationTimelineEventType(record: ChatToolCallRecord): AutomationTimelineEvent["type"] {
+  const key = `${record.toolId}\n${record.name}`;
+  if (key.includes("boundary.request_user_choice") || key.includes("boundary_request_user_choice")) {
+    return "user_confirmation";
+  }
+  if (key.includes("wait_for")) {
+    return "wait";
+  }
+  if (
+    key.includes("browser.navigate_page") ||
+    key.includes("browser_navigate_page") ||
+    key.includes("browser.new_page") ||
+    key.includes("browser_new_page") ||
+    key.includes("browser.select_page") ||
+    key.includes("browser_select_page") ||
+    key.includes("browser.close_page") ||
+    key.includes("browser_close_page")
+  ) {
+    return "page_change";
+  }
+  return "tool_call";
+}
+
+function getAutomationTimelineEventTypeFromStep(step: AutomationReportStep): AutomationTimelineEvent["type"] {
+  const key = `${step.toolName}\n${step.displayName}`;
+  if (key.includes("boundary_request_user_choice") || key.includes("用户确认")) {
+    return "user_confirmation";
+  }
+  if (key.includes("wait_for") || key.includes("等待")) {
+    return "wait";
+  }
+  if (key.includes("navigate_page") || key.includes("new_page") || key.includes("select_page") || key.includes("close_page") || key.includes("导航")) {
+    return "page_change";
+  }
+  return "tool_call";
+}
+
+function inferAutomationReportType(records: ChatToolCallRecord[]): AutomationReportType {
+  const keys = records.map((record) => `${record.toolId}\n${record.name}`).join("\n");
+  if (keys.includes("network.") || keys.includes("network_") || keys.includes("js.") || keys.includes("js_") || keys.includes("sourcemap.") || keys.includes("sourcemap_")) {
+    return "interface_analysis";
+  }
+  if (keys.includes("browser.analyze_form") || keys.includes("browser_analyze_form")) {
+    return "form_diagnosis";
+  }
+  if (
+    keys.includes("browser.get_page_state") ||
+    keys.includes("browser_get_page_state") ||
+    keys.includes("browser.get_console_messages") ||
+    keys.includes("browser_get_console_messages") ||
+    keys.includes("browser.screenshot") ||
+    keys.includes("browser_screenshot") ||
+    keys.includes("browser.collect_diagnostics") ||
+    keys.includes("browser_collect_diagnostics")
+  ) {
+    return "page_inspection";
+  }
+  return "general";
+}
+
+function normalizeAutomationReportType(value: unknown, steps: AutomationReportStep[]): AutomationReportType {
+  return isAutomationReportType(value) ? value : inferAutomationReportTypeFromSteps(steps);
+}
+
+function aggregateAutomationReportType(attachments: ChatAutomationReportToolAttachment[]): AutomationReportType {
+  const types = attachments.map((attachment) => attachment.reportType);
+  if (types.includes("interface_analysis")) {
+    return "interface_analysis";
+  }
+  if (types.includes("form_diagnosis")) {
+    return "form_diagnosis";
+  }
+  if (types.includes("page_inspection")) {
+    return "page_inspection";
+  }
+  return "general";
+}
+
+function inferAutomationReportTypeFromSteps(steps: AutomationReportStep[]): AutomationReportType {
+  const keys = steps.map((step) => `${step.toolName}\n${step.displayName}`).join("\n");
+  if (keys.includes("network.") || keys.includes("network_") || keys.includes("js.") || keys.includes("js_") || keys.includes("sourcemap.") || keys.includes("sourcemap_")) {
+    return "interface_analysis";
+  }
+  if (keys.includes("analyze_form") || keys.includes("表单")) {
+    return "form_diagnosis";
+  }
+  if (keys.includes("get_page_state") || keys.includes("get_console_messages") || keys.includes("screenshot") || keys.includes("collect_diagnostics") || keys.includes("页面")) {
+    return "page_inspection";
+  }
+  return "general";
+}
+
+function normalizeAutomationFailureSummary(value: unknown, steps: AutomationReportStep[]): AutomationFailureSummary | undefined {
+  const fallback = createAutomationFailureSummary(steps);
+  if (!value || typeof value !== "object") {
+    return fallback;
+  }
+  const source = value as Partial<AutomationFailureSummary>;
+  const failedStepCount = normalizeNonNegativeNumber(source.failedStepCount);
+  const failedTools = Array.isArray(source.failedTools)
+    ? uniqueNonEmptyStrings(source.failedTools.filter((item): item is string => typeof item === "string").map((item) => redactAndTruncateAutomationText(item, 120))).slice(0, 20)
+    : fallback?.failedTools ?? [];
+  const recoverableActions = Array.isArray(source.recoverableActions)
+    ? uniqueNonEmptyStrings(source.recoverableActions.filter((item): item is string => typeof item === "string").map((item) => redactAndTruncateAutomationText(item, 200))).slice(0, 10)
+    : fallback?.recoverableActions ?? [];
+  return failedStepCount > 0 ? { failedStepCount, failedTools, recoverableActions } : undefined;
+}
+
+function createAutomationFailureSummary(steps: AutomationReportStep[]): AutomationFailureSummary | undefined {
+  const failedSteps = steps.filter((step) => step.status === "error");
+  if (failedSteps.length === 0) {
+    return undefined;
+  }
+  return {
+    failedStepCount: failedSteps.length,
+    failedTools: uniqueNonEmptyStrings(failedSteps.map((step) => step.displayName)).slice(0, 20),
+    recoverableActions: ["检查失败步骤的参数、页面状态或授权边界后重试。"],
+  };
+}
+
+function redactAndTruncateAutomationText(value: unknown, maxLength: number): string {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (!text) {
+    return "";
+  }
+  return truncateText(redactAutomationText(text), maxLength).text;
+}
+
+function redactInlineSensitiveText(value: string): string {
+  return value
+    .replace(BEARER_INLINE_PATTERN, "Bearer [已脱敏]")
+    .replace(SENSITIVE_INLINE_PATTERN, (_match, key: string) => `${key}=[已脱敏]`);
+}
+
+function redactAutomationText(value: string): string {
+  const inlineRedacted = redactInlineSensitiveText(value);
+  const trimmed = inlineRedacted.trim();
+  if (trimmed.startsWith("{") || trimmed.startsWith("[") || isPlainFormEncodedText(trimmed)) {
+    return redactNetworkText(trimmed);
+  }
+  return inlineRedacted.replace(/https?:\/\/[^\s)）]+/g, (url) => redactNetworkText(url));
+}
+
+function isPlainFormEncodedText(value: string): boolean {
+  return /^[^=\s]+=[^=\s]+(?:&[^=\s]+=[^=\s]+)*$/.test(value);
+}
+
+function isToolCallStatus(value: unknown): value is AutomationReportStep["status"] {
+  return value === "running" || value === "success" || value === "error";
+}
+
+function isAutomationTimelineEventType(value: unknown): value is AutomationTimelineEvent["type"] {
+  return value === "tool_call" || value === "page_change" || value === "wait" || value === "user_confirmation" || value === "failure_recovery";
+}
+
+function isAutomationReportType(value: unknown): value is AutomationReportType {
+  return value === "general" || value === "page_inspection" || value === "form_diagnosis" || value === "interface_analysis";
 }
 
 function isSourceMapCandidateSource(value: unknown): value is SourceMapCandidate["source"] {

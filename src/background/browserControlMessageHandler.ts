@@ -23,18 +23,29 @@ import {
   NETWORK_GET_REQUEST_DETAILS_TOOL_NAME,
   NETWORK_EXTRACT_JS_CANDIDATES_TOOL_ID,
   NETWORK_EXTRACT_JS_CANDIDATES_TOOL_NAME,
+  BROWSER_COLLECT_DIAGNOSTICS_TOOL_NAME,
+  BROWSER_ANALYZE_FORM_TOOL_NAME,
+  BROWSER_ANALYZE_INTERACTION_BLOCKER_TOOL_NAME,
+  BROWSER_GET_CONSOLE_MESSAGES_TOOL_NAME,
+  BROWSER_INSPECT_ELEMENT_TOOL_NAME,
+  BROWSER_FIND_ELEMENTS_TOOL_NAME,
+  BROWSER_GET_PAGE_STATE_TOOL_NAME,
+  BROWSER_GET_PERFORMANCE_SUMMARY_TOOL_NAME,
+  BROWSER_SCREENSHOT_TOOL_NAME,
   REPLAY_SEND_REQUEST_TOOL_ID,
   REPLAY_SEND_REQUEST_TOOL_NAME,
   RUNTIME_DESCRIBE_FUNCTION_TOOL_NAME,
   RUNTIME_INSPECT_GLOBALS_TOOL_NAME,
   RUNTIME_SEARCH_MODULES_TOOL_NAME,
 } from "../shared/models/toolRegistry";
+import { isPngDataUrl } from "../shared/tabCapture";
 import {
   BrowserControlActionExecutor,
   createBrowserActionDisabledResult,
   createBrowserActionErrorResult,
   isBrowserControlActionName,
 } from "./browserControl/actions";
+import type { NetworkRequestMeta } from "../shared/types";
 import { applyAutomationBoundaryConfirmation } from "./browserControl/automationBoundaryDetector";
 import { BrowserNetworkRecorder } from "./browserControl/networkRecorder";
 import { BrowserNetworkToolExecutor } from "./browserControl/networkToolExecutor";
@@ -44,12 +55,130 @@ import { RuntimeReadToolExecutor } from "./browserControl/runtimeReadToolExecuto
 import { BoundaryChoiceToolExecutor } from "./browserControl/boundaryChoiceToolExecutor";
 import { ReplayToolExecutor } from "./browserControl/replayToolExecutor";
 import { FullAccessToolExecutor } from "./browserControl/fullAccessToolExecutor";
+import { BrowserConsoleRecorder } from "./browserControl/consoleRecorder";
 
 type Debuggee = chrome.debugger.Debuggee;
 type ChromeApi = typeof chrome;
 type DebuggerDetachReason = `${chrome.debugger.DetachReason}`;
 type BrowserControlDetachedReason = "canceled_by_user" | "target_closed" | "tab_removed" | "disabled_by_user" | "unknown";
 type BrowserControlTabInfo = { title: string; url: string };
+interface BrowserPageRuntimeState {
+  url: string;
+  title: string;
+  readyState: string;
+  viewport?: { width?: number; height?: number; deviceScaleFactor?: number };
+  scroll?: { x?: number; y?: number; maxX?: number; maxY?: number };
+  focusedElement?: { tagName?: string; id?: string; name?: string; type?: string; text?: string };
+}
+interface BrowserElementInspection {
+  tagName: string;
+  id: string;
+  className: string;
+  text: string;
+  attributes: Record<string, string>;
+  rect?: { x?: number; y?: number; width?: number; height?: number };
+  style?: { display?: string; visibility?: string; opacity?: string; pointerEvents?: string; cursor?: string };
+  state?: { visible?: boolean; disabled?: boolean; editable?: boolean };
+}
+type BrowserInteractionExpectedAction = "click" | "fill" | "view";
+interface BrowserInteractionBlockerAnalysis {
+  tagName: string;
+  text: string;
+  rect?: { x?: number; y?: number; width?: number; height?: number };
+  style?: { display?: string; visibility?: string; opacity?: string; pointerEvents?: string; cursor?: string };
+  state?: {
+    visible?: boolean;
+    disabled?: boolean;
+    editable?: boolean;
+    connected?: boolean;
+    inViewport?: boolean;
+    occluded?: boolean;
+    coveredBy?: string;
+  };
+  form?: { disabledFieldset?: boolean; invalidFields?: number };
+}
+interface BrowserFormAnalysisField {
+  index: number;
+  tagName: string;
+  type: string;
+  name: string;
+  label: string;
+  required: boolean;
+  disabled: boolean;
+  readonly: boolean;
+  invalid: boolean;
+  hasValue: boolean;
+}
+interface BrowserFormAnalysisSubmitButton {
+  text: string;
+  disabled: boolean;
+  type: string;
+}
+interface BrowserFormAnalysisItem {
+  index: number;
+  id: string;
+  name: string;
+  action: string;
+  method: string;
+  fieldCount: number;
+  invalidFieldCount: number;
+  disabledFieldCount: number;
+  requiredFieldCount: number;
+  submitButtons: BrowserFormAnalysisSubmitButton[];
+  errors: string[];
+  fields: BrowserFormAnalysisField[];
+}
+interface BrowserFormAnalysis {
+  forms: BrowserFormAnalysisItem[];
+}
+interface BrowserPerformanceNavigationSummary {
+  type: string;
+  startTime: number;
+  responseEnd: number;
+  domContentLoaded: number;
+  load: number;
+  transferSize: number;
+  encodedBodySize: number;
+  decodedBodySize: number;
+}
+interface BrowserPerformanceResourceTypeSummary {
+  type: string;
+  count: number;
+  duration: number;
+  transferSize: number;
+}
+interface BrowserPerformanceSlowResource {
+  name: string;
+  initiatorType: string;
+  duration: number;
+  transferSize: number;
+}
+interface BrowserPerformanceSummary {
+  navigation?: BrowserPerformanceNavigationSummary;
+  resources: {
+    totalCount: number;
+    byType: BrowserPerformanceResourceTypeSummary[];
+    slowest: BrowserPerformanceSlowResource[];
+  };
+  longTasks: {
+    count: number;
+    maxDuration: number;
+    totalDuration: number;
+  };
+}
+interface BrowserSnapshotElementCandidate {
+  uid: string;
+  backendNodeId: number;
+  axNode?: AccessibilityNode;
+}
+type BrowserScreenshotTarget = "viewport" | "element";
+interface BrowserScreenshotClip {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  scale: number;
+}
 type BrowserControlPageToolName = "navigate_page" | "new_page" | "list_pages" | "select_page" | "close_page";
 type BrowserControlDialogType = "alert" | "confirm" | "prompt" | "beforeunload" | string;
 
@@ -105,6 +234,10 @@ const SNAPSHOT_EMPTY_TEXT = "未读取到可访问节点。";
 const SNAPSHOT_TRUNCATED_TEXT = "快照内容过长，已停止继续展开。";
 const BROWSER_SNAPSHOT_DISABLED_MESSAGE = "浏览器控制未开启，无法读取页面快照。请先在顶部浏览器控制按钮中显式开启。";
 const BROWSER_SNAPSHOT_FAILED_MESSAGE = "读取页面快照失败，请确认当前页面仍可访问后重试。";
+const PAGE_STATE_FAILED_MESSAGE = "读取页面状态失败，请确认当前页面仍可访问后重试。";
+const PAGE_STATE_MAX_TEXT_LENGTH = 120;
+const ELEMENT_INSPECTION_MAX_TEXT_LENGTH = 500;
+const BROWSER_SCREENSHOT_MAX_BYTES = 5 * 1024 * 1024;
 const DIALOG_WAIT_TIMEOUT_MS = 60_000;
 const SKIPPED_AX_ROLES = new Set(["none", "generic", "section", "paragraph", "StaticText", "InlineTextBox"]);
 const ALLOWED_BROWSER_CONTROL_CDP_METHODS = new Set([
@@ -113,11 +246,13 @@ const ALLOWED_BROWSER_CONTROL_CDP_METHODS = new Set([
   "DOM.enable",
   "Accessibility.enable",
   "Network.enable",
+  "Log.enable",
   "Network.getResponseBody",
   "Accessibility.getFullAXTree",
   "DOM.resolveNode",
   "DOM.scrollIntoViewIfNeeded",
   "DOM.getBoxModel",
+  "Page.captureScreenshot",
   "Runtime.callFunctionOn",
   "Runtime.evaluate",
   "Page.navigate",
@@ -353,6 +488,7 @@ export class BrowserDebuggerConnection {
       await this.sendCommand("DOM.enable");
       await this.sendCommand("Accessibility.enable");
       await this.sendCommand("Network.enable");
+      await this.sendCommand("Log.enable");
       return { ok: true };
     } catch {
       return { ok: false, message: "浏览器调试会话初始化失败，请关闭浏览器控制后重试。" };
@@ -373,6 +509,10 @@ export class BrowserDebuggerConnection {
 
   async getBoxModel(backendNodeId: number): Promise<unknown> {
     return this.sendCommand("DOM.getBoxModel", { backendNodeId });
+  }
+
+  async captureScreenshot(params: Record<string, unknown>): Promise<unknown> {
+    return this.sendCommand("Page.captureScreenshot", params);
   }
 
   async callFunctionOn(params: Record<string, unknown>): Promise<unknown> {
@@ -472,6 +612,14 @@ export class BrowserControlSnapshotManager {
 
   getAXNode(uid: string): AccessibilityNode | undefined {
     return this.uidToAxNode.get(uid);
+  }
+
+  listElementCandidates(): BrowserSnapshotElementCandidate[] {
+    return Array.from(this.uidToBackendNodeId.entries()).map(([uid, backendNodeId]) => ({
+      uid,
+      backendNodeId,
+      axNode: this.uidToAxNode.get(uid),
+    }));
   }
 
   clearSnapshotCache(): void {
@@ -659,6 +807,7 @@ export class BrowserControlManager {
   private readonly actionExecutor: BrowserControlActionExecutor;
   private readonly networkRecorder: BrowserNetworkRecorder;
   private readonly networkToolExecutor: BrowserNetworkToolExecutor;
+  private readonly consoleRecorder: BrowserConsoleRecorder;
   private readonly jsSourceToolExecutor: JsSourceToolExecutor;
   private readonly sourceMapToolExecutor: SourceMapToolExecutor;
   private readonly runtimeReadToolExecutor: RuntimeReadToolExecutor;
@@ -674,9 +823,12 @@ export class BrowserControlManager {
     private readonly chromeApi: ChromeApi | undefined = getChromeApi(),
     private readonly onDetach?: (tabId: number, reason: BrowserControlDetachedReason) => void,
   ) {
-    this.snapshotManager = new BrowserControlSnapshotManager(this.connection, () => this.getTargetTabInfo());
-    this.actionExecutor = new BrowserControlActionExecutor(this.connection, this.snapshotManager);
     this.networkRecorder = new BrowserNetworkRecorder(this.connection);
+    this.snapshotManager = new BrowserControlSnapshotManager(this.connection, () => this.getTargetTabInfo());
+    this.actionExecutor = new BrowserControlActionExecutor(this.connection, this.snapshotManager, {
+      waitForNetworkIdle: (options) => this.networkRecorder.waitForIdle({ timeoutMs: options.timeoutMs }),
+    });
+    this.consoleRecorder = new BrowserConsoleRecorder(this.connection);
     this.jsSourceToolExecutor = new JsSourceToolExecutor({
       recorder: this.networkRecorder,
       getCurrentPageUrl: async () => (await this.getTargetTabInfo()).url,
@@ -720,6 +872,7 @@ export class BrowserControlManager {
       this.desiredEnabled = false;
       this.controlledTabIds.clear();
       this.snapshotManager.clearSnapshotCache();
+      this.consoleRecorder.stop();
       this.stopNetworkAnalysis();
       this.clearAutomationModeState();
       this.notifyDetached(tabId, normalizeDetachReason(reason));
@@ -736,6 +889,7 @@ export class BrowserControlManager {
     this.currentOrigin = undefined;
     this.controlledTabIds.delete(tabId);
     this.snapshotManager.clearSnapshotCache();
+    this.consoleRecorder.stop();
     this.stopNetworkAnalysis();
     this.clearAutomationModeState();
     this.notifyDetached(tabId, "tab_removed");
@@ -755,6 +909,7 @@ export class BrowserControlManager {
       this.currentOrigin = undefined;
       this.controlledTabIds.clear();
       this.snapshotManager.clearSnapshotCache();
+      this.consoleRecorder.stop();
       this.stopNetworkAnalysis();
       this.clearAutomationModeState();
       this.notifyDetached(detachedTabId, "disabled_by_user");
@@ -988,6 +1143,78 @@ export class BrowserControlManager {
   }
 
   async executeBrowserTool(toolCall: ModelToolCall): Promise<ModelToolResult> {
+    if (toolCall.name === BROWSER_GET_PAGE_STATE_TOOL_NAME) {
+      if (!this.canExposeBrowserTool()) {
+        return createBrowserActionDisabledResult(toolCall);
+      }
+
+      return this.getPageState(toolCall);
+    }
+
+    if (toolCall.name === BROWSER_GET_CONSOLE_MESSAGES_TOOL_NAME) {
+      if (!this.canExposeBrowserTool()) {
+        return createBrowserActionDisabledResult(toolCall);
+      }
+
+      return this.getConsoleMessages(toolCall);
+    }
+
+    if (toolCall.name === BROWSER_INSPECT_ELEMENT_TOOL_NAME) {
+      if (!this.canExposeBrowserTool()) {
+        return createBrowserActionDisabledResult(toolCall);
+      }
+
+      return this.inspectElement(toolCall);
+    }
+
+    if (toolCall.name === BROWSER_FIND_ELEMENTS_TOOL_NAME) {
+      if (!this.canExposeBrowserTool()) {
+        return createBrowserActionDisabledResult(toolCall);
+      }
+
+      return this.findElements(toolCall);
+    }
+
+    if (toolCall.name === BROWSER_SCREENSHOT_TOOL_NAME) {
+      if (!this.canExposeBrowserTool()) {
+        return createBrowserActionDisabledResult(toolCall);
+      }
+
+      return this.screenshot(toolCall);
+    }
+
+    if (toolCall.name === BROWSER_ANALYZE_INTERACTION_BLOCKER_TOOL_NAME) {
+      if (!this.canExposeBrowserTool()) {
+        return createBrowserActionDisabledResult(toolCall);
+      }
+
+      return this.analyzeInteractionBlocker(toolCall);
+    }
+
+    if (toolCall.name === BROWSER_ANALYZE_FORM_TOOL_NAME) {
+      if (!this.canExposeBrowserTool()) {
+        return createBrowserActionDisabledResult(toolCall);
+      }
+
+      return this.analyzeForm(toolCall);
+    }
+
+    if (toolCall.name === BROWSER_GET_PERFORMANCE_SUMMARY_TOOL_NAME) {
+      if (!this.canExposeBrowserTool()) {
+        return createBrowserActionDisabledResult(toolCall);
+      }
+
+      return this.getPerformanceSummary(toolCall);
+    }
+
+    if (toolCall.name === BROWSER_COLLECT_DIAGNOSTICS_TOOL_NAME) {
+      if (!this.canExposeBrowserTool()) {
+        return createBrowserActionDisabledResult(toolCall);
+      }
+
+      return this.collectDiagnostics(toolCall);
+    }
+
     if (isBrowserControlPageToolName(toolCall.name)) {
       if (!this.canExposeBrowserTool()) {
         return createBrowserActionDisabledResult(toolCall);
@@ -1018,6 +1245,345 @@ export class BrowserControlManager {
     } catch (error) {
       return createBrowserActionErrorResult(toolCall, normalizePageToolError(error));
     }
+  }
+
+  private async getPageState(toolCall: ModelToolCall): Promise<ModelToolResult> {
+    const extraKeys = Object.keys(toolCall.arguments);
+    if (extraKeys.length > 0) {
+      return createBrowserToolErrorResult(toolCall, "浏览器页面状态工具不接受任何参数。");
+    }
+
+    try {
+      const [tabInfo, pageRuntimeState] = await Promise.all([
+        this.getTargetTabInfo(),
+        this.readPageRuntimeState(),
+      ]);
+
+      return {
+        toolCallId: toolCall.id,
+        name: toolCall.name,
+        content: formatPageState({
+          url: pageRuntimeState.url || tabInfo.url,
+          title: pageRuntimeState.title || tabInfo.title,
+          readyState: pageRuntimeState.readyState,
+          viewport: pageRuntimeState.viewport,
+          scroll: pageRuntimeState.scroll,
+          focusedElement: pageRuntimeState.focusedElement,
+        }),
+      };
+    } catch {
+      return createBrowserToolErrorResult(toolCall, PAGE_STATE_FAILED_MESSAGE);
+    }
+  }
+
+  private getConsoleMessages(toolCall: ModelToolCall): ModelToolResult {
+    const extraKeys = Object.keys(toolCall.arguments);
+    if (extraKeys.length > 0) {
+      return createBrowserToolErrorResult(toolCall, "浏览器 Console 消息工具不接受任何参数。");
+    }
+
+    return {
+      toolCallId: toolCall.id,
+      name: toolCall.name,
+      content: this.consoleRecorder.formatMessages(),
+    };
+  }
+
+  private async inspectElement(toolCall: ModelToolCall): Promise<ModelToolResult> {
+    const validation = validateInspectElementArguments(toolCall);
+    if (!validation.ok) {
+      return createBrowserToolErrorResult(toolCall, validation.message);
+    }
+
+    const uid = String(toolCall.arguments.uid);
+    try {
+      const backendNodeId = this.snapshotManager.getBackendNodeId(uid);
+      const axNode = this.snapshotManager.getAXNode(uid);
+      const resolved = await this.connection.resolveNodeByBackendId(backendNodeId);
+      const objectId = getResolvedObjectId(resolved);
+      if (!objectId) {
+        return createBrowserToolErrorResult(toolCall, `元素 ${uid} 已从页面中移除。请重新调用 take_snapshot 获取最新页面状态后再继续。`);
+      }
+
+      const inspection = normalizeElementInspection(await this.connection.callFunctionOn({
+        objectId,
+        functionDeclaration: createInspectElementFunctionDeclaration(),
+        returnByValue: true,
+      }));
+
+      return {
+        toolCallId: toolCall.id,
+        name: toolCall.name,
+        content: formatElementInspection(uid, axNode, inspection),
+      };
+    } catch (error) {
+      return createBrowserToolErrorResult(toolCall, normalizeInspectElementError(error));
+    }
+  }
+
+  private async findElements(toolCall: ModelToolCall): Promise<ModelToolResult> {
+    const validation = validateFindElementsArguments(toolCall);
+    if (!validation.ok) {
+      return createBrowserToolErrorResult(toolCall, validation.message);
+    }
+
+    const candidates = this.snapshotManager.listElementCandidates();
+    if (!candidates.length) {
+      return createBrowserToolErrorResult(toolCall, "当前没有可搜索的页面快照，请先调用 take_snapshot。");
+    }
+
+    const query = String(toolCall.arguments.query).trim();
+    const strategy = normalizeFindElementStrategy(toolCall.arguments.strategy);
+    const limit = normalizeFindElementLimit(toolCall.arguments.limit);
+    const matches = strategy === "css"
+      ? await this.findElementsByCss(candidates, query, limit)
+      : findElementsBySnapshot(candidates, strategy, query, limit);
+
+    return {
+      toolCallId: toolCall.id,
+      name: toolCall.name,
+      content: formatFindElementsResult(matches),
+    };
+  }
+
+  private async findElementsByCss(candidates: BrowserSnapshotElementCandidate[], selector: string, limit: number): Promise<BrowserSnapshotElementCandidate[]> {
+    const matches: BrowserSnapshotElementCandidate[] = [];
+    for (const candidate of candidates) {
+      if (matches.length >= limit) {
+        break;
+      }
+
+      try {
+        const resolved = await this.connection.resolveNodeByBackendId(candidate.backendNodeId);
+        const objectId = getResolvedObjectId(resolved);
+        if (!objectId) {
+          continue;
+        }
+        const response = await this.connection.callFunctionOn({
+          objectId,
+          functionDeclaration: `function(selector) {
+            return typeof this.matches === "function" ? this.matches(selector) : false;
+          }`,
+          arguments: [{ value: selector }],
+          returnByValue: true,
+        });
+        if (getRuntimeResultValue(response) === true) {
+          matches.push(candidate);
+        }
+      } catch {
+        // 单个候选节点已失效或 CSS matches 失败时跳过，避免一个节点破坏整轮查找。
+      }
+    }
+    return matches;
+  }
+
+  private async screenshot(toolCall: ModelToolCall): Promise<ModelToolResult> {
+    const validation = validateScreenshotArguments(toolCall);
+    if (!validation.ok) {
+      return createBrowserToolErrorResult(toolCall, validation.message);
+    }
+
+    try {
+      const target = validation.target;
+      const uid = validation.uid;
+      const clip = target === "element" && uid ? await this.createScreenshotClip(uid) : undefined;
+      const response = await this.connection.captureScreenshot({
+        format: "png",
+        fromSurface: true,
+        ...(clip ? { captureBeyondViewport: true } : {}),
+        ...(clip ? { clip } : {}),
+      });
+      const attachment = createBrowserScreenshotAttachment(toolCall, target, response, uid, clip);
+      return {
+        toolCallId: toolCall.id,
+        name: toolCall.name,
+        content: target === "element" && uid
+          ? `已截取元素 ${uid} 截图，图片已作为工具附件返回。`
+          : "已截取当前视口截图，图片已作为工具附件返回。",
+        toolAttachments: [attachment],
+      };
+    } catch (error) {
+      return createBrowserToolErrorResult(toolCall, normalizeScreenshotError(error));
+    }
+  }
+
+  private async analyzeInteractionBlocker(toolCall: ModelToolCall): Promise<ModelToolResult> {
+    const validation = validateInteractionBlockerArguments(toolCall);
+    if (!validation.ok) {
+      return createBrowserToolErrorResult(toolCall, validation.message);
+    }
+
+    try {
+      const uid = validation.uid;
+      const backendNodeId = this.snapshotManager.getBackendNodeId(uid);
+      const axNode = this.snapshotManager.getAXNode(uid);
+      const resolved = await this.connection.resolveNodeByBackendId(backendNodeId);
+      const objectId = getResolvedObjectId(resolved);
+      if (!objectId) {
+        return createBrowserToolErrorResult(toolCall, `元素 ${uid} 已从页面中移除。请重新调用 take_snapshot 获取最新页面状态后再继续。`);
+      }
+
+      const analysis = normalizeInteractionBlockerAnalysis(await this.connection.callFunctionOn({
+        objectId,
+        functionDeclaration: createInteractionBlockerFunctionDeclaration(),
+        returnByValue: true,
+      }));
+
+      return {
+        toolCallId: toolCall.id,
+        name: toolCall.name,
+        content: formatInteractionBlockerAnalysis(uid, validation.expectedAction, axNode, analysis),
+      };
+    } catch (error) {
+      return createBrowserToolErrorResult(toolCall, normalizeInteractionBlockerError(error));
+    }
+  }
+
+  private async analyzeForm(toolCall: ModelToolCall): Promise<ModelToolResult> {
+    const validation = validateAnalyzeFormArguments(toolCall);
+    if (!validation.ok) {
+      return createBrowserToolErrorResult(toolCall, validation.message);
+    }
+
+    try {
+      if (validation.uid) {
+        const backendNodeId = this.snapshotManager.getBackendNodeId(validation.uid);
+        const resolved = await this.connection.resolveNodeByBackendId(backendNodeId);
+        const objectId = getResolvedObjectId(resolved);
+        if (!objectId) {
+          return createBrowserToolErrorResult(toolCall, `元素 ${validation.uid} 已从页面中移除。请重新调用 take_snapshot 获取最新页面状态后再继续。`);
+        }
+        const response = await this.connection.callFunctionOn({
+          objectId,
+          functionDeclaration: createAnalyzeFormFunctionDeclaration(),
+          arguments: [{ value: validation.includeFieldDetails }],
+          returnByValue: true,
+        });
+        return {
+          toolCallId: toolCall.id,
+          name: toolCall.name,
+          content: formatFormAnalysis(normalizeFormAnalysis(response), validation.includeFieldDetails),
+        };
+      }
+
+      const response = await this.connection.evaluate({
+        expression: createAnalyzeFormExpression(validation.includeFieldDetails),
+        returnByValue: true,
+        awaitPromise: false,
+      });
+      return {
+        toolCallId: toolCall.id,
+        name: toolCall.name,
+        content: formatFormAnalysis(normalizeFormAnalysis(response), validation.includeFieldDetails),
+      };
+    } catch (error) {
+      return createBrowserToolErrorResult(toolCall, normalizeAnalyzeFormError(error));
+    }
+  }
+
+  private async getPerformanceSummary(toolCall: ModelToolCall): Promise<ModelToolResult> {
+    const extraKeys = Object.keys(toolCall.arguments);
+    if (extraKeys.length > 0) {
+      return createBrowserToolErrorResult(toolCall, "浏览器性能摘要工具不接受任何参数。");
+    }
+
+    try {
+      const response = await this.connection.evaluate({
+        expression: createPerformanceSummaryExpression(),
+        returnByValue: true,
+        awaitPromise: false,
+      });
+      return {
+        toolCallId: toolCall.id,
+        name: toolCall.name,
+        content: formatPerformanceSummary(normalizePerformanceSummary(response)),
+      };
+    } catch {
+      return createBrowserToolErrorResult(toolCall, "读取性能摘要失败，请确认当前页面仍可访问后重试。");
+    }
+  }
+
+  private async collectDiagnostics(toolCall: ModelToolCall): Promise<ModelToolResult> {
+    const extraKeys = Object.keys(toolCall.arguments);
+    if (extraKeys.length > 0) {
+      return createBrowserToolErrorResult(toolCall, "浏览器聚合诊断工具不接受任何参数。");
+    }
+
+    const [pageState, performanceSummary] = await Promise.all([
+      this.collectPageStateSection(),
+      this.collectPerformanceSection(),
+    ]);
+
+    return {
+      toolCallId: toolCall.id,
+      name: toolCall.name,
+      content: [
+        "聚合诊断：",
+        "## 页面状态",
+        pageState,
+        "## Console",
+        this.consoleRecorder.formatMessages(),
+        "## 性能",
+        performanceSummary,
+        "## Network",
+        formatDiagnosticsNetworkSummary(this.networkRecorder.listRequests({ limit: 20 }, { redacted: true })),
+      ].join("\n"),
+    };
+  }
+
+  private async collectPageStateSection(): Promise<string> {
+    try {
+      const [tabInfo, pageRuntimeState] = await Promise.all([
+        this.getTargetTabInfo(),
+        this.readPageRuntimeState(),
+      ]);
+      return formatPageState({
+        url: pageRuntimeState.url || tabInfo.url,
+        title: pageRuntimeState.title || tabInfo.title,
+        readyState: pageRuntimeState.readyState,
+        viewport: pageRuntimeState.viewport,
+        scroll: pageRuntimeState.scroll,
+        focusedElement: pageRuntimeState.focusedElement,
+      });
+    } catch {
+      return "页面状态读取失败，请确认当前页面仍可访问后重试。";
+    }
+  }
+
+  private async collectPerformanceSection(): Promise<string> {
+    try {
+      const response = await this.connection.evaluate({
+        expression: createPerformanceSummaryExpression(),
+        returnByValue: true,
+        awaitPromise: false,
+      });
+      return formatPerformanceSummary(normalizePerformanceSummary(response));
+    } catch {
+      return "性能摘要读取失败，请确认当前页面仍可访问后重试。";
+    }
+  }
+
+  private async createScreenshotClip(uid: string): Promise<BrowserScreenshotClip> {
+    const backendNodeId = this.snapshotManager.getBackendNodeId(uid);
+    const resolved = await this.connection.resolveNodeByBackendId(backendNodeId);
+    const objectId = getResolvedObjectId(resolved);
+    if (!objectId) {
+      throw new Error(`元素 ${uid} 已从页面中移除。`);
+    }
+
+    await this.connection.scrollIntoViewIfNeeded(objectId);
+    const boxModel = await this.connection.getBoxModel(backendNodeId);
+    return normalizeScreenshotClip(boxModel);
+  }
+
+  private async readPageRuntimeState(): Promise<BrowserPageRuntimeState> {
+    const response = await this.connection.evaluate({
+      expression: createPageStateExpression(),
+      returnByValue: true,
+      awaitPromise: false,
+    });
+
+    return normalizePageRuntimeState(response);
   }
 
   private async executePageTool(toolCall: ModelToolCall): Promise<ModelToolResult> {
@@ -1060,6 +1626,7 @@ export class BrowserControlManager {
       }
       await this.connection.navigate(urlResult.url);
       this.snapshotManager.clearSnapshotCache();
+      this.consoleRecorder.clear();
       this.jsSourceToolExecutor.clear();
       this.sourceMapToolExecutor.clear();
       this.clearAutomationTransientState();
@@ -1069,6 +1636,7 @@ export class BrowserControlManager {
     } else if (action === "reload") {
       await this.connection.reload();
       this.snapshotManager.clearSnapshotCache();
+      this.consoleRecorder.clear();
       this.jsSourceToolExecutor.clear();
       this.sourceMapToolExecutor.clear();
       this.clearAutomationTransientState();
@@ -1082,6 +1650,7 @@ export class BrowserControlManager {
       }
       await this.connection.navigateToHistoryEntry(target.id);
       this.snapshotManager.clearSnapshotCache();
+      this.consoleRecorder.clear();
       this.jsSourceToolExecutor.clear();
       this.sourceMapToolExecutor.clear();
       this.clearAutomationTransientState();
@@ -1177,6 +1746,7 @@ export class BrowserControlManager {
   private async switchToTab(tabId: number): Promise<void> {
     await this.chromeApi?.tabs.update?.(tabId, { active: true });
     this.snapshotManager.clearSnapshotCache();
+    this.consoleRecorder.clear();
     this.jsSourceToolExecutor.clear();
     this.sourceMapToolExecutor.clear();
     this.targetTabId = tabId;
@@ -1196,6 +1766,7 @@ export class BrowserControlManager {
   }
 
   private startNetworkAnalysis(tabId: number): void {
+    this.consoleRecorder.start(tabId);
     this.jsSourceToolExecutor.clear();
     this.sourceMapToolExecutor.clear();
     this.clearAutomationTransientState();
@@ -1204,6 +1775,7 @@ export class BrowserControlManager {
   }
 
   private stopNetworkAnalysis(): void {
+    this.consoleRecorder.stop();
     this.jsSourceToolExecutor.clear();
     this.sourceMapToolExecutor.clear();
     this.clearAutomationTransientState();
@@ -1526,6 +2098,1177 @@ function createBrowserToolErrorResult(toolCall: ModelToolCall, content: string):
     content,
     isError: true,
   };
+}
+
+function createPageStateExpression(): string {
+  return `(() => {
+    const active = document.activeElement;
+    const activeText = active
+      ? ((active.getAttribute("aria-label") || active.getAttribute("title") || active.textContent || active.getAttribute("placeholder") || "").replace(/\\s+/g, " ").trim())
+      : "";
+    return {
+      url: location.href,
+      title: document.title,
+      readyState: document.readyState,
+      viewport: {
+        width: window.innerWidth,
+        height: window.innerHeight,
+        deviceScaleFactor: window.devicePixelRatio || 1,
+      },
+      scroll: {
+        x: window.scrollX || 0,
+        y: window.scrollY || 0,
+        maxX: Math.max(0, document.documentElement.scrollWidth - window.innerWidth),
+        maxY: Math.max(0, document.documentElement.scrollHeight - window.innerHeight),
+      },
+      focusedElement: active ? {
+        tagName: active.tagName,
+        id: active.id || "",
+        name: active.getAttribute("name") || "",
+        type: active.getAttribute("type") || "",
+        text: activeText,
+      } : undefined,
+    };
+  })()`;
+}
+
+function createInspectElementFunctionDeclaration(): string {
+  return `function() {
+    const attributeNames = [
+      "name", "type", "role", "aria-label", "placeholder", "title", "href", "src",
+      "alt", "disabled", "aria-disabled", "aria-hidden", "aria-expanded",
+      "aria-selected", "aria-checked"
+    ];
+    const attributes = {};
+    for (const name of attributeNames) {
+      if (this.getAttribute && this.hasAttribute && this.hasAttribute(name)) {
+        attributes[name] = this.getAttribute(name) || "";
+      }
+    }
+    const rect = this.getBoundingClientRect ? this.getBoundingClientRect() : { x: 0, y: 0, width: 0, height: 0 };
+    const style = window.getComputedStyle ? window.getComputedStyle(this) : {};
+    const tagName = String(this.tagName || "").toUpperCase();
+    const text = String(
+      (this.innerText || this.textContent || this.value || this.getAttribute?.("aria-label") || this.getAttribute?.("placeholder") || "")
+    ).replace(/\\s+/g, " ").trim();
+    const disabled = Boolean(this.disabled || (this.getAttribute && this.getAttribute("aria-disabled") === "true") || (this.hasAttribute && this.hasAttribute("disabled")));
+    const editable = Boolean(this.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(tagName));
+    const visible = Boolean(rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0");
+    return {
+      tagName,
+      id: String(this.id || ""),
+      className: typeof this.className === "string" ? this.className : "",
+      text,
+      attributes,
+      rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+      style: {
+        display: String(style.display || ""),
+        visibility: String(style.visibility || ""),
+        opacity: String(style.opacity || ""),
+        pointerEvents: String(style.pointerEvents || ""),
+        cursor: String(style.cursor || ""),
+      },
+      state: { visible, disabled, editable },
+    };
+  }`;
+}
+
+function createInteractionBlockerFunctionDeclaration(): string {
+  return `function() {
+    const rect = this.getBoundingClientRect ? this.getBoundingClientRect() : { x: 0, y: 0, width: 0, height: 0, left: 0, top: 0 };
+    const style = window.getComputedStyle ? window.getComputedStyle(this) : {};
+    const tagName = String(this.tagName || "").toUpperCase();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    const hitElement = Number.isFinite(centerX) && Number.isFinite(centerY) ? document.elementFromPoint(centerX, centerY) : null;
+    const coveredBy = hitElement && hitElement !== this && !this.contains(hitElement)
+      ? String(
+          hitElement.tagName +
+          (hitElement.id ? "#" + hitElement.id : "") +
+          (typeof hitElement.className === "string" && hitElement.className ? "." + hitElement.className.replace(/\\s+/g, ".") : "")
+        )
+      : "";
+    const disabled = Boolean(this.disabled || (this.getAttribute && this.getAttribute("aria-disabled") === "true") || (this.hasAttribute && this.hasAttribute("disabled")));
+    const editable = Boolean(this.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(tagName));
+    const visible = Boolean(rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0");
+    const disabledFieldset = Boolean(this.closest && this.closest("fieldset[disabled]"));
+    const form = this.form || (this.closest ? this.closest("form") : null);
+    const invalidFields = form && typeof form.querySelectorAll === "function" ? form.querySelectorAll(":invalid").length : 0;
+    return {
+      tagName,
+      text: String(
+        (this.innerText || this.textContent || this.value || this.getAttribute?.("aria-label") || this.getAttribute?.("placeholder") || "")
+      ).replace(/\\s+/g, " ").trim(),
+      rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+      style: {
+        display: String(style.display || ""),
+        visibility: String(style.visibility || ""),
+        opacity: String(style.opacity || ""),
+        pointerEvents: String(style.pointerEvents || ""),
+        cursor: String(style.cursor || ""),
+      },
+      state: {
+        visible,
+        disabled,
+        editable,
+        connected: Boolean(this.isConnected),
+        inViewport: Boolean(rect.bottom >= 0 && rect.right >= 0 && rect.top <= window.innerHeight && rect.left <= window.innerWidth),
+        occluded: Boolean(coveredBy),
+        coveredBy,
+      },
+      form: {
+        disabledFieldset,
+        invalidFields,
+      },
+    };
+  }`;
+}
+
+function createAnalyzeFormExpression(includeFieldDetails: boolean): string {
+  return `(() => {
+    const includeFieldDetails = ${includeFieldDetails ? "true" : "false"};
+    ${createAnalyzeFormCollectorSource()}
+    return collectForms(document.body, includeFieldDetails);
+  })()`;
+}
+
+function createAnalyzeFormFunctionDeclaration(): string {
+  return `function(includeFieldDetails) {
+    ${createAnalyzeFormCollectorSource()}
+    const form = this && this.tagName === "FORM" ? this : (this && this.closest ? this.closest("form") : null);
+    return collectForms(form || this, includeFieldDetails === true);
+  }`;
+}
+
+function createAnalyzeFormCollectorSource(): string {
+  return `
+    const compactText = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+    const labelFor = (field) => {
+      if (!field) return "";
+      const id = field.id ? String(field.id) : "";
+      const explicit = id ? document.querySelector("label[for=\\"" + CSS.escape(id) + "\\"]") : null;
+      const wrapped = field.closest ? field.closest("label") : null;
+      return compactText(
+        field.getAttribute?.("aria-label") ||
+        field.getAttribute?.("placeholder") ||
+        explicit?.textContent ||
+        wrapped?.textContent ||
+        field.getAttribute?.("title") ||
+        ""
+      );
+    };
+    const fieldSummary = (field, index) => ({
+      index,
+      tagName: String(field.tagName || "").toUpperCase(),
+      type: String(field.getAttribute?.("type") || field.type || "").toLowerCase(),
+      name: String(field.getAttribute?.("name") || ""),
+      label: labelFor(field),
+      required: Boolean(field.required || field.getAttribute?.("aria-required") === "true"),
+      disabled: Boolean(field.disabled || field.getAttribute?.("aria-disabled") === "true" || field.closest?.("fieldset[disabled]")),
+      readonly: Boolean(field.readOnly || field.hasAttribute?.("readonly")),
+      invalid: Boolean(field.matches?.(":invalid") || field.getAttribute?.("aria-invalid") === "true"),
+      hasValue: field.type === "checkbox" || field.type === "radio" ? Boolean(field.checked) : Boolean(String(field.value || "").length),
+    });
+    const buttonSummary = (button) => ({
+      text: compactText(button.innerText || button.textContent || button.value || button.getAttribute?.("aria-label") || ""),
+      disabled: Boolean(button.disabled || button.getAttribute?.("aria-disabled") === "true"),
+      type: String(button.getAttribute?.("type") || button.type || "submit").toLowerCase(),
+    });
+    const errorTexts = (root) => Array.from(root.querySelectorAll?.("[role=alert], .error, .invalid-feedback, .field-error, [aria-live]") || [])
+      .map((item) => compactText(item.innerText || item.textContent))
+      .filter(Boolean)
+      .slice(0, 10);
+    const formSummary = (form, index, includeFieldDetails) => {
+      const fields = Array.from(form.querySelectorAll?.("input, textarea, select, button") || []);
+      const fieldSummaries = fields.map((field, fieldIndex) => fieldSummary(field, fieldIndex + 1));
+      const submitButtons = fields
+        .filter((field) => {
+          const tagName = String(field.tagName || "").toUpperCase();
+          const type = String(field.getAttribute?.("type") || field.type || "").toLowerCase();
+          return (tagName === "BUTTON" && (!type || type === "submit")) || (tagName === "INPUT" && (type === "submit" || type === "button"));
+        })
+        .map(buttonSummary)
+        .slice(0, 5);
+      return {
+        index,
+        id: String(form.id || ""),
+        name: String(form.getAttribute?.("name") || ""),
+        action: String(form.getAttribute?.("action") || form.action || ""),
+        method: String(form.getAttribute?.("method") || form.method || "get").toLowerCase(),
+        fieldCount: fieldSummaries.length,
+        invalidFieldCount: fieldSummaries.filter((field) => field.invalid).length,
+        disabledFieldCount: fieldSummaries.filter((field) => field.disabled).length,
+        requiredFieldCount: fieldSummaries.filter((field) => field.required).length,
+        submitButtons,
+        errors: errorTexts(form),
+        fields: includeFieldDetails ? fieldSummaries.slice(0, 30) : [],
+      };
+    };
+    const collectForms = (root, includeFieldDetails) => {
+      const scope = root || document;
+      let forms = [];
+      if (scope.tagName === "FORM") {
+        forms = [scope];
+      } else {
+        forms = Array.from(scope.querySelectorAll?.("form") || []);
+      }
+      if (!forms.length && scope !== document && scope.querySelectorAll) {
+        forms = [scope];
+      }
+      return { forms: forms.slice(0, 10).map((form, index) => formSummary(form, index + 1, includeFieldDetails)) };
+    };
+  `;
+}
+
+function createPerformanceSummaryExpression(): string {
+  return `(() => {
+    const navigationEntry = performance.getEntriesByType("navigation")[0];
+    const navigation = navigationEntry ? {
+      type: String(navigationEntry.type || ""),
+      startTime: Number(navigationEntry.startTime || 0),
+      responseEnd: Number(navigationEntry.responseEnd || 0),
+      domContentLoaded: Number(navigationEntry.domContentLoadedEventEnd || 0),
+      load: Number(navigationEntry.loadEventEnd || 0),
+      transferSize: Number(navigationEntry.transferSize || 0),
+      encodedBodySize: Number(navigationEntry.encodedBodySize || 0),
+      decodedBodySize: Number(navigationEntry.decodedBodySize || 0),
+    } : undefined;
+    const resources = performance.getEntriesByType("resource")
+      .map((entry) => ({
+        name: String(entry.name || ""),
+        initiatorType: String(entry.initiatorType || "other"),
+        duration: Number(entry.duration || 0),
+        transferSize: Number(entry.transferSize || 0),
+      }));
+    const byTypeMap = new Map();
+    for (const resource of resources) {
+      const current = byTypeMap.get(resource.initiatorType) || { type: resource.initiatorType, count: 0, duration: 0, transferSize: 0 };
+      current.count += 1;
+      current.duration += resource.duration;
+      current.transferSize += resource.transferSize;
+      byTypeMap.set(resource.initiatorType, current);
+    }
+    const longTaskEntries = performance.getEntriesByType("longtask")
+      .map((entry) => Number(entry.duration || 0))
+      .filter((duration) => Number.isFinite(duration) && duration > 0);
+    return {
+      navigation,
+      resources: {
+        totalCount: resources.length,
+        byType: Array.from(byTypeMap.values()).sort((a, b) => b.duration - a.duration).slice(0, 10),
+        slowest: resources.sort((a, b) => b.duration - a.duration).slice(0, 10),
+      },
+      longTasks: {
+        count: longTaskEntries.length,
+        maxDuration: longTaskEntries.length ? Math.max(...longTaskEntries) : 0,
+        totalDuration: longTaskEntries.reduce((sum, duration) => sum + duration, 0),
+      },
+    };
+  })()`;
+}
+
+function validateInspectElementArguments(toolCall: ModelToolCall): { ok: true } | { ok: false; message: string } {
+  const allowedKeys = ["uid"];
+  const extraKeys = Object.keys(toolCall.arguments).filter((key) => !allowedKeys.includes(key));
+  if (extraKeys.length > 0) {
+    return { ok: false, message: `浏览器元素检查工具不接受参数：${extraKeys.join("、")}。` };
+  }
+
+  if (typeof toolCall.arguments.uid !== "string" || !toolCall.arguments.uid.trim()) {
+    return { ok: false, message: "inspect_element 需要非空 UID。" };
+  }
+
+  return { ok: true };
+}
+
+function validateInteractionBlockerArguments(toolCall: ModelToolCall): { ok: true; uid: string; expectedAction: BrowserInteractionExpectedAction } | { ok: false; message: string } {
+  const allowedKeys = ["uid", "expectedAction"];
+  const extraKeys = Object.keys(toolCall.arguments).filter((key) => !allowedKeys.includes(key));
+  if (extraKeys.length > 0) {
+    return { ok: false, message: `浏览器交互阻塞分析工具不接受参数：${extraKeys.join("、")}。` };
+  }
+
+  if (typeof toolCall.arguments.uid !== "string" || !toolCall.arguments.uid.trim()) {
+    return { ok: false, message: "analyze_interaction_blocker 需要非空 UID。" };
+  }
+
+  const expectedAction = toolCall.arguments.expectedAction === undefined ? "click" : toolCall.arguments.expectedAction;
+  if (expectedAction !== "click" && expectedAction !== "fill" && expectedAction !== "view") {
+    return { ok: false, message: "analyze_interaction_blocker 的 expectedAction 必须是 click、fill 或 view。" };
+  }
+
+  return { ok: true, uid: toolCall.arguments.uid.trim(), expectedAction };
+}
+
+function validateAnalyzeFormArguments(toolCall: ModelToolCall): { ok: true; uid?: string; includeFieldDetails: boolean } | { ok: false; message: string } {
+  const allowedKeys = ["uid", "includeFieldDetails"];
+  const extraKeys = Object.keys(toolCall.arguments).filter((key) => !allowedKeys.includes(key));
+  if (extraKeys.length > 0) {
+    return { ok: false, message: `浏览器表单分析工具不接受参数：${extraKeys.join("、")}。` };
+  }
+
+  if (toolCall.arguments.uid !== undefined && (typeof toolCall.arguments.uid !== "string" || !toolCall.arguments.uid.trim())) {
+    return { ok: false, message: "analyze_form 的 uid 必须是 take_snapshot 返回的非空 UID。" };
+  }
+
+  if (toolCall.arguments.includeFieldDetails !== undefined && typeof toolCall.arguments.includeFieldDetails !== "boolean") {
+    return { ok: false, message: "analyze_form 的 includeFieldDetails 必须是布尔值。" };
+  }
+
+  return {
+    ok: true,
+    uid: typeof toolCall.arguments.uid === "string" ? toolCall.arguments.uid.trim() : undefined,
+    includeFieldDetails: toolCall.arguments.includeFieldDetails === true,
+  };
+}
+
+function validateFindElementsArguments(toolCall: ModelToolCall): { ok: true } | { ok: false; message: string } {
+  const allowedKeys = ["query", "strategy", "limit"];
+  const extraKeys = Object.keys(toolCall.arguments).filter((key) => !allowedKeys.includes(key));
+  if (extraKeys.length > 0) {
+    return { ok: false, message: `浏览器元素查找工具不接受参数：${extraKeys.join("、")}。` };
+  }
+
+  if (typeof toolCall.arguments.query !== "string" || !toolCall.arguments.query.trim()) {
+    return { ok: false, message: "find_elements 的 query 必须是非空字符串。" };
+  }
+
+  if (toolCall.arguments.strategy !== undefined && !["text", "role", "label", "placeholder", "css"].includes(String(toolCall.arguments.strategy))) {
+    return { ok: false, message: "find_elements 的 strategy 必须是 text、role、label、placeholder 或 css。" };
+  }
+
+  if (toolCall.arguments.limit !== undefined &&
+    (typeof toolCall.arguments.limit !== "number" || !Number.isInteger(toolCall.arguments.limit) || toolCall.arguments.limit < 1 || toolCall.arguments.limit > 50)) {
+    return { ok: false, message: "find_elements 的 limit 必须是 1 到 50 的整数。" };
+  }
+
+  if (toolCall.arguments.strategy === "css" && !isSimpleCssSelector(toolCall.arguments.query.trim())) {
+    return { ok: false, message: "find_elements 的 CSS 查询只允许简单标签、类、ID 或单个属性选择器。" };
+  }
+
+  return { ok: true };
+}
+
+function validateScreenshotArguments(toolCall: ModelToolCall): { ok: true; target: BrowserScreenshotTarget; uid?: string } | { ok: false; message: string } {
+  const allowedKeys = ["target", "uid"];
+  const extraKeys = Object.keys(toolCall.arguments).filter((key) => !allowedKeys.includes(key));
+  if (extraKeys.length > 0) {
+    return { ok: false, message: `浏览器截图工具不接受参数：${extraKeys.join("、")}。` };
+  }
+
+  const target = toolCall.arguments.target === undefined ? "viewport" : toolCall.arguments.target;
+  if (target !== "viewport" && target !== "element") {
+    return { ok: false, message: "screenshot 的 target 必须是 viewport 或 element。" };
+  }
+
+  const uid = typeof toolCall.arguments.uid === "string" ? toolCall.arguments.uid.trim() : "";
+  if (target === "element" && !uid) {
+    return { ok: false, message: "截取元素截图时必须提供 take_snapshot 返回的 UID。" };
+  }
+
+  return { ok: true, target, uid: uid || undefined };
+}
+
+function createBrowserScreenshotAttachment(
+  toolCall: ModelToolCall,
+  target: BrowserScreenshotTarget,
+  response: unknown,
+  uid?: string,
+  clip?: BrowserScreenshotClip,
+): NonNullable<ModelToolResult["toolAttachments"]>[number] {
+  const data = normalizeScreenshotData(response);
+  const dataUrl = `data:image/png;base64,${data}`;
+  if (!isPngDataUrl(dataUrl)) {
+    throw new Error("invalid_screenshot_data");
+  }
+
+  const byteSize = estimateBase64ByteSize(data);
+  if (byteSize <= 0 || byteSize > BROWSER_SCREENSHOT_MAX_BYTES) {
+    throw new Error("invalid_screenshot_size");
+  }
+
+  return {
+    id: `tool-attachment-${toolCall.id}-screenshot`,
+    kind: "browser-screenshot",
+    title: "浏览器截图",
+    summary: formatBrowserScreenshotSummary(target, byteSize, uid),
+    sourceToolCallId: toolCall.id,
+    createdAt: Date.now(),
+    redacted: false,
+    truncated: false,
+    mediaType: "image/png",
+    dataUrl,
+    target,
+    uid,
+    byteSize,
+    clip,
+  };
+}
+
+function normalizeScreenshotData(response: unknown): string {
+  if (!response || typeof response !== "object" || !("data" in response)) {
+    throw new Error("invalid_screenshot_data");
+  }
+  const data = (response as { data?: unknown }).data;
+  if (typeof data !== "string" || !data.trim()) {
+    throw new Error("invalid_screenshot_data");
+  }
+  return data.trim();
+}
+
+function normalizeScreenshotClip(response: unknown): BrowserScreenshotClip {
+  if (!response || typeof response !== "object" || !("model" in response) || !response.model || typeof response.model !== "object") {
+    throw new Error("invalid_screenshot_clip");
+  }
+  const model = response.model as { border?: unknown; padding?: unknown; content?: unknown };
+  const quads = [model.border, model.padding, model.content]
+    .filter((quad): quad is number[] => isScreenshotQuad(quad));
+  if (!quads.length) {
+    throw new Error("invalid_screenshot_clip");
+  }
+
+  const xs = quads.flatMap((quad) => [quad[0], quad[2], quad[4], quad[6]]);
+  const ys = quads.flatMap((quad) => [quad[1], quad[3], quad[5], quad[7]]);
+  const x = Math.min(...xs);
+  const y = Math.min(...ys);
+  const width = Math.max(...xs) - x;
+  const height = Math.max(...ys) - y;
+  if (width <= 0 || height <= 0) {
+    throw new Error("invalid_screenshot_clip");
+  }
+
+  return { x, y, width, height, scale: 1 };
+}
+
+function isScreenshotQuad(value: unknown): value is number[] {
+  return Array.isArray(value) &&
+    value.length >= 8 &&
+    value.slice(0, 8).every((item) => typeof item === "number" && Number.isFinite(item));
+}
+
+function estimateBase64ByteSize(base64: string): number {
+  const normalized = base64.replace(/\s+/g, "");
+  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(normalized)) {
+    return 0;
+  }
+  const padding = normalized.endsWith("==") ? 2 : normalized.endsWith("=") ? 1 : 0;
+  return Math.floor((normalized.length * 3) / 4) - padding;
+}
+
+function formatBrowserScreenshotSummary(target: BrowserScreenshotTarget, byteSize: number, uid?: string): string {
+  return target === "element" && uid
+    ? `元素 ${uid} 截图，PNG，${formatByteSize(byteSize)}。`
+    : `当前视口截图，PNG，${formatByteSize(byteSize)}。`;
+}
+
+function formatByteSize(value: number): string {
+  if (value < 1024) {
+    return `${value} B`;
+  }
+  const kb = value / 1024;
+  if (kb < 1024) {
+    return `${Math.round(kb * 10) / 10} KB`;
+  }
+  return `${Math.round((kb / 1024) * 10) / 10} MB`;
+}
+
+function normalizeScreenshotError(error: unknown): string {
+  const message = error instanceof Error ? error.message : "";
+  if (message.includes("UID") || message.includes("旧快照") || message.includes("不存在")) {
+    return `${message} 请重新调用 take_snapshot 获取最新页面状态后再继续。`;
+  }
+  if (message.includes("已从页面中移除")) {
+    return `${message} 请重新调用 take_snapshot 获取最新页面状态后再继续。`;
+  }
+  return "浏览器截图结果无效，请重试。";
+}
+
+function normalizeFindElementStrategy(value: unknown): "text" | "role" | "label" | "placeholder" | "css" {
+  return value === "role" || value === "label" || value === "placeholder" || value === "css" ? value : "text";
+}
+
+function normalizeFindElementLimit(value: unknown): number {
+  return typeof value === "number" && Number.isInteger(value) ? value : 20;
+}
+
+function isSimpleCssSelector(value: string): boolean {
+  if (value.length > 120 || /[\s>+~,*:]/.test(value)) {
+    return false;
+  }
+
+  return /^[a-zA-Z][\w-]*$/.test(value) ||
+    /^#[\w-]+$/.test(value) ||
+    /^\.[\w-]+$/.test(value) ||
+    /^\[[\w:-]+(?:=(?:"[^"]{1,80}"|'[^']{1,80}'|[\w.-]{1,80}))?\]$/.test(value);
+}
+
+function findElementsBySnapshot(
+  candidates: BrowserSnapshotElementCandidate[],
+  strategy: "text" | "role" | "label" | "placeholder",
+  query: string,
+  limit: number,
+): BrowserSnapshotElementCandidate[] {
+  const normalizedQuery = query.toLowerCase();
+  return candidates.filter((candidate) => {
+    const axNode = candidate.axNode;
+    const role = getAxValue(axNode?.role);
+    const name = getAxValue(axNode?.name);
+    const value = getAxValue(axNode?.value);
+    if (strategy === "role") {
+      return role.toLowerCase().includes(normalizedQuery);
+    }
+    if (strategy === "label" || strategy === "placeholder") {
+      return name.toLowerCase().includes(normalizedQuery);
+    }
+    return [role, name, value].some((item) => item.toLowerCase().includes(normalizedQuery));
+  }).slice(0, limit);
+}
+
+function getResolvedObjectId(response: unknown): string | undefined {
+  if (!response || typeof response !== "object" || !("object" in response) || !response.object || typeof response.object !== "object") {
+    return undefined;
+  }
+
+  const object = response.object as { objectId?: unknown };
+  return typeof object.objectId === "string" ? object.objectId : undefined;
+}
+
+function getRuntimeResultValue(response: unknown): unknown {
+  if (!response || typeof response !== "object" || !("result" in response)) {
+    return undefined;
+  }
+  const result = response.result;
+  return result && typeof result === "object" && "value" in result ? result.value : undefined;
+}
+
+function normalizeElementInspection(response: unknown): BrowserElementInspection {
+  const value = response && typeof response === "object" && "result" in response
+    ? (response as { result?: { value?: unknown } }).result?.value
+    : undefined;
+  const source = value && typeof value === "object" ? value as Record<string, unknown> : {};
+
+  return {
+    tagName: typeof source.tagName === "string" ? source.tagName.toUpperCase() : "",
+    id: typeof source.id === "string" ? source.id : "",
+    className: typeof source.className === "string" ? source.className : "",
+    text: typeof source.text === "string" ? source.text : "",
+    attributes: normalizeElementAttributes(source.attributes),
+    rect: normalizeNumericRecord(source.rect, ["x", "y", "width", "height"]),
+    style: normalizeStringRecord(source.style, ["display", "visibility", "opacity", "pointerEvents", "cursor"]),
+    state: normalizeBooleanRecord(source.state, ["visible", "disabled", "editable"]),
+  };
+}
+
+function normalizeInteractionBlockerAnalysis(response: unknown): BrowserInteractionBlockerAnalysis {
+  const value = response && typeof response === "object" && "result" in response
+    ? (response as { result?: { value?: unknown } }).result?.value
+    : undefined;
+  const source = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const state = normalizeBooleanRecord(source.state, ["visible", "disabled", "editable", "connected", "inViewport", "occluded"]);
+  const rawState = source.state && typeof source.state === "object" ? source.state as Record<string, unknown> : {};
+  const rawForm = source.form && typeof source.form === "object" ? source.form as Record<string, unknown> : {};
+
+  return {
+    tagName: typeof source.tagName === "string" ? source.tagName.toUpperCase() : "",
+    text: typeof source.text === "string" ? source.text : "",
+    rect: normalizeNumericRecord(source.rect, ["x", "y", "width", "height"]),
+    style: normalizeStringRecord(source.style, ["display", "visibility", "opacity", "pointerEvents", "cursor"]),
+    state: {
+      ...state,
+      coveredBy: typeof rawState.coveredBy === "string" ? rawState.coveredBy : "",
+    },
+    form: {
+      disabledFieldset: rawForm.disabledFieldset === true,
+      invalidFields: typeof rawForm.invalidFields === "number" && Number.isFinite(rawForm.invalidFields) ? Math.max(0, Math.floor(rawForm.invalidFields)) : 0,
+    },
+  };
+}
+
+function normalizeFormAnalysis(response: unknown): BrowserFormAnalysis {
+  const value = response && typeof response === "object" && "result" in response
+    ? (response as { result?: { value?: unknown } }).result?.value
+    : undefined;
+  const source = value && typeof value === "object" ? value as { forms?: unknown } : {};
+  const forms = Array.isArray(source.forms) ? source.forms : [];
+  return {
+    forms: forms.map((item, index) => normalizeFormAnalysisItem(item, index + 1)).slice(0, 10),
+  };
+}
+
+function normalizePerformanceSummary(response: unknown): BrowserPerformanceSummary {
+  const value = response && typeof response === "object" && "result" in response
+    ? (response as { result?: { value?: unknown } }).result?.value
+    : undefined;
+  const source = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const resources = source.resources && typeof source.resources === "object" ? source.resources as Record<string, unknown> : {};
+  const longTasks = source.longTasks && typeof source.longTasks === "object" ? source.longTasks as Record<string, unknown> : {};
+  return {
+    navigation: normalizePerformanceNavigation(source.navigation),
+    resources: {
+      totalCount: normalizeNonNegativeInteger(resources.totalCount),
+      byType: Array.isArray(resources.byType) ? resources.byType.map(normalizePerformanceResourceType).slice(0, 10) : [],
+      slowest: Array.isArray(resources.slowest) ? resources.slowest.map(normalizePerformanceSlowResource).slice(0, 10) : [],
+    },
+    longTasks: {
+      count: normalizeNonNegativeInteger(longTasks.count),
+      maxDuration: normalizeFiniteNumber(longTasks.maxDuration),
+      totalDuration: normalizeFiniteNumber(longTasks.totalDuration),
+    },
+  };
+}
+
+function normalizePerformanceNavigation(value: unknown): BrowserPerformanceNavigationSummary | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const source = value as Record<string, unknown>;
+  return {
+    type: typeof source.type === "string" ? source.type : "",
+    startTime: normalizeFiniteNumber(source.startTime),
+    responseEnd: normalizeFiniteNumber(source.responseEnd),
+    domContentLoaded: normalizeFiniteNumber(source.domContentLoaded),
+    load: normalizeFiniteNumber(source.load),
+    transferSize: normalizeFiniteNumber(source.transferSize),
+    encodedBodySize: normalizeFiniteNumber(source.encodedBodySize),
+    decodedBodySize: normalizeFiniteNumber(source.decodedBodySize),
+  };
+}
+
+function normalizePerformanceResourceType(value: unknown): BrowserPerformanceResourceTypeSummary {
+  const source = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  return {
+    type: typeof source.type === "string" ? source.type : "other",
+    count: normalizeNonNegativeInteger(source.count),
+    duration: normalizeFiniteNumber(source.duration),
+    transferSize: normalizeFiniteNumber(source.transferSize),
+  };
+}
+
+function normalizePerformanceSlowResource(value: unknown): BrowserPerformanceSlowResource {
+  const source = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  return {
+    name: typeof source.name === "string" ? source.name : "",
+    initiatorType: typeof source.initiatorType === "string" ? source.initiatorType : "other",
+    duration: normalizeFiniteNumber(source.duration),
+    transferSize: normalizeFiniteNumber(source.transferSize),
+  };
+}
+
+function normalizeFiniteNumber(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+function formatPerformanceSummary(summary: BrowserPerformanceSummary): string {
+  return [
+    "性能摘要：",
+    formatPerformanceNavigation(summary.navigation),
+    formatPerformanceTransfer(summary.navigation),
+    `- 资源：总数=${summary.resources.totalCount}`,
+    `- 资源类型：${formatPerformanceResourceTypes(summary.resources.byType)}`,
+    `- 慢资源：${formatSlowResources(summary.resources.slowest)}`,
+    `- 长任务：count=${summary.longTasks.count}，max=${formatDuration(summary.longTasks.maxDuration)}，total=${formatDuration(summary.longTasks.totalDuration)}`,
+  ].join("\n");
+}
+
+function formatDiagnosticsNetworkSummary(requests: NetworkRequestMeta[]): string {
+  const notableRequests = requests
+    .filter((request) => request.failed === true || (request.status ?? 0) >= 400 || (request.durationMs ?? 0) >= 1000)
+    .slice(-10);
+
+  if (notableRequests.length === 0) {
+    return requests.length > 0
+      ? `最近 ${requests.length} 条 Network 请求中暂无错误或慢请求摘要。`
+      : "暂无 Network 请求摘要。";
+  }
+
+  return [
+    `最近 ${requests.length} 条 Network 请求中发现 ${notableRequests.length} 条错误或慢请求：`,
+    ...notableRequests.map((request, index) => `${index + 1}. ${formatDiagnosticsNetworkRequest(request)}`),
+  ].join("\n");
+}
+
+function formatDiagnosticsNetworkRequest(request: NetworkRequestMeta): string {
+  const method = request.method || "GET";
+  const status = request.failed ? "failed" : String(request.status ?? "pending");
+  const duration = typeof request.durationMs === "number" ? formatDuration(request.durationMs) : "未知耗时";
+  const type = request.resourceType || "other";
+  const error = request.error ? ` error=${truncatePageStateText(redactPageStateText(request.error), 120)}` : "";
+  return `${method} ${status} ${duration} ${type} ${redactPageStateUrl(request.url)}${error}`;
+}
+
+function formatPerformanceNavigation(navigation: BrowserPerformanceNavigationSummary | undefined): string {
+  if (!navigation) {
+    return "- 导航：无 Navigation Timing 数据";
+  }
+  return `- 导航：type=${navigation.type || "unknown"}，responseEnd=${formatDuration(navigation.responseEnd)}，domContentLoaded=${formatDuration(navigation.domContentLoaded)}，load=${formatDuration(navigation.load)}`;
+}
+
+function formatPerformanceTransfer(navigation: BrowserPerformanceNavigationSummary | undefined): string {
+  if (!navigation) {
+    return "- 传输：无";
+  }
+  return `- 传输：transfer=${formatByteSize(navigation.transferSize)}，encoded=${formatByteSize(navigation.encodedBodySize)}，decoded=${formatByteSize(navigation.decodedBodySize)}`;
+}
+
+function formatPerformanceResourceTypes(resources: BrowserPerformanceResourceTypeSummary[]): string {
+  if (!resources.length) {
+    return "无";
+  }
+  return resources
+    .map((resource) => `${resource.type || "other"} count=${resource.count} duration=${formatDuration(resource.duration)} transfer=${formatByteSize(resource.transferSize)}`)
+    .join("；");
+}
+
+function formatSlowResources(resources: BrowserPerformanceSlowResource[]): string {
+  if (!resources.length) {
+    return "无";
+  }
+  return resources
+    .map((resource, index) => `${index + 1}. ${resource.initiatorType || "other"} ${formatDuration(resource.duration)} ${formatByteSize(resource.transferSize)} ${redactPageStateUrl(resource.name)}`)
+    .join("；");
+}
+
+function formatDuration(value: number): string {
+  return `${formatNumber(value)}ms`;
+}
+
+function normalizeFormAnalysisItem(value: unknown, fallbackIndex: number): BrowserFormAnalysisItem {
+  const source = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const fields = Array.isArray(source.fields) ? source.fields : [];
+  const submitButtons = Array.isArray(source.submitButtons) ? source.submitButtons : [];
+  const errors = Array.isArray(source.errors) ? source.errors : [];
+  return {
+    index: normalizePositiveInteger(source.index, fallbackIndex),
+    id: typeof source.id === "string" ? source.id : "",
+    name: typeof source.name === "string" ? source.name : "",
+    action: typeof source.action === "string" ? source.action : "",
+    method: typeof source.method === "string" ? source.method.toLowerCase() : "",
+    fieldCount: normalizeNonNegativeInteger(source.fieldCount),
+    invalidFieldCount: normalizeNonNegativeInteger(source.invalidFieldCount),
+    disabledFieldCount: normalizeNonNegativeInteger(source.disabledFieldCount),
+    requiredFieldCount: normalizeNonNegativeInteger(source.requiredFieldCount),
+    submitButtons: submitButtons.map(normalizeFormSubmitButton).slice(0, 5),
+    errors: errors.filter((item): item is string => typeof item === "string" && Boolean(item.trim())).slice(0, 10),
+    fields: fields.map((item, index) => normalizeFormField(item, index + 1)).slice(0, 30),
+  };
+}
+
+function normalizeFormField(value: unknown, fallbackIndex: number): BrowserFormAnalysisField {
+  const source = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  return {
+    index: normalizePositiveInteger(source.index, fallbackIndex),
+    tagName: typeof source.tagName === "string" ? source.tagName.toUpperCase() : "",
+    type: typeof source.type === "string" ? source.type.toLowerCase() : "",
+    name: typeof source.name === "string" ? source.name : "",
+    label: typeof source.label === "string" ? source.label : "",
+    required: source.required === true,
+    disabled: source.disabled === true,
+    readonly: source.readonly === true,
+    invalid: source.invalid === true,
+    hasValue: source.hasValue === true,
+  };
+}
+
+function normalizeFormSubmitButton(value: unknown): BrowserFormAnalysisSubmitButton {
+  const source = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  return {
+    text: typeof source.text === "string" ? source.text : "",
+    disabled: source.disabled === true,
+    type: typeof source.type === "string" ? source.type.toLowerCase() : "",
+  };
+}
+
+function normalizePositiveInteger(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
+function normalizeNonNegativeInteger(value: unknown): number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : 0;
+}
+
+function formatFormAnalysis(analysis: BrowserFormAnalysis, includeFieldDetails: boolean): string {
+  if (!analysis.forms.length) {
+    return "表单分析：未发现表单或可分析的表单字段。";
+  }
+
+  return [
+    "表单分析：",
+    `共 ${analysis.forms.length} 个表单。`,
+    ...analysis.forms.flatMap((form) => formatFormAnalysisItem(form, includeFieldDetails)),
+  ].join("\n");
+}
+
+function formatFormAnalysisItem(form: BrowserFormAnalysisItem, includeFieldDetails: boolean): string[] {
+  const lines = [
+    `${form.index}. ${formatFormIdentity(form)} method=${form.method || "unknown"} action=${form.action ? redactPageStateUrl(form.action) : "无"}`,
+    `- 字段：总数=${form.fieldCount}，必填=${form.requiredFieldCount}，非法=${form.invalidFieldCount}，禁用=${form.disabledFieldCount}`,
+    `- 提交按钮：${formatSubmitButtons(form.submitButtons)}`,
+    `- 错误文案：${formatFormErrors(form.errors)}`,
+  ];
+
+  if (includeFieldDetails && form.fields.length) {
+    lines.push("字段详情：");
+    lines.push(...form.fields.map(formatFormField));
+  }
+
+  return lines;
+}
+
+function formatFormIdentity(form: BrowserFormAnalysisItem): string {
+  const id = form.id ? `#${truncatePageStateText(redactPageStateText(form.id), 80)}` : "";
+  const name = form.name ? `[name="${truncatePageStateText(redactPageStateText(form.name), ELEMENT_INSPECTION_MAX_TEXT_LENGTH).replace(/"/g, "&quot;")}"]` : "";
+  return `FORM${id}${name}`;
+}
+
+function formatSubmitButtons(buttons: BrowserFormAnalysisSubmitButton[]): string {
+  if (!buttons.length) {
+    return "无";
+  }
+  return buttons
+    .map((button) => {
+      const text = truncatePageStateText(redactPageStateText(button.text || "无文本"), ELEMENT_INSPECTION_MAX_TEXT_LENGTH);
+      return `${text} disabled=${button.disabled} type=${button.type || "unknown"}`;
+    })
+    .join("；");
+}
+
+function formatFormErrors(errors: string[]): string {
+  if (!errors.length) {
+    return "无";
+  }
+  return errors
+    .map((error) => truncatePageStateText(redactPageStateText(error), ELEMENT_INSPECTION_MAX_TEXT_LENGTH))
+    .join("；");
+}
+
+function formatFormField(field: BrowserFormAnalysisField): string {
+  const tagName = field.tagName || "UNKNOWN";
+  const type = field.type ? `[type=${truncatePageStateText(redactPageStateText(field.type), 80)}]` : "";
+  const name = field.name ? `[name="${truncatePageStateText(redactPageStateText(field.name), 80).replace(/"/g, "&quot;")}"]` : "";
+  const label = truncatePageStateText(redactPageStateText(field.label || "无"), ELEMENT_INSPECTION_MAX_TEXT_LENGTH);
+  return `${field.index}. ${tagName}${type}${name} label=${label} required=${field.required} disabled=${field.disabled} readonly=${field.readonly} invalid=${field.invalid} hasValue=${field.hasValue}`;
+}
+
+function formatInteractionBlockerAnalysis(
+  uid: string,
+  expectedAction: BrowserInteractionExpectedAction,
+  axNode: AccessibilityNode | undefined,
+  analysis: BrowserInteractionBlockerAnalysis,
+): string {
+  const reasons = collectInteractionBlockerReasons(expectedAction, analysis);
+  return [
+    "交互阻塞分析：",
+    `- UID：${uid}`,
+    `- 预期动作：${expectedAction}`,
+    `- AX：${formatElementAxSummary(axNode)}`,
+    `- DOM：${analysis.tagName || "UNKNOWN"}`,
+    `- 文本：${truncatePageStateText(redactPageStateText(analysis.text || "无"), ELEMENT_INSPECTION_MAX_TEXT_LENGTH)}`,
+    `- 布局：x=${formatNumber(analysis.rect?.x)}，y=${formatNumber(analysis.rect?.y)}，width=${formatNumber(analysis.rect?.width)}，height=${formatNumber(analysis.rect?.height)}`,
+    `- 样式：display=${analysis.style?.display || "unknown"}，visibility=${analysis.style?.visibility || "unknown"}，opacity=${analysis.style?.opacity || "unknown"}，pointerEvents=${analysis.style?.pointerEvents || "unknown"}，cursor=${analysis.style?.cursor || "unknown"}`,
+    `- 状态：visible=${formatBoolean(analysis.state?.visible)}，disabled=${formatBoolean(analysis.state?.disabled)}，editable=${formatBoolean(analysis.state?.editable)}，connected=${formatBoolean(analysis.state?.connected)}，inViewport=${formatBoolean(analysis.state?.inViewport)}，occluded=${formatBoolean(analysis.state?.occluded)}`,
+    `- 阻塞原因：${reasons.length ? reasons.join("；") : "未发现常见交互阻塞原因"}`,
+    `- 建议：${formatInteractionBlockerAdvice(expectedAction, reasons.length > 0)}`,
+  ].join("\n");
+}
+
+function collectInteractionBlockerReasons(expectedAction: BrowserInteractionExpectedAction, analysis: BrowserInteractionBlockerAnalysis): string[] {
+  const reasons: string[] = [];
+  const state = analysis.state;
+  if (state?.connected === false) {
+    reasons.push("元素已脱离当前文档");
+  }
+  if (state?.visible === false) {
+    reasons.push("元素不可见或尺寸为 0");
+  }
+  if (state?.inViewport === false) {
+    reasons.push("元素不在当前视口内");
+  }
+  if (state?.disabled === true) {
+    reasons.push("元素禁用");
+  }
+  if (analysis.style?.pointerEvents === "none") {
+    reasons.push("元素 pointer-events 为 none");
+  }
+  if (state?.occluded === true) {
+    const coveredBy = state.coveredBy ? truncatePageStateText(redactPageStateText(state.coveredBy), ELEMENT_INSPECTION_MAX_TEXT_LENGTH) : "其他元素";
+    reasons.push(`元素被 ${coveredBy} 遮挡`);
+  }
+  if (analysis.form?.disabledFieldset === true) {
+    reasons.push("元素位于禁用的 fieldset 内");
+  }
+  if (expectedAction === "fill" && state?.editable === false) {
+    reasons.push("目标元素不可编辑");
+  }
+  if ((expectedAction === "click" || expectedAction === "fill") && analysis.form?.invalidFields && analysis.form.invalidFields > 0) {
+    reasons.push(`表单存在 ${analysis.form.invalidFields} 个非法字段`);
+  }
+  return reasons;
+}
+
+function formatInteractionBlockerAdvice(expectedAction: BrowserInteractionExpectedAction, hasBlocker: boolean): string {
+  if (!hasBlocker) {
+    return "可先重新 take_snapshot 或 screenshot 核对页面状态；若仍失败，再结合 Console 与 Network 诊断。";
+  }
+  if (expectedAction === "view") {
+    return "先滚动、等待元素可见或检查遮罩层状态，再重新观察页面；不要直接改 DOM 或强制触发脚本。";
+  }
+  if (expectedAction === "fill") {
+    return "先检查字段可编辑性、禁用条件、表单校验或遮罩层状态，再重新观察页面；不要直接改 DOM 或强制触发脚本。";
+  }
+  return "先检查表单必填项、禁用条件或遮罩层状态，再重新观察页面；不要直接改 DOM 或强制触发脚本。";
+}
+
+function normalizeElementAttributes(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+
+  const attributes: Record<string, string> = {};
+  for (const [key, attributeValue] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof attributeValue === "string") {
+      attributes[key] = attributeValue;
+    }
+  }
+  return attributes;
+}
+
+function normalizeStringRecord<T extends string>(value: unknown, keys: T[]): Partial<Record<T, string>> | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  const source = value as Record<string, unknown>;
+  return Object.fromEntries(keys.map((key) => [key, typeof source[key] === "string" ? source[key] : undefined])) as Partial<Record<T, string>>;
+}
+
+function normalizeBooleanRecord<T extends string>(value: unknown, keys: T[]): Partial<Record<T, boolean>> | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  const source = value as Record<string, unknown>;
+  return Object.fromEntries(keys.map((key) => [key, typeof source[key] === "boolean" ? source[key] : undefined])) as Partial<Record<T, boolean>>;
+}
+
+function formatElementInspection(uid: string, axNode: AccessibilityNode | undefined, inspection: BrowserElementInspection): string {
+  return [
+    "元素检查：",
+    `- UID：${uid}`,
+    `- AX：${formatElementAxSummary(axNode)}`,
+    `- DOM：${formatElementDomSummary(inspection)}`,
+    `- 文本：${truncatePageStateText(redactPageStateText(inspection.text || "无"), ELEMENT_INSPECTION_MAX_TEXT_LENGTH)}`,
+    `- 布局：x=${formatNumber(inspection.rect?.x)}，y=${formatNumber(inspection.rect?.y)}，width=${formatNumber(inspection.rect?.width)}，height=${formatNumber(inspection.rect?.height)}`,
+    `- 样式：display=${inspection.style?.display || "unknown"}，visibility=${inspection.style?.visibility || "unknown"}，opacity=${inspection.style?.opacity || "unknown"}，pointerEvents=${inspection.style?.pointerEvents || "unknown"}，cursor=${inspection.style?.cursor || "unknown"}`,
+    `- 状态：visible=${formatBoolean(inspection.state?.visible)}，disabled=${formatBoolean(inspection.state?.disabled)}，editable=${formatBoolean(inspection.state?.editable)}`,
+  ].join("\n");
+}
+
+function formatFindElementsResult(candidates: BrowserSnapshotElementCandidate[]): string {
+  if (!candidates.length) {
+    return "元素查找结果：未找到匹配候选。请调整查询词或重新调用 take_snapshot。";
+  }
+
+  return [
+    `元素查找结果：共 ${candidates.length} 个候选。`,
+    ...candidates.map((candidate, index) => `${index + 1}. uid=${candidate.uid} ${formatElementAxSummary(candidate.axNode)}`),
+  ].join("\n");
+}
+
+function formatElementAxSummary(node: AccessibilityNode | undefined): string {
+  if (!node) {
+    return "无快照节点摘要";
+  }
+
+  const parts: string[] = [];
+  const role = getAxValue(node.role);
+  const name = getAxValue(node.name);
+  const value = getAxValue(node.value);
+  if (role) {
+    parts.push(`role=${redactPageStateText(role)}`);
+  }
+  if (name) {
+    parts.push(`name=${truncatePageStateText(redactPageStateText(name), ELEMENT_INSPECTION_MAX_TEXT_LENGTH)}`);
+  }
+  if (value && value !== name) {
+    parts.push(`value=${truncatePageStateText(redactPageStateText(value), ELEMENT_INSPECTION_MAX_TEXT_LENGTH)}`);
+  }
+  for (const property of node.properties ?? []) {
+    if (!property.name || !["checked", "disabled", "expanded", "selected", "focused", "required"].includes(property.name)) {
+      continue;
+    }
+    const propertyValue = getAxValue(property.value);
+    if (propertyValue) {
+      parts.push(`${property.name}=${redactPageStateText(propertyValue)}`);
+    }
+  }
+  return parts.join("，") || "无快照节点摘要";
+}
+
+function formatElementDomSummary(inspection: BrowserElementInspection): string {
+  const tagName = inspection.tagName || "UNKNOWN";
+  const id = inspection.id ? `#${sanitizeDomToken(inspection.id)}` : "";
+  const classes = inspection.className
+    .split(/\s+/)
+    .map((item) => sanitizeDomToken(item))
+    .filter(Boolean)
+    .map((item) => `.${item}`)
+    .join("");
+  const attributes = Object.entries(inspection.attributes)
+    .map(([name, value]) => `${name}="${formatElementAttributeValue(name, value)}"`);
+  return [tagName + id + classes, ...attributes].join(" ");
+}
+
+function sanitizeDomToken(value: string): string {
+  return truncatePageStateText(redactPageStateText(value), 80).replace(/\s+/g, "-");
+}
+
+function formatElementAttributeValue(name: string, value: string): string {
+  const redacted = /^(href|src|action)$/i.test(name) ? redactPageStateUrl(value) : redactPageStateText(value);
+  return truncatePageStateText(redacted, ELEMENT_INSPECTION_MAX_TEXT_LENGTH).replace(/"/g, "&quot;");
+}
+
+function formatBoolean(value: unknown): string {
+  return typeof value === "boolean" ? String(value) : "unknown";
+}
+
+function normalizeInspectElementError(error: unknown): string {
+  const message = error instanceof Error ? error.message : "";
+  if (message.includes("UID") || message.includes("旧快照") || message.includes("不存在")) {
+    return `${message} 请重新调用 take_snapshot 获取最新页面状态后再继续。`;
+  }
+  if (message.includes("已从页面中移除")) {
+    return message;
+  }
+
+  return "检查元素失败，请确认当前页面仍可访问后重试。";
+}
+
+function normalizeInteractionBlockerError(error: unknown): string {
+  const message = error instanceof Error ? error.message : "";
+  if (message.includes("UID") || message.includes("旧快照") || message.includes("不存在")) {
+    return `${message} 请重新调用 take_snapshot 获取最新页面状态后再继续。`;
+  }
+  if (message.includes("已从页面中移除")) {
+    return `${message} 请重新调用 take_snapshot 获取最新页面状态后再继续。`;
+  }
+
+  return "交互阻塞分析失败，请确认当前页面仍可访问后重试。";
+}
+
+function normalizeAnalyzeFormError(error: unknown): string {
+  const message = error instanceof Error ? error.message : "";
+  if (message.includes("UID") || message.includes("旧快照") || message.includes("不存在")) {
+    return `${message} 请重新调用 take_snapshot 获取最新页面状态后再继续。`;
+  }
+  if (message.includes("已从页面中移除")) {
+    return `${message} 请重新调用 take_snapshot 获取最新页面状态后再继续。`;
+  }
+
+  return "表单分析失败，请确认当前页面仍可访问后重试。";
+}
+
+function normalizePageRuntimeState(response: unknown): BrowserPageRuntimeState {
+  const value = response && typeof response === "object" && "result" in response
+    ? (response as { result?: { value?: unknown } }).result?.value
+    : undefined;
+  if (!value || typeof value !== "object") {
+    return { url: "", title: "", readyState: "" };
+  }
+
+  const source = value as BrowserPageRuntimeState;
+  return {
+    url: typeof source.url === "string" ? source.url : "",
+    title: typeof source.title === "string" ? source.title : "",
+    readyState: typeof source.readyState === "string" ? source.readyState : "",
+    viewport: normalizeNumericRecord(source.viewport, ["width", "height", "deviceScaleFactor"]),
+    scroll: normalizeNumericRecord(source.scroll, ["x", "y", "maxX", "maxY"]),
+    focusedElement: normalizeFocusedElement(source.focusedElement),
+  };
+}
+
+function normalizeNumericRecord<T extends string>(value: unknown, keys: T[]): Partial<Record<T, number>> | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  const source = value as Record<string, unknown>;
+  return Object.fromEntries(keys.map((key) => [key, typeof source[key] === "number" && Number.isFinite(source[key]) ? source[key] : undefined])) as Partial<Record<T, number>>;
+}
+
+function normalizeFocusedElement(value: unknown): BrowserPageRuntimeState["focusedElement"] {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  const source = value as Record<string, unknown>;
+  return {
+    tagName: typeof source.tagName === "string" ? source.tagName.toUpperCase() : "",
+    id: typeof source.id === "string" ? source.id : "",
+    name: typeof source.name === "string" ? source.name : "",
+    type: typeof source.type === "string" ? source.type : "",
+    text: typeof source.text === "string" ? truncatePageStateText(redactPageStateText(source.text)) : "",
+  };
+}
+
+function formatPageState(state: BrowserPageRuntimeState): string {
+  const viewport = state.viewport;
+  const scroll = state.scroll;
+  return [
+    "页面状态：",
+    `- 标题：${truncatePageStateText(redactPageStateText(state.title || "无标题"))}`,
+    `- URL：${redactPageStateUrl(state.url || "")}`,
+    `- readyState：${state.readyState || "unknown"}`,
+    `- viewport：${formatNumber(viewport?.width)}x${formatNumber(viewport?.height)}，deviceScaleFactor=${formatNumber(viewport?.deviceScaleFactor)}`,
+    `- scroll：x=${formatNumber(scroll?.x)}，y=${formatNumber(scroll?.y)}，maxX=${formatNumber(scroll?.maxX)}，maxY=${formatNumber(scroll?.maxY)}`,
+    `- 焦点元素：${formatFocusedElement(state.focusedElement)}`,
+  ].join("\n");
+}
+
+function formatFocusedElement(element: BrowserPageRuntimeState["focusedElement"]): string {
+  if (!element?.tagName) {
+    return "无";
+  }
+
+  const id = element.id ? `#${truncatePageStateText(redactPageStateText(element.id))}` : "";
+  const name = element.name ? `[name="${truncatePageStateText(redactPageStateText(element.name))}"]` : "";
+  const type = element.type ? `[type="${truncatePageStateText(redactPageStateText(element.type))}"]` : "";
+  const text = element.text ? ` ${element.text}` : "";
+  return `${element.tagName}${id}${name}${type}${text}`;
+}
+
+function formatNumber(value: unknown): string {
+  return typeof value === "number" && Number.isFinite(value) ? String(Math.round(value * 100) / 100) : "unknown";
+}
+
+function redactPageStateUrl(value: string): string {
+  if (!value) {
+    return "";
+  }
+
+  try {
+    const url = new URL(value);
+    for (const key of Array.from(url.searchParams.keys())) {
+      if (isSensitivePageStateName(key)) {
+        url.searchParams.set(key, "[已脱敏]");
+      }
+    }
+    return truncatePageStateText(url.toString().replace(/%5B%E5%B7%B2%E8%84%B1%E6%95%8F%5D/g, "[已脱敏]"), 500);
+  } catch {
+    return truncatePageStateText(redactPageStateText(value), 500);
+  }
+}
+
+function redactPageStateText(value: string): string {
+  return value.replace(/\b(token|access[_-]?token|refresh[_-]?token|api[_-]?key|secret|password|passwd|session|csrf|xsrf)\b\s*[:=]\s*["']?[^"'\s;,}]+/gi, "$1=[已脱敏]");
+}
+
+function isSensitivePageStateName(value: string): boolean {
+  return /(authorization|cookie|token|access[_-]?token|refresh[_-]?token|api[_-]?key|secret|password|passwd|credential|session|sid|csrf|xsrf)/i.test(value);
+}
+
+function truncatePageStateText(value: string, maxLength = PAGE_STATE_MAX_TEXT_LENGTH): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength)}…` : normalized;
 }
 
 function isBrowserControlPageToolName(name: string): name is BrowserControlPageToolName {

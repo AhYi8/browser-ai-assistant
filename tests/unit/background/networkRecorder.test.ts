@@ -197,6 +197,34 @@ describe("debugger Network 采集器", () => {
     vi.useRealTimers();
   });
 
+  it("支持等待 Network 空闲，并在仍有进行中请求时等到完成后再返回", async () => {
+    vi.useFakeTimers();
+    const connection = createConnectionMock();
+    const recorder = new BrowserNetworkRecorder(connection);
+    recorder.start(7);
+
+    connection.emit("Network.requestWillBeSent", {
+      requestId: "req-pending",
+      timestamp: 1,
+      request: { url: "https://api.example.com/pending", method: "GET", headers: {} },
+    });
+    const idlePromise = recorder.waitForIdle({ idleMs: 100, timeoutMs: 1000 });
+
+    await vi.advanceTimersByTimeAsync(99);
+    let resolved = false;
+    idlePromise.then(() => {
+      resolved = true;
+    });
+    await Promise.resolve();
+    expect(resolved).toBe(false);
+
+    connection.emit("Network.loadingFinished", { requestId: "req-pending", timestamp: 1.2 });
+    await vi.advanceTimersByTimeAsync(100);
+
+    await expect(idlePromise).resolves.toEqual({ ok: true, idleMs: 100 });
+    vi.useRealTimers();
+  });
+
   it("读取详情时跳过明显的二进制响应体，避免拉取大文件进入内存", async () => {
     const connection = createConnectionMock();
     const recorder = new BrowserNetworkRecorder(connection);

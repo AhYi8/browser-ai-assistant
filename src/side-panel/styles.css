@@ -150,6 +150,7 @@ body {
     background: var(--color-canvas);
     border: 1px solid var(--color-hairline);
     color: var(--color-ink);
+    padding: 5px 8px;
   }
 
   .ui-button-secondary:hover {
@@ -1074,6 +1075,30 @@ body {
     color: var(--color-on-dark);
   }
 
+  .message-browser-screenshot-preview {
+    @apply mt-2 block max-w-full cursor-zoom-in rounded-md p-0;
+    background: transparent;
+    border: 0;
+  }
+
+  .message-browser-screenshot-preview:focus-visible {
+    outline: 3px solid color-mix(in srgb, var(--color-primary) 20%, transparent);
+    outline-offset: 2px;
+  }
+
+  .message-browser-screenshot-preview img {
+    @apply block max-w-full rounded-md;
+    max-height: min(60vh, 520px);
+    object-fit: contain;
+    border: 1px solid var(--color-hairline-soft);
+  }
+
+  .message-automation-report-step-list,
+  .message-automation-report-timeline-list {
+    @apply mb-0 mt-2 space-y-1 pl-5 text-xs;
+    color: var(--color-body);
+  }
+
   .message-network-count,
   .message-web-search-count {
     @apply rounded-full px-2 py-0.5 text-xs;
@@ -1751,6 +1776,15 @@ body {
   }
 
   .chat-preference-network-type-list {
+    @apply flex flex-wrap gap-2;
+  }
+
+  .chat-preference-tool-filter-grid {
+    @apply grid gap-2;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  }
+
+  .chat-preference-tool-bulk-actions {
     @apply flex flex-wrap gap-2;
   }
 

@@ -16,7 +16,13 @@ export interface BrowserControlActionSnapshot {
   takeSnapshot(): Promise<string>;
 }
 
-type BrowserControlActionName = "click" | "fill" | "press_key" | "wait_for";
+export interface BrowserControlActionOptions {
+  waitForNetworkIdle?: (options: { timeoutMs?: number }) => Promise<{ ok: true; idleMs: number } | { ok: false; message: string }>;
+}
+
+type BrowserControlActionName = "click" | "fill" | "press_key" | "wait_for" | "wait_for_state" | "scroll" | "hover" | "double_click" | "context_click" | "drag";
+type ScrollDirection = "up" | "down" | "left" | "right" | "top" | "bottom";
+type WaitForStateName = "url_contains" | "ready_state" | "element_visible" | "element_hidden" | "network_idle";
 
 interface ElementInfo {
   tagName: string;
@@ -30,6 +36,9 @@ const RETAKE_SNAPSHOT_MESSAGE = "请重新调用 take_snapshot 获取最新页�
 const INCLUDE_SNAPSHOT_ERROR_SUFFIX = ` ${RETAKE_SNAPSHOT_MESSAGE}`;
 const WAIT_FOR_DEFAULT_TIMEOUT_MS = 5000;
 const WAIT_FOR_MAX_TIMEOUT_MS = 30000;
+const SCROLL_DEFAULT_AMOUNT = 800;
+const SCROLL_MAX_AMOUNT = 5000;
+const DRAG_MAX_DELTA = 2000;
 const SAFE_CLICK_OCCLUDED_ERROR = "元素当前被遮挡，无法安全点击。";
 const MODIFIER_BITS = {
   Alt: 1,
@@ -45,7 +54,7 @@ const MODIFIER_ALIASES: Record<string, keyof typeof MODIFIER_BITS> = {
 };
 
 export function isBrowserControlActionName(name: string): name is BrowserControlActionName {
-  return name === "click" || name === "fill" || name === "press_key" || name === "wait_for";
+  return name === "click" || name === "fill" || name === "press_key" || name === "wait_for" || name === "wait_for_state" || name === "scroll" || name === "hover" || name === "double_click" || name === "context_click" || name === "drag";
 }
 
 export function createBrowserActionDisabledResult(toolCall: ModelToolCall): ModelToolResult {
@@ -65,6 +74,7 @@ export class BrowserControlActionExecutor {
   constructor(
     private readonly connection: BrowserControlCommandConnection,
     private readonly snapshot: BrowserControlActionSnapshot,
+    private readonly options: BrowserControlActionOptions = {},
   ) {}
 
   async execute(toolCall: ModelToolCall): Promise<ModelToolResult> {
@@ -98,6 +108,24 @@ export class BrowserControlActionExecutor {
     }
     if (name === "press_key") {
       return this.pressKey(String(args.key));
+    }
+    if (name === "scroll") {
+      return this.scroll(String(args.direction), args.amount, typeof args.uid === "string" ? args.uid : undefined);
+    }
+    if (name === "hover") {
+      return this.hover(String(args.uid));
+    }
+    if (name === "double_click") {
+      return this.doubleClick(String(args.uid));
+    }
+    if (name === "context_click") {
+      return this.contextClick(String(args.uid));
+    }
+    if (name === "wait_for_state") {
+      return this.waitForState(String(args.state), args.value, args.uid, args.timeout);
+    }
+    if (name === "drag") {
+      return this.drag(args);
     }
 
     return this.waitFor(args.text, args.timeout);
@@ -157,6 +185,66 @@ export class BrowserControlActionExecutor {
     }
 
     return `已点击元素 ${uid}。`;
+  }
+
+  private async hover(uid: string): Promise<string> {
+    const objectId = await this.getObjectIdFromUid(uid);
+    const backendNodeId = this.snapshot.getBackendNodeId(uid);
+    const { x, y } = await this.getElementCenter(objectId, backendNodeId);
+    await this.connection.dispatchMouseEvent({ type: "mouseMoved", x, y });
+    return `已悬停元素 ${uid}。`;
+  }
+
+  private async doubleClick(uid: string): Promise<string> {
+    const objectId = await this.getObjectIdFromUid(uid);
+    const backendNodeId = this.snapshot.getBackendNodeId(uid);
+    const { x, y } = await this.getElementCenter(objectId, backendNodeId);
+    await this.connection.dispatchMouseEvent({ type: "mouseMoved", x, y });
+    await this.connection.dispatchMouseEvent({ type: "mousePressed", x, y, button: "left", clickCount: 1 });
+    await this.connection.dispatchMouseEvent({ type: "mouseReleased", x, y, button: "left", clickCount: 1 });
+    await this.connection.dispatchMouseEvent({ type: "mousePressed", x, y, button: "left", clickCount: 2 });
+    await this.connection.dispatchMouseEvent({ type: "mouseReleased", x, y, button: "left", clickCount: 2 });
+    return `已双击元素 ${uid}。`;
+  }
+
+  private async contextClick(uid: string): Promise<string> {
+    const objectId = await this.getObjectIdFromUid(uid);
+    const backendNodeId = this.snapshot.getBackendNodeId(uid);
+    const { x, y } = await this.getElementCenter(objectId, backendNodeId);
+    await this.connection.dispatchMouseEvent({ type: "mouseMoved", x, y });
+    await this.connection.dispatchMouseEvent({ type: "mousePressed", x, y, button: "right", clickCount: 1 });
+    await this.connection.dispatchMouseEvent({ type: "mouseReleased", x, y, button: "right", clickCount: 1 });
+    return `已右键元素 ${uid}。`;
+  }
+
+  private async drag(args: Record<string, unknown>): Promise<string> {
+    const sourceUid = String(args.sourceUid);
+    const source = await this.getElementPoint(sourceUid);
+    let target: { x: number; y: number };
+    let resultText: string;
+
+    if (typeof args.targetUid === "string" && args.targetUid.trim()) {
+      target = await this.getElementPoint(args.targetUid);
+      resultText = `已将元素 ${sourceUid} 拖拽到元素 ${args.targetUid}。`;
+    } else {
+      const deltaX = Number(args.deltaX);
+      const deltaY = Number(args.deltaY);
+      target = { x: source.x + deltaX, y: source.y + deltaY };
+      resultText = `已将元素 ${sourceUid} 拖拽偏移 x=${deltaX}，y=${deltaY}。`;
+    }
+
+    await this.connection.dispatchMouseEvent({ type: "mouseMoved", x: source.x, y: source.y });
+    await this.connection.dispatchMouseEvent({ type: "mousePressed", x: source.x, y: source.y, button: "left", clickCount: 1 });
+    await this.connection.dispatchMouseEvent({
+      type: "mouseMoved",
+      x: (source.x + target.x) / 2,
+      y: (source.y + target.y) / 2,
+      button: "left",
+      buttons: 1,
+    });
+    await this.connection.dispatchMouseEvent({ type: "mouseMoved", x: target.x, y: target.y, button: "left", buttons: 1 });
+    await this.connection.dispatchMouseEvent({ type: "mouseReleased", x: target.x, y: target.y, button: "left", clickCount: 1 });
+    return resultText;
   }
 
   private async fill(uid: string, value: string): Promise<string> {
@@ -242,6 +330,78 @@ export class BrowserControlActionExecutor {
     throw new Error(`等待页面文本超时：${targets.join("、")}。`);
   }
 
+  private async waitForState(state: string, value: unknown, uid: unknown, timeout: unknown): Promise<string> {
+    const normalizedState = state as WaitForStateName;
+    const timeoutMs = normalizeTimeout(timeout);
+    if (normalizedState === "network_idle") {
+      if (!this.options.waitForNetworkIdle) {
+        throw new Error("Network 采集未开启，无法等待 Network 空闲。");
+      }
+      const result = await this.options.waitForNetworkIdle({ timeoutMs });
+      if (result.ok) {
+        return "已等待到页面状态：network_idle。";
+      }
+      throw new Error(result.message);
+    }
+    if (normalizedState === "element_visible" || normalizedState === "element_hidden") {
+      const normalizedUid = String(uid);
+      const objectId = await this.getObjectIdFromUid(normalizedUid);
+      const response = await this.connection.callFunctionOn({
+        objectId,
+        functionDeclaration: createWaitForElementStateFunctionDeclaration(),
+        arguments: [{ value: normalizedState }, { value: timeoutMs }],
+        returnByValue: true,
+        awaitPromise: true,
+      });
+      const result = normalizeWaitForStateResult(getResultValue(response));
+      if (result.matched) {
+        return `已等待到页面状态：${normalizedState}=${normalizedUid}。`;
+      }
+      throw new Error(`等待页面状态超时：${normalizedState}=${normalizedUid}。`);
+    }
+
+    const targetValue = String(value);
+    const response = await this.connection.evaluate({
+      expression: createWaitForPageStateExpression(normalizedState, targetValue, timeoutMs),
+      awaitPromise: true,
+      returnByValue: true,
+    });
+    const result = normalizeWaitForStateResult(getResultValue(response));
+    if (result.matched) {
+      return `已等待到页面状态：${normalizedState}=${targetValue}。`;
+    }
+    throw new Error(`等待页面状态超时：${normalizedState}=${targetValue}。`);
+  }
+
+  private async scroll(direction: string, amount: unknown, uid?: string): Promise<string> {
+    const normalizedDirection = direction as ScrollDirection;
+    const normalizedAmount = normalizeScrollAmount(amount);
+    const normalizedUid = uid?.trim();
+    if (normalizedUid) {
+      const objectId = await this.getObjectIdFromUid(normalizedUid);
+      const response = await this.connection.callFunctionOn({
+        objectId,
+        functionDeclaration: createElementScrollFunctionDeclaration(),
+        arguments: [{ value: normalizedDirection }, { value: normalizedAmount }],
+        returnByValue: true,
+      });
+      if (getResultValue(response) !== true) {
+        throw new Error(`元素 ${normalizedUid} 不支持滚动。`);
+      }
+      return formatElementScrollResult(normalizedUid, normalizedDirection, normalizedAmount);
+    }
+
+    const response = await this.connection.evaluate({
+      expression: createViewportScrollExpression(normalizedDirection, normalizedAmount),
+      awaitPromise: true,
+      returnByValue: true,
+    });
+    if (getResultValue(response) !== true) {
+      throw new Error("页面视口滚动失败，请确认当前页面仍可访问后重试。");
+    }
+    return formatViewportScrollResult(normalizedDirection, normalizedAmount);
+  }
+
   private async getObjectIdFromUid(uid: string): Promise<string> {
     const backendNodeId = this.snapshot.getBackendNodeId(uid);
     const response = await this.connection.resolveNodeByBackendId(backendNodeId);
@@ -265,6 +425,12 @@ export class BrowserControlActionExecutor {
       x: (model.content[0] + model.content[4]) / 2,
       y: (model.content[1] + model.content[5]) / 2,
     };
+  }
+
+  private async getElementPoint(uid: string): Promise<{ x: number; y: number }> {
+    const objectId = await this.getObjectIdFromUid(uid);
+    const backendNodeId = this.snapshot.getBackendNodeId(uid);
+    return this.getElementCenter(objectId, backendNodeId);
   }
 
   private async getElementInfo(objectId: string): Promise<ElementInfo> {
@@ -409,14 +575,26 @@ function validateArguments(toolCall: ModelToolCall): { ok: true } | { ok: false;
     fill: ["uid", "value", "includeSnapshot"],
     press_key: ["key", "includeSnapshot"],
     wait_for: ["text", "timeout"],
+    wait_for_state: ["state", "value", "uid", "timeout", "includeSnapshot"],
+    scroll: ["direction", "amount", "uid", "includeSnapshot"],
+    hover: ["uid", "includeSnapshot"],
+    double_click: ["uid", "includeSnapshot"],
+    context_click: ["uid", "includeSnapshot"],
+    drag: ["sourceUid", "targetUid", "deltaX", "deltaY", "includeSnapshot"],
   };
   const allowedKeys = allowedKeysByName[toolCall.name as BrowserControlActionName] ?? [];
   const extraKeys = Object.keys(args).filter((key) => !allowedKeys.includes(key));
   if (extraKeys.length > 0) {
-    return { ok: false, message: `浏览器操作工具 ${toolCall.name} 不接受参数：${extraKeys.join("、")}。` };
+    if (toolCall.name === "wait_for_state") {
+      return { ok: false, message: `浏览器状态等待工具不接受参数：${extraKeys.join("、")}。` };
+    }
+    if (toolCall.name === "drag") {
+      return { ok: false, message: `浏览器拖拽工具不接受参数：${extraKeys.join("、")}。` };
+    }
+    return { ok: false, message: toolCall.name === "scroll" ? `浏览器滚动工具不接受参数：${extraKeys.join("、")}。` : `浏览器操作工具 ${toolCall.name} 不接受参数：${extraKeys.join("、")}。` };
   }
 
-  if ((toolCall.name === "click" || toolCall.name === "fill") && (typeof args.uid !== "string" || !args.uid.trim())) {
+  if ((toolCall.name === "click" || toolCall.name === "fill" || toolCall.name === "hover" || toolCall.name === "double_click" || toolCall.name === "context_click") && (typeof args.uid !== "string" || !args.uid.trim())) {
     return { ok: false, message: "浏览器操作需要非空 UID。" };
   }
   if (toolCall.name === "fill" && typeof args.value !== "string") {
@@ -425,7 +603,7 @@ function validateArguments(toolCall: ModelToolCall): { ok: true } | { ok: false;
   if (toolCall.name === "press_key" && (typeof args.key !== "string" || !args.key.trim())) {
     return { ok: false, message: "press_key 的 key 必须是非空字符串。" };
   }
-  if ((toolCall.name === "click" || toolCall.name === "fill" || toolCall.name === "press_key") &&
+  if ((toolCall.name === "click" || toolCall.name === "fill" || toolCall.name === "press_key" || toolCall.name === "hover" || toolCall.name === "double_click" || toolCall.name === "context_click") &&
     args.includeSnapshot !== undefined &&
     typeof args.includeSnapshot !== "boolean") {
     return { ok: false, message: "includeSnapshot 必须是布尔值。" };
@@ -436,8 +614,78 @@ function validateArguments(toolCall: ModelToolCall): { ok: true } | { ok: false;
   if (toolCall.name === "wait_for" && args.timeout !== undefined && typeof args.timeout !== "number") {
     return { ok: false, message: "wait_for 的 timeout 必须是数字。" };
   }
+  if (toolCall.name === "wait_for_state") {
+    if (!isWaitForStateName(args.state)) {
+      return { ok: false, message: "wait_for_state 的 state 必须是 url_contains、ready_state、element_visible、element_hidden 或 network_idle。" };
+    }
+    if ((args.state === "url_contains" || args.state === "ready_state") && (typeof args.value !== "string" || !args.value.trim())) {
+      return { ok: false, message: "wait_for_state 等待 URL 或 readyState 时必须提供非空 value。" };
+    }
+    if ((args.state === "element_visible" || args.state === "element_hidden") && (typeof args.uid !== "string" || !args.uid.trim())) {
+      return { ok: false, message: "wait_for_state 等待元素状态时必须提供 take_snapshot 返回的非空 UID。" };
+    }
+    if (args.timeout !== undefined && (typeof args.timeout !== "number" || !Number.isFinite(args.timeout) || args.timeout < 1 || args.timeout > WAIT_FOR_MAX_TIMEOUT_MS)) {
+      return { ok: false, message: "wait_for_state 的 timeout 必须是 1 到 30000 的数字。" };
+    }
+    if (args.includeSnapshot !== undefined && typeof args.includeSnapshot !== "boolean") {
+      return { ok: false, message: "includeSnapshot 必须是布尔值。" };
+    }
+  }
+  if (toolCall.name === "drag") {
+    if (typeof args.sourceUid !== "string" || !args.sourceUid.trim()) {
+      return { ok: false, message: "drag 需要非空 sourceUid。" };
+    }
+    const hasTargetUid = typeof args.targetUid === "string" && args.targetUid.trim();
+    const hasDeltaX = args.deltaX !== undefined;
+    const hasDeltaY = args.deltaY !== undefined;
+    const hasAnyDelta = hasDeltaX || hasDeltaY;
+    if (!hasTargetUid && !hasAnyDelta) {
+      return { ok: false, message: "drag 必须提供 targetUid，或同时提供 deltaX 和 deltaY。" };
+    }
+    if (hasTargetUid && hasAnyDelta) {
+      return { ok: false, message: "drag 不能同时提供 targetUid 和 deltaX/deltaY。" };
+    }
+    if (!hasTargetUid && (!hasDeltaX || !hasDeltaY)) {
+      return { ok: false, message: "drag 必须提供 targetUid，或同时提供 deltaX 和 deltaY。" };
+    }
+    if (args.targetUid !== undefined && (typeof args.targetUid !== "string" || !args.targetUid.trim())) {
+      return { ok: false, message: "drag 的 targetUid 必须是 take_snapshot 返回的非空 UID。" };
+    }
+    if (hasAnyDelta && (!isValidDragDelta(args.deltaX) || !isValidDragDelta(args.deltaY))) {
+      return { ok: false, message: "drag 的 deltaX 和 deltaY 必须是 -2000 到 2000 的整数。" };
+    }
+    if (args.includeSnapshot !== undefined && typeof args.includeSnapshot !== "boolean") {
+      return { ok: false, message: "includeSnapshot 必须是布尔值。" };
+    }
+  }
+  if (toolCall.name === "scroll") {
+    if (!isScrollDirection(args.direction)) {
+      return { ok: false, message: "scroll 的 direction 必须是 up、down、left、right、top 或 bottom。" };
+    }
+    if (args.amount !== undefined && (typeof args.amount !== "number" || !Number.isInteger(args.amount) || args.amount < 1 || args.amount > SCROLL_MAX_AMOUNT)) {
+      return { ok: false, message: "scroll 的 amount 必须是 1 到 5000 的整数。" };
+    }
+    if (args.uid !== undefined && (typeof args.uid !== "string" || !args.uid.trim())) {
+      return { ok: false, message: "scroll 的 uid 必须是 take_snapshot 返回的非空 UID。" };
+    }
+    if (args.includeSnapshot !== undefined && typeof args.includeSnapshot !== "boolean") {
+      return { ok: false, message: "includeSnapshot 必须是布尔值。" };
+    }
+  }
 
   return { ok: true };
+}
+
+function isScrollDirection(value: unknown): value is ScrollDirection {
+  return value === "up" || value === "down" || value === "left" || value === "right" || value === "top" || value === "bottom";
+}
+
+function isWaitForStateName(value: unknown): value is WaitForStateName {
+  return value === "url_contains" || value === "ready_state" || value === "element_visible" || value === "element_hidden" || value === "network_idle";
+}
+
+function isValidDragDelta(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= -DRAG_MAX_DELTA && value <= DRAG_MAX_DELTA;
 }
 
 function normalizeActionError(error: unknown, includeSnapshot: boolean): string {
@@ -471,6 +719,89 @@ function normalizeTimeout(timeout: unknown): number {
   }
 
   return Math.min(Math.floor(timeout), WAIT_FOR_MAX_TIMEOUT_MS);
+}
+
+function normalizeScrollAmount(value: unknown): number {
+  return typeof value === "number" && Number.isInteger(value) ? value : SCROLL_DEFAULT_AMOUNT;
+}
+
+function createViewportScrollExpression(direction: ScrollDirection, amount: number): string {
+  const payload = JSON.stringify({ direction, amount });
+  return `(() => {
+    const { direction, amount } = ${payload};
+    if (direction === "top") {
+      window.scrollTo({ top: 0, left: window.scrollX, behavior: "instant" });
+      return true;
+    }
+    if (direction === "bottom") {
+      window.scrollTo({ top: document.documentElement.scrollHeight, left: window.scrollX, behavior: "instant" });
+      return true;
+    }
+    const delta = {
+      up: [0, -amount],
+      down: [0, amount],
+      left: [-amount, 0],
+      right: [amount, 0],
+    }[direction];
+    if (!delta) return false;
+    window.scrollBy({ left: delta[0], top: delta[1], behavior: "instant" });
+    return true;
+  })()`;
+}
+
+function createElementScrollFunctionDeclaration(): string {
+  return `function(direction, amount) {
+    if (!this || typeof this.scrollBy !== "function") return false;
+    if (direction === "top") {
+      this.scrollTo({ top: 0, left: this.scrollLeft || 0, behavior: "instant" });
+      return true;
+    }
+    if (direction === "bottom") {
+      this.scrollTo({ top: this.scrollHeight || 0, left: this.scrollLeft || 0, behavior: "instant" });
+      return true;
+    }
+    const delta = {
+      up: [0, -amount],
+      down: [0, amount],
+      left: [-amount, 0],
+      right: [amount, 0],
+    }[direction];
+    if (!delta) return false;
+    this.scrollBy({ left: delta[0], top: delta[1], behavior: "instant" });
+    return true;
+  }`;
+}
+
+function formatViewportScrollResult(direction: ScrollDirection, amount: number): string {
+  if (direction === "top") {
+    return "已将当前视口滚动到顶部。";
+  }
+  if (direction === "bottom") {
+    return "已将当前视口滚动到底部。";
+  }
+  return `已向${formatScrollDirection(direction)}滚动当前视口 ${amount} 像素。`;
+}
+
+function formatElementScrollResult(uid: string, direction: ScrollDirection, amount: number): string {
+  if (direction === "top") {
+    return `已将元素 ${uid} 滚动到顶部。`;
+  }
+  if (direction === "bottom") {
+    return `已将元素 ${uid} 滚动到底部。`;
+  }
+  return `已向${formatScrollDirection(direction)}滚动元素 ${uid} ${amount} 像素。`;
+}
+
+function formatScrollDirection(direction: ScrollDirection): string {
+  const labels: Record<ScrollDirection, string> = {
+    up: "上",
+    down: "下",
+    left: "左",
+    right: "右",
+    top: "顶部",
+    bottom: "底部",
+  };
+  return labels[direction];
 }
 
 function normalizeWaitForTargets(text: unknown): string[] {
@@ -516,6 +847,88 @@ function createWaitForExpression(targets: string[], timeoutMs: number): string {
       });
     })()
   `;
+}
+
+function createWaitForPageStateExpression(state: WaitForStateName, value: string, timeoutMs: number): string {
+  // state、value 和 timeoutMs 只能序列化为数据；等待逻辑保持固定模板，避免把模型参数变成页面脚本。
+  return `
+    (async function waitForBrowserState() {
+      const state = ${JSON.stringify(state)};
+      const value = ${JSON.stringify(value)};
+      const timeoutMs = ${JSON.stringify(timeoutMs)};
+      const readCurrentValue = () => {
+        if (state === "url_contains") return window.location.href || "";
+        if (state === "ready_state") return document.readyState || "";
+        return "";
+      };
+      const isMatched = () => {
+        const current = readCurrentValue();
+        if (state === "url_contains") return current.includes(value);
+        if (state === "ready_state") return current === value;
+        return false;
+      };
+      if (isMatched()) return { matched: true, state, value: readCurrentValue() };
+      return await new Promise((resolve) => {
+        const startedAt = Date.now();
+        const timer = setInterval(() => {
+          if (isMatched()) {
+            clearInterval(timer);
+            resolve({ matched: true, state, value: readCurrentValue() });
+            return;
+          }
+          if (Date.now() - startedAt >= timeoutMs) {
+            clearInterval(timer);
+            resolve({ matched: false, state, value: readCurrentValue() });
+          }
+        }, 100);
+      });
+    })()
+  `;
+}
+
+function createWaitForElementStateFunctionDeclaration(): string {
+  return `async function waitForBrowserElementState(state, timeoutMs) {
+    const isVisible = () => {
+      if (!this || !this.isConnected) return false;
+      const style = window.getComputedStyle(this);
+      if (style.visibility === "hidden" || style.display === "none" || Number(style.opacity) === 0) return false;
+      const rect = this.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    };
+    const isMatched = () => state === "element_visible" ? isVisible() : !isVisible();
+    if (isMatched()) return { matched: true, state, value: state === "element_visible" ? "visible" : "hidden" };
+    return await new Promise((resolve) => {
+      const startedAt = Date.now();
+      let observer = null;
+      const finish = (matched) => {
+        if (observer) observer.disconnect();
+        resolve({ matched, state, value: isVisible() ? "visible" : "hidden" });
+      };
+      const check = () => {
+        if (isMatched()) finish(true);
+        else if (Date.now() - startedAt >= timeoutMs) finish(false);
+      };
+      observer = new MutationObserver(check);
+      observer.observe(document.documentElement, { attributes: true, childList: true, subtree: true });
+      const timer = setInterval(() => {
+        if (isMatched()) {
+          clearInterval(timer);
+          finish(true);
+          return;
+        }
+        if (Date.now() - startedAt >= timeoutMs) {
+          clearInterval(timer);
+          finish(false);
+        }
+      }, 100);
+    });
+  }`;
+}
+
+function normalizeWaitForStateResult(value: unknown): { matched: boolean } {
+  return value && typeof value === "object" && "matched" in value && value.matched === true
+    ? { matched: true }
+    : { matched: false };
 }
 
 function parseKeyTokens(key: string): string[] {
