@@ -8,6 +8,7 @@ import {
   getPromptTemplates,
   getProviderModels,
   saveAppSetting,
+  saveChatFolder,
   saveChatSession,
   saveModelProvider,
   savePromptTemplate,
@@ -18,7 +19,7 @@ import {
   SYNC_S3_SECRET_KEY,
   SYNC_WEBDAV_PASSWORD_KEY,
 } from "../../../src/shared/sync/settings";
-import type { ChatMessage, ChatPromptInvocation, ModelProvider, NetworkRequestDetail, PromptTemplate, ProviderModel } from "../../../src/shared/types";
+import type { ChatFolder, ChatMessage, ChatPromptInvocation, ModelProvider, NetworkRequestDetail, PromptTemplate, ProviderModel } from "../../../src/shared/types";
 
 const repositoryMockState = vi.hoisted(() => ({
   failSaveChatSession: false,
@@ -535,6 +536,7 @@ describe("appStore", () => {
 
     expect(useAppStore.getState().syncSecrets.encryptionSecret).toBe("new-secret");
     expect(sendMessage).toHaveBeenCalledWith({ type: "sync.backupNow" }, expect.any(Function));
+    expect(useAppStore.getState().syncOperation).toEqual({ loading: false, message: "备份完成" });
   });
 
   it("可以加载远程备份列表并按指定备份恢复", async () => {
@@ -575,6 +577,7 @@ describe("appStore", () => {
     ]);
     expect(sendMessage).toHaveBeenCalledWith({ type: "sync.restoreNow", backupId: "browserAiAssistantBackup:home:1" }, expect.any(Function));
     expect(useAppStore.getState().syncSecrets.encryptionSecret).toBe("local-secret");
+    expect(useAppStore.getState().syncOperation).toEqual({ loading: false, message: "恢复完成" });
   });
 
   it("恢复备份后重新加载本地同步密钥和远程凭据", async () => {
@@ -3207,6 +3210,53 @@ describe("appStore", () => {
         updatedAt: expect.any(Number),
       },
     ]);
+  });
+
+  it("只能删除没有未归档会话的聊天文件夹", async () => {
+    const emptyFolder: ChatFolder = {
+      id: "folder-empty-delete-store",
+      name: "空文件夹",
+      sortOrder: 1,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const nonEmptyFolder: ChatFolder = {
+      id: "folder-non-empty-delete-store",
+      name: "非空文件夹",
+      sortOrder: 2,
+      createdAt: 2,
+      updatedAt: 2,
+    };
+    await saveChatFolder(emptyFolder);
+    await saveChatFolder(nonEmptyFolder);
+    await saveChatSession({
+      id: "session-in-non-empty-folder",
+      title: "文件夹内会话",
+      archived: false,
+      folderId: nonEmptyFolder.id,
+      sortOrder: 3,
+      createdAt: 3,
+      updatedAt: 3,
+      messages: [],
+    });
+    await useAppStore.getState().loadChatData();
+
+    await expect(useAppStore.getState().deleteEmptyChatFolder(nonEmptyFolder.id)).resolves.toBe(false);
+
+    expect(useAppStore.getState().chatFolders.some((folder) => folder.id === nonEmptyFolder.id)).toBe(true);
+    expect(useAppStore.getState().failure?.message).toBe("只能删除空文件夹");
+
+    useAppStore.setState({ failure: { message: "历史错误" } });
+    await expect(useAppStore.getState().deleteEmptyChatFolder(emptyFolder.id)).resolves.toBe(true);
+
+    expect(useAppStore.getState().chatFolders.some((folder) => folder.id === emptyFolder.id)).toBe(false);
+    expect(useAppStore.getState().failure).toBeUndefined();
+
+    useAppStore.getState().reset();
+    await useAppStore.getState().loadChatData();
+
+    expect(useAppStore.getState().chatFolders.some((folder) => folder.id === emptyFolder.id)).toBe(false);
+    expect(useAppStore.getState().chatFolders.some((folder) => folder.id === nonEmptyFolder.id)).toBe(true);
   });
 
   it("可以把会话移动到指定文件夹再移回默认文件夹", async () => {

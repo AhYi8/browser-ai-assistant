@@ -265,8 +265,6 @@ export function SyncSettings() {
           </label>
         </div>
       ) : null}
-      {syncOperation.message ? <p className="text-sm text-[var(--color-success)]">{syncOperation.message}</p> : null}
-      {syncOperation.error ? <p className="text-sm text-[var(--color-error)]">{syncOperation.error}</p> : null}
       <div className="flex flex-wrap gap-2">
         <button className="ui-button-secondary" type="button" disabled={!syncSettings.syncEnabled || syncOperation.loading} onClick={() => void backupNow()}>
           手动备份

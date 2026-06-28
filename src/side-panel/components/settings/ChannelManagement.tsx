@@ -190,8 +190,6 @@ export function ChannelManagement() {
             </button>
           ) : null}
         </div>
-        {channelOperation?.message ? <p className="text-sm text-[var(--color-muted)]">{channelOperation.message}</p> : null}
-        {channelOperation?.error ? <p className="text-sm text-[var(--color-error)]">{channelOperation.error}</p> : null}
         <label className="grid gap-1 text-sm">
           渠道名称
           <input

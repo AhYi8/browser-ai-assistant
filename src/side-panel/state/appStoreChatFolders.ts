@@ -1,4 +1,4 @@
-import { saveChatFolder, saveChatSession } from "../../shared/storage/repositories";
+import { deleteChatFolder, saveChatFolder, saveChatSession } from "../../shared/storage/repositories";
 import type { ChatFolder } from "../../shared/types";
 import type { StoreGetter, StoreSetter } from "./appStore";
 
@@ -53,6 +53,38 @@ export async function renameChatFolderAction(input: {
     });
   } catch {
     input.set({ failure: { message: "文件夹保存失败，请重试" } });
+  }
+}
+
+export async function deleteEmptyChatFolderAction(input: {
+  folderId: string;
+  get: StoreGetter;
+  set: StoreSetter;
+}): Promise<boolean> {
+  const currentState = input.get();
+  if (!currentState.chatFolders.some((item) => item.id === input.folderId)) {
+    return false;
+  }
+
+  if (currentState.chatSessions.some((session) => !session.archived && session.folderId === input.folderId)) {
+    input.set({ failure: { message: "只能删除空文件夹" } });
+    return false;
+  }
+
+  try {
+    await deleteChatFolder(input.folderId);
+    input.set((state) => ({
+      chatFolders: state.chatFolders.filter((folder) => folder.id !== input.folderId),
+      // 底层删除会清理历史脏数据中的 folderId，这里同步内存态避免归档会话保留失效引用。
+      chatSessions: state.chatSessions.map((session) =>
+        session.folderId === input.folderId ? { ...session, folderId: undefined } : session,
+      ),
+      failure: undefined,
+    }));
+    return true;
+  } catch {
+    input.set({ failure: { message: "文件夹删除失败，请重试" } });
+    return false;
   }
 }
 

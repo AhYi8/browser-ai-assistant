@@ -69,6 +69,7 @@ import {
 import type { BrowserAutomationMode } from "../../shared/toolAuthorization";
 import {
   createChatFolderAction,
+  deleteEmptyChatFolderAction,
   moveChatSessionToFolderAction,
   renameChatFolderAction,
 } from "./appStoreChatFolders";
@@ -137,6 +138,7 @@ import {
   updateWebSearchSettingsAction,
 } from "./appStoreSyncActions";
 import { generateTitleForSession, generateTitleFromSavedPrivateSession, hasAvailableTitleModel } from "./appStoreTitleGeneration";
+import { createAppNotification, type AppNotification, type AppNotificationDraft } from "./appNotifications";
 import { sendRuntimeMessage } from "./runtimeMessage";
 
 function createSessionId(timestamp = Date.now()): string {
@@ -241,6 +243,12 @@ export interface AppState {
   remoteBackups: SyncRemoteBackupMeta[];
   syncOperation: SyncOperationState;
   failure?: RequestFailure;
+  notifications: AppNotification[];
+  addNotification: (notification: AppNotificationDraft) => string;
+  dismissNotification: (notificationId: string) => void;
+  clearFailure: () => void;
+  clearSyncOperationNotice: () => void;
+  clearChannelOperationNotice: (providerId: string) => void;
   addExampleModel: () => void;
   addProvider: () => ModelProvider;
   updateProvider: (providerId: string, updates: Partial<Pick<ModelProvider, "name" | "endpointType" | "endpointUrl" | "apiKey">>) => void;
@@ -275,6 +283,7 @@ export interface AppState {
   clearPendingDeleteSession: () => void;
   createChatFolder: (name: string) => Promise<ChatFolder>;
   renameChatFolder: (folderId: string, name: string) => Promise<void>;
+  deleteEmptyChatFolder: (folderId: string) => Promise<boolean>;
   moveChatSessionToFolder: (sessionId: string, folderId: string | undefined) => Promise<void>;
   loadExtractionRules: () => Promise<void>;
   saveRuleDraft: (ruleId: string | undefined, draft: Pick<ExtractionRule, "alias" | "urlPattern" | "selectorsText">) => Promise<{ ok: true; rule: ExtractionRule } | { ok: false; message: string }>;
@@ -381,6 +390,38 @@ export const useAppStore = create<AppState>()((set, get) => ({
   remoteBackups: [],
   syncOperation: {
     loading: false,
+  },
+  notifications: [],
+  addNotification: (notification) => {
+    const item = createAppNotification(notification);
+    set((state) => ({ notifications: [item, ...state.notifications].slice(0, 5) }));
+    return item.id;
+  },
+  dismissNotification: (notificationId) => {
+    set((state) => ({ notifications: state.notifications.filter((notification) => notification.id !== notificationId) }));
+  },
+  clearFailure: () => set({ failure: undefined }),
+  clearSyncOperationNotice: () => {
+    set((state) => (
+      state.syncOperation.message || state.syncOperation.error
+        ? { syncOperation: { loading: state.syncOperation.loading } }
+        : {}
+    ));
+  },
+  clearChannelOperationNotice: (providerId) => {
+    set((state) => {
+      const operation = state.channelOperations[providerId];
+      if (!operation?.message && !operation?.error) {
+        return {};
+      }
+
+      return {
+        channelOperations: {
+          ...state.channelOperations,
+          [providerId]: { loading: operation.loading },
+        },
+      };
+    });
   },
   addExampleModel: () =>
     set(() => {
@@ -968,6 +1009,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   clearPendingDeleteSession: () => clearPendingDeleteSessionAction({ set }),
   createChatFolder: (name) => createChatFolderAction({ name, set }),
   renameChatFolder: (folderId, name) => renameChatFolderAction({ folderId, name, get, set }),
+  deleteEmptyChatFolder: (folderId) => deleteEmptyChatFolderAction({ folderId, get, set }),
   moveChatSessionToFolder: (sessionId, folderId) => moveChatSessionToFolderAction({ sessionId, folderId, get, set }),
   loadExtractionRules: () => loadExtractionRulesAction({ set }),
   saveRuleDraft: (ruleId, draft) => saveRuleDraftAction({ ruleId, draft, get }),
@@ -1154,6 +1196,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       },
       remoteBackups: [],
       failure: undefined,
+      notifications: [],
     });
   },
 }));

@@ -86,11 +86,16 @@ export async function backupNowAction(input: { set: StoreSetter }): Promise<void
 export async function loadRemoteBackupsAction(input: { set: StoreSetter }): Promise<void> {
   input.set({ syncOperation: { loading: true } });
   const response = await sendRuntimeMessage<{ ok: boolean; backups?: SyncRemoteBackupMeta[]; message?: string }>({ type: "sync.listRemoteBackups" });
+  const message = response?.ok && !response.backups?.length
+    ? "未找到远程备份"
+    : response?.ok
+      ? undefined
+      : response?.message ?? "远程备份列表读取失败，请重试";
   input.set({
     remoteBackups: response?.ok ? response.backups ?? [] : [],
     syncOperation: response?.ok
-      ? { loading: false, message: response.backups?.length ? undefined : "未找到远程备份" }
-      : { loading: false, error: response?.message ?? "远程备份列表读取失败，请重试" },
+      ? { loading: false, message }
+      : { loading: false, error: message },
   });
 }
 

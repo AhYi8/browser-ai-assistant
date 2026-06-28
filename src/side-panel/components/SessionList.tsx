@@ -26,6 +26,11 @@ interface SessionFolderProps {
   dragOver: boolean;
   onToggle: () => void;
   onStartRenameFolder?: () => void;
+  folderMenuOpen?: boolean;
+  pendingDeleteFolder?: boolean;
+  onToggleFolderMenu?: () => void;
+  onRequestDeleteFolder?: () => void;
+  onConfirmDeleteFolder?: () => void;
   onRenameChange: (value: string) => void;
   onRenameCancel: () => void;
   onRenameSave: () => void;
@@ -79,6 +84,8 @@ export function SessionList({ compact = false }: SessionListProps) {
   const [collapsedFolderIds, setCollapsedFolderIds] = useState<Set<string>>(new Set());
   const [archivedCollapsed, setArchivedCollapsed] = useState(true);
   const [openMenuSessionId, setOpenMenuSessionId] = useState<string>();
+  const [openMenuFolderId, setOpenMenuFolderId] = useState<string>();
+  const [pendingDeleteFolderId, setPendingDeleteFolderId] = useState<string>();
   const [renamingSessionId, setRenamingSessionId] = useState<string>();
   const [renamingSessionValue, setRenamingSessionValue] = useState("");
   const [renamingFolderId, setRenamingFolderId] = useState<string>();
@@ -107,6 +114,7 @@ export function SessionList({ compact = false }: SessionListProps) {
   const clearPendingDeleteSession = useAppStore((state) => state.clearPendingDeleteSession);
   const createChatFolder = useAppStore((state) => state.createChatFolder);
   const renameChatFolder = useAppStore((state) => state.renameChatFolder);
+  const deleteEmptyChatFolder = useAppStore((state) => state.deleteEmptyChatFolder);
   const moveChatSessionToFolder = useAppStore((state) => state.moveChatSessionToFolder);
   const handleSelectChatSession = (sessionId: string) => {
     if (privateModeActive && (privateChatSession?.messages.length ?? 0) > 0) {
@@ -162,10 +170,53 @@ export function SessionList({ compact = false }: SessionListProps) {
     clearPendingDeleteSession();
   };
 
+  const closeFolderMenu = () => {
+    setOpenMenuFolderId(undefined);
+    setPendingDeleteFolderId(undefined);
+  };
+
+  const closeOpenMenus = () => {
+    closeSessionMenu();
+    closeFolderMenu();
+  };
+
+  useEffect(() => {
+    if (!openMenuSessionId && !openMenuFolderId) {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element)) {
+        return;
+      }
+
+      if (target.closest(".session-item-menu-wrap") || target.closest(".session-folder-menu-wrap")) {
+        return;
+      }
+
+      setOpenMenuSessionId(undefined);
+      clearPendingDeleteSession();
+      setOpenMenuFolderId(undefined);
+      setPendingDeleteFolderId(undefined);
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, [clearPendingDeleteSession, openMenuFolderId, openMenuSessionId]);
+
   const toggleSessionMenu = (sessionId: string) => {
     setRenamingSessionId(undefined);
+    closeFolderMenu();
     setOpenMenuSessionId((current) => (current === sessionId ? undefined : sessionId));
     clearPendingDeleteSession();
+  };
+
+  const toggleFolderMenu = (folderId: string) => {
+    setRenamingFolderId(undefined);
+    closeSessionMenu();
+    setOpenMenuFolderId((current) => (current === folderId ? undefined : folderId));
+    setPendingDeleteFolderId(undefined);
   };
 
   const startRenameSession = (sessionId: string) => {
@@ -174,7 +225,7 @@ export function SessionList({ compact = false }: SessionListProps) {
       return;
     }
 
-    closeSessionMenu();
+    closeOpenMenus();
     handledSessionRenameId.current = undefined;
     setRenamingSessionId(sessionId);
     setRenamingSessionValue(session.title);
@@ -199,7 +250,7 @@ export function SessionList({ compact = false }: SessionListProps) {
   };
 
   const startRenameFolder = (folder: ChatFolder) => {
-    closeSessionMenu();
+    closeOpenMenus();
     handledFolderRenameId.current = undefined;
     setRenamingFolderId(folder.id);
     setRenamingFolderValue(folder.name);
@@ -269,9 +320,22 @@ export function SessionList({ compact = false }: SessionListProps) {
   };
 
   const handleCreateFolder = async () => {
-    closeSessionMenu();
+    closeOpenMenus();
     const folder = await createChatFolder("新文件夹");
     startRenameFolder(folder);
+  };
+
+  const requestDeleteFolder = (folderId: string) => {
+    setPendingDeleteFolderId(folderId);
+  };
+
+  const confirmDeleteFolder = async (folderId: string) => {
+    const deleted = await deleteEmptyChatFolder(folderId);
+    if (deleted) {
+      closeFolderMenu();
+    } else {
+      setPendingDeleteFolderId(undefined);
+    }
   };
 
   const handleDragSessionStart = (sessionId: string, event: DragEvent<HTMLElement>) => {
@@ -358,7 +422,12 @@ export function SessionList({ compact = false }: SessionListProps) {
                 renamingValue={renamingFolderValue}
                 dragOver={dragOverFolderId === folder.id}
                 onToggle={() => toggleFolder(folder.id)}
+                folderMenuOpen={openMenuFolderId === folder.id}
+                pendingDeleteFolder={pendingDeleteFolderId === folder.id}
+                onToggleFolderMenu={() => toggleFolderMenu(folder.id)}
                 onStartRenameFolder={() => startRenameFolder(folder)}
+                onRequestDeleteFolder={() => requestDeleteFolder(folder.id)}
+                onConfirmDeleteFolder={() => void confirmDeleteFolder(folder.id)}
                 onRenameChange={setRenamingFolderValue}
                 onRenameCancel={cancelRenameFolderByKey}
                 onRenameSave={saveRenameFolderOnBlur}
@@ -472,6 +541,11 @@ function SessionFolder({
   dragOver,
   onToggle,
   onStartRenameFolder,
+  folderMenuOpen = false,
+  pendingDeleteFolder = false,
+  onToggleFolderMenu,
+  onRequestDeleteFolder,
+  onConfirmDeleteFolder,
   onRenameChange,
   onRenameCancel,
   onRenameSave,
@@ -535,9 +609,36 @@ function SessionFolder({
             <span className="session-count">{sessions.length}</span>
           </button>
           {onStartRenameFolder ? (
-            <button className="session-folder-rename-button" type="button" aria-label={`重命名文件夹 ${title}`} onClick={onStartRenameFolder}>
-              ⋯
-            </button>
+            <div className="session-folder-menu-wrap" onClick={(event) => event.stopPropagation()}>
+              <button
+                className="session-folder-rename-button"
+                type="button"
+                aria-label={`文件夹操作 ${title}`}
+                aria-haspopup="menu"
+                aria-expanded={folderMenuOpen}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onToggleFolderMenu?.();
+                }}
+              >
+                ⋯
+              </button>
+              {folderMenuOpen ? (
+                <div className="session-menu" role="menu">
+                  <button className="session-menu-item" type="button" role="menuitem" onClick={onStartRenameFolder}>
+                    重命名
+                  </button>
+                  <button
+                    className={pendingDeleteFolder ? "session-menu-item session-menu-delete-confirm" : "session-menu-item"}
+                    type="button"
+                    role="menuitem"
+                    onClick={() => (pendingDeleteFolder ? onConfirmDeleteFolder?.() : onRequestDeleteFolder?.())}
+                  >
+                    {pendingDeleteFolder ? "确认删除" : "删除"}
+                  </button>
+                </div>
+              ) : null}
+            </div>
           ) : null}
         </div>
       )}

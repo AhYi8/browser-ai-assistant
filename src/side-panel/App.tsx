@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { ChatPanel } from "./components/ChatPanel";
+import { NotificationHost } from "./components/NotificationHost";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { SessionList } from "./components/SessionList";
 import { useAppStore } from "./state/appStore";
@@ -104,6 +105,7 @@ export function App() {
           </>
         )}
       </section>
+      <NotificationHost />
     </main>
   );
 }

@@ -16,12 +16,11 @@ export function ChatPanel({ historyPanelOpen, onToggleHistoryPanel }: ChatPanelP
   const [historyOpen, setHistoryOpen] = useState(false);
   const [chatPreferencesOpen, setChatPreferencesOpen] = useState(false);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
-  const [exportError, setExportError] = useState<string | undefined>();
   const exportMenuRef = useRef<HTMLDivElement>(null);
   const providers = useAppStore((state) => state.providers);
   const models = useAppStore((state) => state.models);
   const selectedModelId = useAppStore((state) => state.selectedModelId);
-  const failure = useAppStore((state) => state.failure);
+  const addNotification = useAppStore((state) => state.addNotification);
   const chatRetryProgressByMessageId = useAppStore((state) => state.chatRetryProgressByMessageId);
   const regenerateMessage = useAppStore((state) => state.regenerateMessage);
   const editAndRegenerateUserMessage = useAppStore((state) => state.editAndRegenerateUserMessage);
@@ -73,21 +72,23 @@ export function ChatPanel({ historyPanelOpen, onToggleHistoryPanel }: ChatPanelP
     }
 
     setExportMenuOpen(false);
-    setExportError(undefined);
     try {
       if (format === "word") {
         await downloadChatSessionWord(activeSession);
+        addNotification({ type: "success", title: "导出完成", message: "Word 文件已开始下载" });
         return;
       }
 
       if (format === "pdf") {
         await downloadChatSessionPdf(activeSession);
+        addNotification({ type: "success", title: "导出完成", message: "PDF 打印窗口已打开" });
         return;
       }
 
       downloadChatSessionMarkdown(activeSession);
+      addNotification({ type: "success", title: "导出完成", message: "Markdown 文件已开始下载" });
     } catch (error: unknown) {
-      setExportError(error instanceof Error ? error.message : "导出失败，请重试");
+      addNotification({ type: "error", title: "导出失败", message: error instanceof Error ? error.message : "导出失败，请重试" });
     }
   };
 
@@ -158,19 +159,6 @@ export function ChatPanel({ historyPanelOpen, onToggleHistoryPanel }: ChatPanelP
         regenerating={sending}
       />
       {providers.length === 0 || models.length === 0 ? <p className="chat-warning">请先配置 API Key 后再开始对话</p> : null}
-      {failure ? (
-        <div className="chat-failure" role="alert">
-          <p>{failure.message}</p>
-        </div>
-      ) : null}
-      {exportError ? (
-        <div className="chat-failure" role="status">
-          <p>{exportError}</p>
-          <button className="ui-button-secondary" type="button" aria-label="关闭导出错误提示" onClick={() => setExportError(undefined)}>
-            关闭
-          </button>
-        </div>
-      ) : null}
       <ChatComposer canSend={canSend} matchedRuleLabel={matchedRuleLabel} />
       <SessionHistoryDialog open={historyOpen} onOpenChange={setHistoryOpen} />
       <ChatPreferenceDrawer open={chatPreferencesOpen} onOpenChange={setChatPreferencesOpen} />

@@ -856,11 +856,30 @@ describe("App", () => {
   });
 
   it("聊天区提供历史抽屉和当前聊天设置抽屉入口", async () => {
+    const styles = readFileSync(resolve(process.cwd(), "src/side-panel/styles.css"), "utf8");
+
     render(<App />);
 
+    await userEvent.click(screen.getByRole("button", { name: "历史" }));
+
+    expect(screen.getByRole("dialog", { name: "历史记录" })).toHaveClass("history-drawer");
+    expect(styles).toMatch(/\.drawer-panel\s*\{[^}]*right-0/s);
+    expect(styles).toMatch(/\.history-drawer\s*\{[^}]*left:\s*0;/s);
+    expect(styles).toMatch(/\.history-drawer\s*\{[^}]*right:\s*auto;/s);
+    expect(styles).toMatch(/\.history-drawer\s*\{[^}]*border-right:\s*1px solid var\(--color-hairline\);/s);
+    expect(styles).toMatch(/\.history-drawer\[data-state="open"\]\s*\{[^}]*animation:\s*history-drawer-fade-in/s);
+    expect(styles).toMatch(/\.history-drawer\[data-state="closed"\]\s*\{[^}]*animation:\s*history-drawer-fade-out/s);
+    expect(styles).toContain("@keyframes dialog-overlay-fade-in");
+    expect(styles).toContain("@keyframes dialog-overlay-fade-out");
+    expect(styles).toContain("@keyframes history-drawer-fade-in");
+    expect(styles).toContain("@keyframes history-drawer-fade-out");
+    expect(styles).toMatch(/@media \(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*\.history-drawer\[data-state\][\s\S]*animation:\s*none;/s);
+
+    await userEvent.click(screen.getByRole("button", { name: "关闭历史记录" }));
     await userEvent.click(screen.getByRole("button", { name: "打开当前聊天设置" }));
 
     expect(screen.getByRole("dialog", { name: "当前聊天设置" })).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "当前聊天设置" })).not.toHaveClass("history-drawer");
     expect(screen.getByRole("textbox", { name: "当前聊天系统提示词" })).toBeInTheDocument();
     expect(screen.getByRole("spinbutton", { name: "当前聊天 temperature" })).toHaveClass("chat-preference-number-input");
     expect(screen.getByRole("spinbutton", { name: "当前聊天 top_k" }).closest("label")).toHaveClass("chat-preference-field");
@@ -1111,7 +1130,7 @@ describe("App", () => {
     expect(printMock.document.write).toHaveBeenCalledWith(expect.stringContaining("<pre><code>导出内容</code></pre>"));
   });
 
-  it("导出失败时显示错误提示", async () => {
+  it("导出失败时显示右上角通知且可手动渐出关闭", async () => {
     const user = userEvent.setup();
     vi.spyOn(window, "open").mockReturnValue(null);
     await saveChatSession(
@@ -1134,11 +1153,22 @@ describe("App", () => {
     await user.click(await screen.findByRole("button", { name: "导出当前聊天" }));
     await user.click(screen.getByRole("menuitem", { name: "PDF" }));
 
-    expect(await screen.findByText("无法打开打印窗口，请允许弹窗后重试")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "关闭导出错误提示" })).toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent("无法打开打印窗口，请允许弹窗后重试");
+    expect(document.querySelector(".chat-failure")).not.toBeInTheDocument();
+
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole("button", { name: "关闭通知：导出失败" }));
+
+    expect(screen.getByText("无法打开打印窗口，请允许弹窗后重试").closest(".notification")).toHaveClass("notification-closing");
+    act(() => {
+      vi.advanceTimersByTime(160);
+    });
+
+    expect(screen.queryByText("无法打开打印窗口，请允许弹窗后重试")).not.toBeInTheDocument();
+    vi.useRealTimers();
   });
 
-  it("Word 导出失败时显示具体错误提示", async () => {
+  it("Word 导出失败时通过统一通知显示具体错误提示", async () => {
     const user = userEvent.setup();
     vi.spyOn(URL, "createObjectURL").mockImplementation(() => {
       throw new Error("Word 文件生成失败");
@@ -1163,7 +1193,7 @@ describe("App", () => {
     await user.click(await screen.findByRole("button", { name: "导出当前聊天" }));
     await user.click(screen.getByRole("menuitem", { name: "Word" }));
 
-    expect(await screen.findByText("Word 文件生成失败")).toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Word 文件生成失败");
   });
 
   it("当前聊天系统提示词使用中文输入法组合输入时只保存最终文本", async () => {
@@ -2069,16 +2099,97 @@ describe("App", () => {
     expect(editAndRegenerateUserMessage).not.toHaveBeenCalled();
   });
 
-  it("请求失败时不再展示失败重试占位入口", async () => {
+  it("请求失败时不再展示失败重试占位入口，并改用统一通知", async () => {
     act(() => {
       useAppStore.setState({ failure: { message: "请求失败，请重试" } });
     });
 
     render(<App />);
 
-    expect(screen.getByText("请求失败，请重试")).toBeInTheDocument();
-    expect(screen.getByRole("alert")).toHaveTextContent("请求失败，请重试");
+    expect(await screen.findByRole("alert")).toHaveTextContent("请求失败，请重试");
+    expect(document.querySelector(".chat-failure")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "重试" })).not.toBeInTheDocument();
+  });
+
+  it("统一通知固定在右上角并在五秒后自动关闭", async () => {
+    vi.useFakeTimers();
+    useAppStore.getState().addNotification({ type: "warning", title: "测试通知", message: "五秒后关闭" });
+    const styles = readFileSync(resolve(process.cwd(), "src/side-panel/styles.css"), "utf8");
+
+    render(<App />);
+
+    expect(screen.getByRole("status")).toHaveTextContent("五秒后关闭");
+    expect(styles).toContain(".notification-host");
+    expect(styles).toContain("right-4");
+    expect(styles).toContain("top-4");
+    expect(styles).toContain("@keyframes notification-slide-in");
+    expect(styles).toContain("@keyframes notification-slide-out");
+    expect(styles).toContain(".notification-closing");
+    expect(styles).toContain("transform: translateX(28px);");
+    expect(styles).not.toContain(".chat-failure");
+
+    act(() => {
+      vi.advanceTimersByTime(5000);
+    });
+
+    expect(screen.getByText("五秒后关闭").closest(".notification")).toHaveClass("notification-closing");
+    act(() => {
+      vi.advanceTimersByTime(160);
+    });
+
+    expect(screen.queryByText("五秒后关闭")).not.toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
+  it("相同失败消息连续出现时仍会重复弹出通知", async () => {
+    const user = userEvent.setup();
+    act(() => {
+      useAppStore.setState({ failure: { message: "请求失败，请重试" } });
+    });
+
+    render(<App />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("请求失败，请重试");
+    await user.click(screen.getByRole("button", { name: "关闭通知：操作失败" }));
+
+    act(() => {
+      useAppStore.setState({ failure: { message: "请求失败，请重试" } });
+    });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("请求失败，请重试");
+  });
+
+  it("多条通知并发时已有通知的自动关闭计时不会被新通知重置", async () => {
+    vi.useFakeTimers();
+    useAppStore.getState().addNotification({ type: "info", title: "第一条", message: "第一条消息" });
+
+    render(<App />);
+
+    expect(screen.getByText("第一条消息")).toBeInTheDocument();
+
+    act(() => {
+      vi.advanceTimersByTime(3000);
+    });
+    act(() => {
+      useAppStore.getState().addNotification({ type: "success", title: "第二条", message: "第二条消息" });
+    });
+
+    expect(screen.getByText("第一条消息")).toBeInTheDocument();
+    expect(screen.getByText("第二条消息")).toBeInTheDocument();
+
+    act(() => {
+      vi.advanceTimersByTime(2000);
+    });
+
+    expect(screen.getByText("第一条消息").closest(".notification")).toHaveClass("notification-closing");
+    act(() => {
+      vi.advanceTimersByTime(160);
+    });
+
+    expect(screen.queryByText("第一条消息")).not.toBeInTheDocument();
+    expect(screen.getByText("第二条消息")).toBeInTheDocument();
+
+    vi.useRealTimers();
   });
 
   it("聊天消息中的有序列表和无序列表展示可见序号标记", async () => {
@@ -2538,7 +2649,7 @@ describe("App", () => {
     await waitFor(() => expect(hasChatSendCall(sendMessage)).toBe(true));
   });
 
-  it("请求失败时展示失败提示且不保存失败消息", async () => {
+  it("请求失败时展示统一通知且不保存失败消息", async () => {
     const user = userEvent.setup();
     const provider: ModelProvider = {
       id: "provider-failure",
@@ -2596,7 +2707,7 @@ describe("App", () => {
     await user.click(screen.getByRole("button", { name: "发送" }));
     await waitFor(() => expect(sendMessage.mock.calls.some(([message]) => (message as { type: string }).type === "chat.send")).toBe(true));
 
-    expect(await screen.findByText("请求失败，请重试")).toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent("请求失败，请重试");
     expect(screen.queryByRole("button", { name: "重试" })).not.toBeInTheDocument();
     expect(screen.queryByText("AI 失败消息")).not.toBeInTheDocument();
   });
@@ -2678,6 +2789,58 @@ describe("App", () => {
     expect(screen.getByRole("textbox", { name: "S3 Endpoint" })).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "S3 Region" })).toHaveDisplayValue("auto");
     expect(screen.getByLabelText("S3 Secret Key")).toHaveAttribute("type", "password");
+  });
+
+  it("同步操作结果通过统一通知展示而不是设置页内联文本", async () => {
+    const user = userEvent.setup();
+    const sendMessage = vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+      if (message.type === "sync.configureAlarm") {
+        callback({ ok: true });
+        return undefined;
+      }
+
+      callback({ ok: true, message: "备份完成" });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("tab", { name: "同步设置" }));
+    await user.click(screen.getByRole("checkbox", { name: "开启同步" }));
+    await user.click(screen.getByRole("button", { name: "手动备份" }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent("备份完成");
+    expect(screen.getByRole("status").closest(".notification")).toBeInTheDocument();
+    expect(document.querySelector(".settings-main-layout")?.textContent).not.toContain("备份完成");
+  });
+
+  it("相同同步结果连续出现时仍会重复弹出通知", async () => {
+    const user = userEvent.setup();
+    const sendMessage = vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+      if (message.type === "sync.configureAlarm") {
+        callback({ ok: true });
+        return undefined;
+      }
+
+      callback({ ok: true, message: "备份完成" });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("tab", { name: "同步设置" }));
+    await user.click(screen.getByRole("checkbox", { name: "开启同步" }));
+    await user.click(screen.getByRole("button", { name: "手动备份" }));
+    expect(await screen.findByRole("status")).toHaveTextContent("备份完成");
+    await user.click(screen.getByRole("button", { name: "关闭通知：同步完成" }));
+
+    await user.click(screen.getByRole("button", { name: "手动备份" }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent("备份完成");
   });
 
   it("提示词管理支持新增编辑删除和拖拽排序", async () => {
@@ -2974,6 +3137,8 @@ describe("App", () => {
     await user.click(screen.getByRole("button", { name: "设置" }));
     await user.click(screen.getByRole("button", { name: "新增渠道" }));
     await user.click(screen.getByRole("button", { name: "获取模型列表" }));
+    expect(await screen.findByRole("status")).toHaveTextContent("模型列表已更新");
+    expect(screen.getByRole("region", { name: "当前渠道详情" }).textContent).not.toContain("模型列表已更新");
     await user.type(await screen.findByRole("combobox", { name: "搜索模型" }), "mini");
 
     expect(screen.queryByRole("option", { name: /GPT-4.1 gpt-4.1$/ })).not.toBeInTheDocument();
@@ -4529,6 +4694,11 @@ describe("App", () => {
     await user.click(screen.getByRole("button", { name: "会话操作 新对话" }));
     expect(screen.getByRole("menuitem", { name: "重命名" })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "归档" })).toBeInTheDocument();
+
+    await user.click(screen.getByText("历史对话"));
+    expect(screen.queryByRole("menuitem", { name: "归档" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "会话操作 新对话" }));
     await user.click(screen.getByRole("menuitem", { name: "删除" }));
     expect(screen.getByRole("menuitem", { name: "确认删除" })).toBeInTheDocument();
     expect(screen.getByText("新对话")).toBeInTheDocument();
@@ -4635,7 +4805,8 @@ describe("App", () => {
 
     render(<App />);
 
-    await user.click(await screen.findByRole("button", { name: "重命名文件夹 旧文件夹" }));
+    await user.click(await screen.findByRole("button", { name: "文件夹操作 旧文件夹" }));
+    await user.click(screen.getByRole("menuitem", { name: "重命名" }));
     const input = screen.getByLabelText("重命名文件夹");
     await user.clear(input);
     await user.type(input, "不会保存{Escape}");
@@ -4650,13 +4821,15 @@ describe("App", () => {
 
     render(<App />);
 
-    await user.click(await screen.findByRole("button", { name: "重命名文件夹 初始文件夹" }));
+    await user.click(await screen.findByRole("button", { name: "文件夹操作 初始文件夹" }));
+    await user.click(screen.getByRole("menuitem", { name: "重命名" }));
     let input = screen.getByLabelText("重命名文件夹");
     await user.clear(input);
     await user.type(input, "首次文件夹{Enter}");
     expect((await screen.findByText("首次文件夹")).closest("button")).toBeInTheDocument();
 
-    await user.click(await screen.findByRole("button", { name: "重命名文件夹 首次文件夹" }));
+    await user.click(await screen.findByRole("button", { name: "文件夹操作 首次文件夹" }));
+    await user.click(screen.getByRole("menuitem", { name: "重命名" }));
     input = screen.getByLabelText("重命名文件夹");
     await user.clear(input);
     await user.type(input, "失焦文件夹");
@@ -4664,6 +4837,48 @@ describe("App", () => {
 
     expect((await screen.findByText("失焦文件夹")).closest("button")).toBeInTheDocument();
     expect(useAppStore.getState().chatFolders.find((folder) => folder.id === "folder-enter-blur")?.name).toBe("失焦文件夹");
+  });
+
+  it("文件夹菜单提供重命名删除且点击空白区域自动关闭", async () => {
+    const user = userEvent.setup();
+    await saveChatFolder(createChatFolder({ id: "folder-menu", name: "菜单文件夹" }));
+
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "文件夹操作 菜单文件夹" }));
+
+    expect(screen.getByRole("menuitem", { name: "重命名" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "删除" })).toBeInTheDocument();
+
+    await user.click(screen.getByText("历史对话"));
+
+    expect(screen.queryByRole("menuitem", { name: "重命名" })).not.toBeInTheDocument();
+  });
+
+  it("空文件夹删除需要二次确认，非空文件夹不能删除", async () => {
+    const user = userEvent.setup();
+    await saveChatFolder(createChatFolder({ id: "folder-empty-delete", name: "空文件夹" }));
+    await saveChatFolder(createChatFolder({ id: "folder-non-empty-delete", name: "非空文件夹" }));
+    await saveChatSession(createChatSession({ id: "session-in-folder", title: "文件夹内会话", folderId: "folder-non-empty-delete" }));
+
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "文件夹操作 空文件夹" }));
+    await user.click(screen.getByRole("menuitem", { name: "删除" }));
+    expect(screen.getByRole("menuitem", { name: "确认删除" })).toBeInTheDocument();
+    expect(screen.getByText("空文件夹")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("menuitem", { name: "确认删除" }));
+    await waitFor(() => expect(screen.queryByText("空文件夹")).not.toBeInTheDocument());
+    expect(useAppStore.getState().chatFolders.some((folder) => folder.id === "folder-empty-delete")).toBe(false);
+
+    await user.click(await screen.findByRole("button", { name: "文件夹操作 非空文件夹" }));
+    await user.click(screen.getByRole("menuitem", { name: "删除" }));
+    await user.click(screen.getByRole("menuitem", { name: "确认删除" }));
+
+    expect(await screen.findByText("非空文件夹")).toBeInTheDocument();
+    expect(useAppStore.getState().chatFolders.some((folder) => folder.id === "folder-non-empty-delete")).toBe(true);
+    expect(await screen.findByRole("alert")).toHaveTextContent("只能删除空文件夹");
   });
 
   it("可以拖拽未归档会话到目标文件夹", async () => {
