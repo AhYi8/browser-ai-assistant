@@ -1,12 +1,28 @@
 export type EndpointType = "openai_chat" | "anthropic_messages";
 export type ChatRole = "system" | "user" | "assistant";
 export type PageContextExtractMode = "text" | "all";
+export type ExtractionSelectorType = "css" | "xpath";
 export type SendShortcut = "enter" | "shift_enter" | "ctrl_enter" | "ctrl_shift_enter" | "alt_enter";
 export type ToolCallDisplayMode = "assistant_grouped" | "compact";
 export type WebSearchProviderType = "tavily";
 export type WebSearchApiKeyStrategy = "round_robin" | "random";
 export type TavilyIncludeAnswer = boolean | "basic" | "advanced";
 export type TavilyIncludeRawContent = boolean | "markdown" | "text";
+export type AutomationPlaybookSource = "builtin" | "skill" | "user";
+export type AutomationPlaybookRisk = "low" | "medium" | "high" | "critical";
+export type AutomationPlaybookConfidence = "low" | "medium" | "high";
+
+export interface AutomationPlaybookSelection {
+  playbookId: string;
+  title: string;
+  source: AutomationPlaybookSource;
+  confidence: AutomationPlaybookConfidence;
+  reason: string;
+}
+
+export interface AutomationPlaybookSettings {
+  disabledPlaybookIds: string[];
+}
 
 export interface ModelProvider {
   id: string;
@@ -331,6 +347,7 @@ export interface ChatAutomationReportToolAttachment extends ChatToolAttachmentBa
   reportType: AutomationReportType;
   objective: string;
   conclusion: string;
+  playbook?: AutomationPlaybookSelection;
   steps: AutomationReportStep[];
   timeline: AutomationTimelineEvent[];
   failureSummary?: AutomationFailureSummary;

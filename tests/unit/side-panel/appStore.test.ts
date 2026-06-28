@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAppStore } from "../../../src/side-panel/state/appStore";
+import { AUTOMATION_PLAYBOOK_SETTINGS_KEY } from "../../../src/shared/automationPlaybooks";
 import {
   clearDatabase,
   getAppSetting,
@@ -153,6 +154,28 @@ describe("appStore 网络搜索", () => {
     expect(chatRequests[1].messages?.some((message) => message.content.includes("Tavily Docs"))).toBe(true);
   });
 
+  it("任务策略设置会通过 appSettings 加载、归一化并保存", async () => {
+    await saveAppSetting({
+      key: AUTOMATION_PLAYBOOK_SETTINGS_KEY,
+      value: { disabledPlaybookIds: ["page_reading", "missing", "network_api_analysis"] },
+      updatedAt: 1,
+    });
+
+    await useAppStore.getState().loadChannelConfig();
+
+    expect(useAppStore.getState().automationPlaybookSettings).toEqual({
+      disabledPlaybookIds: ["page_reading", "network_api_analysis"],
+    });
+
+    await useAppStore.getState().updateAutomationPlaybookSettings({
+      disabledPlaybookIds: ["source_runtime_analysis"],
+    });
+
+    expect(await getAppSetting(AUTOMATION_PLAYBOOK_SETTINGS_KEY)).toEqual({
+      disabledPlaybookIds: ["source_runtime_analysis"],
+    });
+  });
+
   it("全局 Tavily 参数会随 chat.send 传给 background 工具执行", async () => {
     const provider = createProvider();
     const model = createModel();
@@ -195,6 +218,52 @@ describe("appStore 网络搜索", () => {
         maxResults: 5,
       },
     });
+  });
+
+  it("聊天请求会携带提取规则供浏览器内容提取工具复用", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const sendMessage = vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+      callback({ ok: true, content: "AI 回复" });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    useAppStore.getState().setStreamMode(false);
+    useAppStore.setState((state) => ({
+      extractionRules: [{
+        id: "rule-main",
+        alias: "正文",
+        urlPattern: "https://example\\.com/.*",
+        selectorsText: "main\n//*[@id='content']",
+        sortOrder: 10,
+        createdAt: 1,
+        updatedAt: 1,
+      }],
+      chatPreferences: {
+        ...state.chatPreferences,
+        toolCallingEnabled: true,
+        enabledToolIds: ["browser.extract_content"],
+      },
+      browserControlEnabled: true,
+    }));
+
+    await useAppStore.getState().sendChatMessage("提取当前页面正文");
+
+    const chatRequest = sendMessage.mock.calls
+      .map(([message]) => message as { type: string; extractionRules?: unknown; messages?: Array<{ content: string }> })
+      .find((message) => message.type === "chat.send");
+    expect(chatRequest?.extractionRules).toEqual([
+      expect.objectContaining({
+        id: "rule-main",
+        selectorsText: "main\n//*[@id='content']",
+      }),
+    ]);
+    expect(chatRequest?.messages?.some((message) => message.content.includes("rule-main"))).toBe(false);
   });
 
   it("普通模式默认暴露受限 runtime 工具，受控增强模式额外暴露边界确认和重放沙箱", async () => {

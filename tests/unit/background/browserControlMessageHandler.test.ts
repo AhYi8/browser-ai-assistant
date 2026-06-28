@@ -106,6 +106,17 @@ function createChromeMock(options: {
       },
     },
     tabs: {
+      sendMessage: vi.fn(async (_tabId: number, message: unknown) => ({
+        ok: true,
+        url: options.url ?? "https://example.com/",
+        title: options.title ?? "示例页面",
+        text: message && typeof message === "object" && (message as { extractMode?: string }).extractMode === "all"
+          ? "<main><h1>示例标题</h1><p>正文内容</p></main>"
+          : "示例标题 正文内容",
+        truncated: false,
+        usedFallback: false,
+        matchedRuleId: "rule-main",
+      })),
       get: vi.fn(async (tabId: number) => {
         if (options.tabGetError) {
           throw new Error("tab closed");
@@ -159,6 +170,7 @@ function createChromeMock(options: {
       onEvent: { addListener: ReturnType<typeof vi.fn> };
     };
     tabs: {
+      sendMessage: ReturnType<typeof vi.fn>;
       get: ReturnType<typeof vi.fn>;
       query: ReturnType<typeof vi.fn>;
       create: ReturnType<typeof vi.fn>;
@@ -978,6 +990,7 @@ describe("浏览器控制地基", () => {
     const waitForResult = await manager.executeBrowserTool(createNamedToolCall("wait_for", { text: ["完成"] }));
     const pageStateResult = await manager.executeBrowserTool(createNamedToolCall("get_page_state"));
     const consoleResult = await manager.executeBrowserTool(createNamedToolCall("get_console_messages"));
+    const extractContentResult = await manager.extractContent(createNamedToolCall("extract_content", { mode: "html", source: "document" }));
     const inspectResult = await manager.executeBrowserTool(createNamedToolCall("inspect_element", { uid: "1_1" }));
     const findResult = await manager.executeBrowserTool(createNamedToolCall("find_elements", { query: "提交" }));
     const screenshotResult = await manager.executeBrowserTool(createNamedToolCall("screenshot"));
@@ -998,6 +1011,7 @@ describe("浏览器控制地基", () => {
     expect(waitForResult.content).toBe("浏览器控制未开启，无法执行浏览器操作。请先在顶部浏览器控制按钮中显式开启。");
     expect(pageStateResult.content).toBe("浏览器控制未开启，无法执行浏览器操作。请先在顶部浏览器控制按钮中显式开启。");
     expect(consoleResult.content).toBe("浏览器控制未开启，无法执行浏览器操作。请先在顶部浏览器控制按钮中显式开启。");
+    expect(extractContentResult.content).toBe("浏览器控制未开启，无法执行浏览器操作。请先在顶部浏览器控制按钮中显式开启。");
     expect(inspectResult.content).toBe("浏览器控制未开启，无法执行浏览器操作。请先在顶部浏览器控制按钮中显式开启。");
     expect(findResult.content).toBe("浏览器控制未开启，无法执行浏览器操作。请先在顶部浏览器控制按钮中显式开启。");
     expect(screenshotResult.content).toBe("浏览器控制未开启，无法执行浏览器操作。请先在顶部浏览器控制按钮中显式开启。");
@@ -1017,6 +1031,7 @@ describe("浏览器控制地基", () => {
     expect(waitForResult.isError).toBe(true);
     expect(pageStateResult.isError).toBe(true);
     expect(consoleResult.isError).toBe(true);
+    expect(extractContentResult.isError).toBe(true);
     expect(inspectResult.isError).toBe(true);
     expect(findResult.isError).toBe(true);
     expect(screenshotResult.isError).toBe(true);
@@ -1075,6 +1090,60 @@ describe("浏览器控制地基", () => {
       expect.objectContaining({ returnByValue: true }),
       expect.any(Function),
     );
+  });
+
+  it("extract_content 可在普通浏览器控制下按 CSS 提取 HTML 并脱敏 URL", async () => {
+    const chromeMock = createChromeMock({ title: "提取页面", url: "https://example.com/article?token=secret&session=abc&code=oauth&plain=ok" });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const result = await manager.extractContent(createNamedToolCall("extract_content", {
+      mode: "html",
+      source: "selector",
+      selectorType: "css",
+      selector: "main",
+      maxLength: 5000,
+    }), []);
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain("页面内容提取结果：");
+    expect(result.content).toContain("- URL：https://example.com/article?token=[已脱敏]&session=[已脱敏]&code=[已脱敏]&plain=ok");
+    expect(result.content).not.toContain("secret");
+    expect(result.content).not.toContain("abc");
+    expect(result.content).not.toContain("oauth");
+    expect(result.content).toContain("- 模式：HTML");
+    expect(result.content).toContain("- 来源：CSS 选择器");
+    expect(result.content).toContain("- 选择器：main");
+    expect(result.content).toContain("<main><h1>示例标题</h1><p>正文内容</p></main>");
+    expect(chromeMock.tabs.sendMessage).toHaveBeenCalledWith(9, expect.objectContaining({
+      type: "pageContext.extract",
+      allowFallback: false,
+      extractMode: "all",
+      selectorType: "css",
+      maxLength: 5000,
+      rules: [expect.objectContaining({ selectorsText: "main", urlPattern: ".*" })],
+    }));
+  });
+
+  it("extract_content 拒绝非法参数和非 selector 来源的选择器参数", async () => {
+    const chromeMock = createChromeMock();
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const invalidMode = await manager.extractContent(createNamedToolCall("extract_content", { mode: "all" }));
+    const extraArg = await manager.extractContent(createNamedToolCall("extract_content", { source: "document", selector: "main" }));
+    const missingSelectorType = await manager.extractContent(createNamedToolCall("extract_content", { source: "selector", selector: "main" }));
+    const invalidCss = await manager.extractContent(createNamedToolCall("extract_content", { source: "selector", selectorType: "css", selector: "[" }));
+    const invalidXPath = await manager.extractContent(createNamedToolCall("extract_content", { source: "selector", selectorType: "xpath", selector: "//*[" }));
+
+    expect(invalidMode).toMatchObject({ isError: true, content: "extract_content 的 mode 必须是 text 或 html。" });
+    expect(extraArg).toMatchObject({ isError: true, content: "extract_content 只有 source=selector 时才允许携带 selectorType 或 selector。" });
+    expect(missingSelectorType).toMatchObject({ isError: true, content: "extract_content 使用 selector 来源时必须提供 selectorType。" });
+    expect(invalidCss).toMatchObject({ isError: true, content: "extract_content 的 selector 格式不正确。" });
+    expect(invalidXPath).toMatchObject({ isError: true, content: "extract_content 的 selector 格式不正确。" });
+    expect(chromeMock.tabs.sendMessage).not.toHaveBeenCalled();
   });
 
   it("get_console_messages 返回已采集 Console、异常和资源错误摘要", async () => {

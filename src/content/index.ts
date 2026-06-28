@@ -1,4 +1,4 @@
-import type { ExtractionRule, PageContextExtractMode } from "../shared/types";
+import type { ExtractionRule, ExtractionSelectorType, PageContextExtractMode } from "../shared/types";
 import { extractPageText } from "./extractPageText";
 
 export interface PageContextExtractMessage {
@@ -6,6 +6,8 @@ export interface PageContextExtractMessage {
   rules: ExtractionRule[];
   maxLength?: number;
   extractMode?: PageContextExtractMode;
+  selectorType?: ExtractionSelectorType;
+  allowFallback?: boolean;
 }
 
 export interface PageContextExtractResponse {
@@ -39,6 +41,8 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
     rules: message.rules,
     maxLength: message.maxLength,
     extractMode: message.extractMode ?? "text",
+    selectorType: message.selectorType,
+    allowFallback: message.allowFallback,
   });
 
   sendResponse({

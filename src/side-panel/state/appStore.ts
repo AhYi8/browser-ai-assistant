@@ -2,6 +2,10 @@ import { create, type StoreApi } from "zustand";
 import { buildChatRequestMessages } from "../../shared/chat/buildChatRequestMessages";
 import { createModelConfig } from "../../shared/chat/modelConfig";
 import { createPageContextPrompt } from "../../shared/chat/pageContextPrompt";
+import {
+  AUTOMATION_PLAYBOOK_SETTINGS_KEY,
+  normalizeAutomationPlaybookSettings,
+} from "../../shared/automationPlaybooks";
 import type { RemoteModelInfo } from "../../shared/models/modelCatalog";
 import {
   getRegisteredModelTools,
@@ -35,6 +39,7 @@ import type { SyncSecrets, SyncSettings } from "../../shared/sync/types";
 import type { SyncRemoteBackupMeta } from "../../shared/sync/types";
 import type { TavilySearchOptions } from "../../shared/webSearch/tavily";
 import type {
+  AutomationPlaybookSettings,
   ChatFolder,
   ChatImageAttachment,
   ChatMessage,
@@ -213,6 +218,7 @@ export interface AppState {
   selectedModelId: string;
   defaultChatModelId: string;
   chatPreferences: ChatPreferenceValues;
+  automationPlaybookSettings: AutomationPlaybookSettings;
   browserControlEnabled: boolean;
   browserAutomationMode: BrowserAutomationMode;
   runtimeReadonlyEnabled: boolean;
@@ -244,6 +250,7 @@ export interface AppState {
   setTitleModel: (modelId: string) => void;
   setDefaultChatModel: (modelId: string) => Promise<void>;
   updateChatPreferences: (updates: Partial<ChatPreferenceValues>) => Promise<void>;
+  updateAutomationPlaybookSettings: (updates: Partial<AutomationPlaybookSettings>) => Promise<void>;
   updateActiveSessionChatPreferences: (updates: ChatSessionPreferenceOverrides) => Promise<void>;
   setBrowserControlEnabled: (enabled: boolean) => Promise<void>;
   setBrowserAutomationMode: (mode: BrowserAutomationMode) => Promise<void>;
@@ -352,6 +359,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   selectedModelId: "",
   defaultChatModelId: "",
   chatPreferences: DEFAULT_CHAT_PREFERENCES,
+  automationPlaybookSettings: normalizeAutomationPlaybookSettings(undefined),
   browserControlEnabled: false,
   browserAutomationMode: "normal_restricted",
   runtimeReadonlyEnabled: false,
@@ -519,6 +527,18 @@ export const useAppStore = create<AppState>()((set, get) => ({
     if (shouldApplyExtractDefaultToCurrentChat) {
       void get().refreshPageContext();
     }
+  },
+  updateAutomationPlaybookSettings: async (updates) => {
+    const settings = normalizeAutomationPlaybookSettings({
+      ...get().automationPlaybookSettings,
+      ...updates,
+    });
+    await saveAppSetting({
+      key: AUTOMATION_PLAYBOOK_SETTINGS_KEY,
+      value: settings,
+      updatedAt: Date.now(),
+    });
+    set({ automationPlaybookSettings: settings });
   },
   updateActiveSessionChatPreferences: async (updates) => {
     const state = get();
@@ -715,11 +735,12 @@ export const useAppStore = create<AppState>()((set, get) => ({
     }
   },
   loadChannelConfig: async () => {
-    const [providers, models, savedDefaultChatModelId, savedChatPreferences, webSearchSettings] = await Promise.all([
+    const [providers, models, savedDefaultChatModelId, savedChatPreferences, savedAutomationPlaybookSettings, webSearchSettings] = await Promise.all([
       getModelProviders(),
       getProviderModels(),
       getAppSetting<string>("defaultChatModelId"),
       getAppSetting<Partial<ChatPreferenceValues>>("chatPreferences"),
+      getAppSetting<Partial<AutomationPlaybookSettings>>(AUTOMATION_PLAYBOOK_SETTINGS_KEY),
       getWebSearchSettings(),
     ]);
     const defaultChatModelId = resolveConfiguredModelId(savedDefaultChatModelId ?? "", models, providers);
@@ -732,12 +753,14 @@ export const useAppStore = create<AppState>()((set, get) => ({
       ? resolveAvailableModelId(activeSession.selectedModelId, models, providers)
       : "";
     const chatPreferences = normalizeChatPreferences(savedChatPreferences);
+    const automationPlaybookSettings = normalizeAutomationPlaybookSettings(savedAutomationPlaybookSettings);
 
     set({
       providers,
       models,
       defaultChatModelId,
       chatPreferences,
+      automationPlaybookSettings,
       webSearchSettings,
       appendPageContextToSystemPrompt: chatPreferences.injectPageContextByDefault,
       contextMode: resolveDefaultContextMode(chatPreferences),
@@ -1108,6 +1131,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       selectedModelId: "",
       defaultChatModelId: "",
       chatPreferences: DEFAULT_CHAT_PREFERENCES,
+      automationPlaybookSettings: normalizeAutomationPlaybookSettings(undefined),
       activeSessionId: "",
       privateModeActive: false,
       privateChatSession: undefined,
@@ -1169,6 +1193,8 @@ export type AppChatSendMessage = {
   tavily?: TavilySearchOptions;
   retryCount?: number;
   browserAutomationMaxToolIterations?: number;
+  automationPlaybookSettings?: AutomationPlaybookSettings;
+  extractionRules?: ExtractionRule[];
 };
 
 interface SendChatMessageWithStateInput {
@@ -1493,6 +1519,8 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
       stream: requestStreamMode,
       retryCount: effectiveChatPreferences.aiRequestRetryCount,
       browserAutomationMaxToolIterations: effectiveChatPreferences.browserAutomationMaxToolIterations,
+      automationPlaybookSettings: input.state.automationPlaybookSettings,
+      extractionRules: input.state.extractionRules,
       tavily: {
         includeAnswer: input.state.webSearchSettings.tavily.includeAnswer,
         includeRawContent: input.state.webSearchSettings.tavily.includeRawContent,

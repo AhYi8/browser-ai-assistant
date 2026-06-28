@@ -1,4 +1,5 @@
 import type {
+  AutomationPlaybookSelection,
   AutomationFailureSummary,
   AutomationReportType,
   AutomationReportStep,
@@ -80,6 +81,7 @@ export function createAutomationReportToolAttachment(input: {
   conclusion: string;
   records: ChatToolCallRecord[];
   attachments?: ChatToolAttachment[];
+  playbook?: AutomationPlaybookSelection;
   createdAt?: number;
 }): ChatAutomationReportToolAttachment | undefined {
   const steps = input.records.map((record) => createAutomationReportStep(record, input.attachments ?? []));
@@ -92,6 +94,7 @@ export function createAutomationReportToolAttachment(input: {
     reportType: inferAutomationReportType(input.records),
     objective: input.objective,
     conclusion: input.conclusion,
+    playbook: normalizeAutomationReportPlaybook(input.playbook),
     createdAt,
     redacted: true,
     truncated: false,
@@ -566,6 +569,7 @@ function aggregateAutomationReportToolAttachments(attachments: ChatAutomationRep
   const timeline = uniqueBy(attachments.flatMap((attachment) => attachment.timeline), (event) => event.id || `${event.type}\u0000${event.at}\u0000${event.label}`);
   const createdAt = Math.max(...attachments.map((attachment) => attachment.createdAt));
   const fullAccessIncluded = attachments.some((attachment) => attachment.fullAccessIncluded);
+  const playbook = attachments.map((attachment) => attachment.playbook).find((item): item is AutomationPlaybookSelection => Boolean(item));
   const report: ChatAutomationReportToolAttachment = {
     id: `tool-attachment-automation-report-aggregated-${attachments.map((attachment) => attachment.id).join("-")}`,
     kind: "automation-report",
@@ -576,6 +580,7 @@ function aggregateAutomationReportToolAttachments(attachments: ChatAutomationRep
     truncated: attachments.some((attachment) => attachment.truncated),
     objective: uniqueNonEmptyStrings(attachments.map((attachment) => attachment.objective)).join("；") || "未记录任务目标",
     conclusion: uniqueNonEmptyStrings(attachments.map((attachment) => attachment.conclusion)).join("\n") || "暂无结论",
+    playbook,
     reportType: aggregateAutomationReportType(attachments),
     steps,
     timeline: timeline.sort((a, b) => a.at - b.at),
@@ -872,6 +877,7 @@ function normalizeAutomationReportToolAttachment(source: Partial<ChatToolAttachm
     reportType: normalizeAutomationReportType(raw.reportType, steps),
     objective: redactAndTruncateAutomationText(raw.objective, 500) || "未记录任务目标",
     conclusion: redactAndTruncateAutomationText(raw.conclusion, 800) || "暂无结论",
+    playbook: normalizeAutomationReportPlaybook(raw.playbook),
     steps,
     timeline: normalizeAutomationTimeline(raw.timeline, steps),
     failureSummary: normalizeAutomationFailureSummary(raw.failureSummary, steps),
@@ -1048,7 +1054,8 @@ export function formatAutomationReportSummary(attachment: ChatAutomationReportTo
   const successCount = attachment.steps.filter((step) => step.status === "success").length;
   const errorCount = attachment.steps.filter((step) => step.status === "error").length;
   const fullAccess = attachment.fullAccessIncluded ? "，包含完全访问原文结果" : "";
-  return `任务报告：总步骤=${attachment.steps.length}，成功=${successCount}，失败=${errorCount}${fullAccess}。`;
+  const playbook = attachment.playbook ? `，策略=${attachment.playbook.title}` : "";
+  return `任务报告：总步骤=${attachment.steps.length}，成功=${successCount}，失败=${errorCount}${playbook}${fullAccess}。`;
 }
 
 export function formatAutomationReportTypeLabel(type: AutomationReportType): string {
@@ -1088,6 +1095,14 @@ function formatAutomationReportAttachmentForText(attachment: ChatAutomationRepor
   const lines = [
     `目标：${attachment.objective}`,
     `结论：${attachment.conclusion}`,
+    ...(attachment.playbook
+      ? [
+          `本次使用策略：${attachment.playbook.title}`,
+          `策略来源：${attachment.playbook.source}`,
+          `选择置信度：${attachment.playbook.confidence}`,
+          `选择理由：${attachment.playbook.reason}`,
+        ]
+      : []),
     `任务类型：${formatAutomationReportTypeLabel(attachment.reportType)}`,
     `摘要：${formatAutomationReportSummary(attachment)}`,
     `完全访问原文结果：${attachment.fullAccessIncluded ? "是" : "否"}`,
@@ -1455,6 +1470,28 @@ function normalizeAutomationFailureSummary(value: unknown, steps: AutomationRepo
     ? uniqueNonEmptyStrings(source.recoverableActions.filter((item): item is string => typeof item === "string").map((item) => redactAndTruncateAutomationText(item, 200))).slice(0, 10)
     : fallback?.recoverableActions ?? [];
   return failedStepCount > 0 ? { failedStepCount, failedTools, recoverableActions } : undefined;
+}
+
+function normalizeAutomationReportPlaybook(value: unknown): AutomationPlaybookSelection | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const source = value as Partial<AutomationPlaybookSelection>;
+  const playbookId = normalizeOptionalString(source.playbookId);
+  const title = normalizeOptionalString(source.title);
+  const reason = normalizeOptionalString(source.reason);
+  const validSource = source.source === "builtin" || source.source === "skill" || source.source === "user" ? source.source : undefined;
+  const confidence = source.confidence === "high" || source.confidence === "medium" || source.confidence === "low" ? source.confidence : undefined;
+  if (!playbookId || !title || !validSource || !confidence || !reason) {
+    return undefined;
+  }
+  return {
+    playbookId,
+    title: redactAndTruncateAutomationText(title, 120) || title,
+    source: validSource,
+    confidence,
+    reason: redactAndTruncateAutomationText(reason, 200) || reason,
+  };
 }
 
 function createAutomationFailureSummary(steps: AutomationReportStep[]): AutomationFailureSummary | undefined {

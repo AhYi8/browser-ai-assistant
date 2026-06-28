@@ -1,4 +1,4 @@
-import type { ExtractionRule, PageContextExtractMode } from "../shared/types";
+import type { ExtractionRule, ExtractionSelectorType, PageContextExtractMode } from "../shared/types";
 
 export interface PageContextExtractMessage {
   type: "pageContext.extract";
@@ -6,6 +6,8 @@ export interface PageContextExtractMessage {
   rules: ExtractionRule[];
   maxLength?: number;
   extractMode?: PageContextExtractMode;
+  selectorType?: ExtractionSelectorType;
+  allowFallback?: boolean;
 }
 
 export interface PageContextListTabsMessage {
@@ -44,9 +46,9 @@ export type PageContextExtractResponse =
       message: string;
     };
 
-export async function handlePageContextMessage(message: PageContextExtractMessage): Promise<PageContextExtractResponse> {
+export async function handlePageContextMessage(message: PageContextExtractMessage, chromeApi: typeof chrome = chrome): Promise<PageContextExtractResponse> {
   try {
-    const [activeTab] = message.tabId ? [] : await chrome.tabs.query({ active: true, currentWindow: true });
+    const [activeTab] = message.tabId ? [] : await chromeApi.tabs.query({ active: true, currentWindow: true });
     const tabId = message.tabId ?? activeTab?.id;
     if (!tabId) {
       return { ok: false, message: "未找到当前活动页面" };
@@ -57,17 +59,19 @@ export async function handlePageContextMessage(message: PageContextExtractMessag
       rules: message.rules,
       maxLength: message.maxLength,
       extractMode: message.extractMode ?? "text",
+      selectorType: message.selectorType,
+      allowFallback: message.allowFallback,
     };
 
     try {
-      return await chrome.tabs.sendMessage(tabId, extractMessage);
+      return await chromeApi.tabs.sendMessage(tabId, extractMessage);
     } catch (error) {
       if (!isMissingContentScriptError(error)) {
         throw error;
       }
 
-      await injectContentScript(tabId);
-      return await chrome.tabs.sendMessage(tabId, extractMessage);
+      await injectContentScript(tabId, chromeApi);
+      return await chromeApi.tabs.sendMessage(tabId, extractMessage);
     }
   } catch (error) {
     return {
@@ -77,9 +81,9 @@ export async function handlePageContextMessage(message: PageContextExtractMessag
   }
 }
 
-export async function handlePageContextListTabsMessage(): Promise<PageContextListTabsResponse> {
+export async function handlePageContextListTabsMessage(chromeApi: typeof chrome = chrome): Promise<PageContextListTabsResponse> {
   try {
-    const tabs = await chrome.tabs.query({ currentWindow: true });
+    const tabs = await chromeApi.tabs.query({ currentWindow: true });
     return {
       ok: true,
       tabs: tabs
@@ -99,9 +103,9 @@ export async function handlePageContextListTabsMessage(): Promise<PageContextLis
   }
 }
 
-async function injectContentScript(tabId: number): Promise<void> {
+async function injectContentScript(tabId: number, chromeApi: typeof chrome = chrome): Promise<void> {
   try {
-    await chrome.scripting.executeScript({
+    await chromeApi.scripting.executeScript({
       target: { tabId },
       files: ["content/index.js"],
     });

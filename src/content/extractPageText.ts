@@ -1,5 +1,5 @@
 import { normalizeText, truncateText } from "../shared/utils/text";
-import type { ExtractionRule, PageContextExtractMode } from "../shared/types";
+import type { ExtractionRule, ExtractionSelectorType, PageContextExtractMode } from "../shared/types";
 import { getSelectorLines } from "../shared/extractionRules/validation";
 
 export interface ExtractPageTextInput {
@@ -7,6 +7,8 @@ export interface ExtractPageTextInput {
   rules: ExtractionRule[];
   maxLength?: number;
   extractMode?: PageContextExtractMode;
+  selectorType?: ExtractionSelectorType;
+  allowFallback?: boolean;
 }
 
 export interface ExtractPageTextResult {
@@ -18,9 +20,10 @@ export interface ExtractPageTextResult {
 
 export function extractPageText(input: ExtractPageTextInput): ExtractPageTextResult {
   const extractMode = input.extractMode ?? "text";
+  const allowFallback = input.allowFallback ?? true;
   const matchedRule = [...input.rules].sort((left, right) => left.sortOrder - right.sortOrder).find((rule) => matchUrl(rule.urlPattern, input.url));
-  const extractedContent = matchedRule ? extractBySelectors(matchedRule.selectorsText, extractMode) : "";
-  const usedFallback = extractedContent.trim().length === 0;
+  const extractedContent = matchedRule ? extractBySelectors(matchedRule.selectorsText, extractMode, input.selectorType) : "";
+  const usedFallback = allowFallback && extractedContent.trim().length === 0;
   const rawContent = usedFallback ? extractGlobalContent(extractMode) : extractedContent;
   const normalizedContent = extractMode === "text" ? normalizeText(rawContent) : rawContent;
   const truncated = truncateText(normalizedContent, input.maxLength ?? Number.POSITIVE_INFINITY);
@@ -40,12 +43,16 @@ function matchUrl(pattern: string, url: string): boolean {
   }
 }
 
-function extractBySelectors(selectorsText: string, extractMode: PageContextExtractMode): string {
+function extractBySelectors(selectorsText: string, extractMode: PageContextExtractMode, selectorType?: ExtractionSelectorType): string {
   const selectors = getSelectorLines(selectorsText);
   const parts: string[] = [];
 
   for (const selector of selectors) {
-    const selectorText = extractByCss(selector, extractMode) || extractByXPath(selector, extractMode);
+    const selectorText = selectorType === "css"
+      ? extractByCss(selector, extractMode)
+      : selectorType === "xpath"
+        ? extractByXPath(selector, extractMode)
+        : extractByCss(selector, extractMode) || extractByXPath(selector, extractMode);
     if (selectorText) {
       parts.push(selectorText);
     }

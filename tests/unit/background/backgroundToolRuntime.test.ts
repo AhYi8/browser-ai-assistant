@@ -246,6 +246,30 @@ describe("background 工具运行时封装", () => {
     });
   });
 
+  it("选中 Playbook 时只追加该策略的详细提示", () => {
+    const result = appendBrowserControlPromptIfNeeded(
+      [createMessage("system", "你是网页助手"), createMessage("user", "分析接口")],
+      [{ id: "network.list_requests", name: "network_list_requests", parameters: {} }],
+      {
+        playbookId: "network_api_analysis",
+        title: "Network/API 分析",
+        source: "builtin",
+        confidence: "high",
+        reason: "用户要求分析接口参数",
+      },
+    );
+
+    expect(result[0]).toMatchObject({
+      content: expect.stringContaining("当前选中的浏览器自动化任务策略：Network/API 分析"),
+    });
+    expect(result[0]).toMatchObject({
+      content: expect.stringContaining("任务策略：Network/API 分析"),
+    });
+    expect(result[0]).toMatchObject({
+      content: expect.not.stringContaining("任务策略：页面阅读"),
+    });
+  });
+
   it("仅启用 Network 和受控增强工具时也追加边界确认调度提示", () => {
     const result = appendBrowserControlPromptIfNeeded(
       [createMessage("system", "你是网页助手"), createMessage("user", "分析 Network")],

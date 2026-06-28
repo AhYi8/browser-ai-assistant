@@ -46,6 +46,8 @@ import {
   isBrowserControlActionName,
 } from "./browserControl/actions";
 import type { NetworkRequestMeta } from "../shared/types";
+import type { ExtractionRule, PageContextExtractMode } from "../shared/types";
+import { validateExtractionSelector } from "../shared/extractionRules/validation";
 import { applyAutomationBoundaryConfirmation } from "./browserControl/automationBoundaryDetector";
 import { BrowserNetworkRecorder } from "./browserControl/networkRecorder";
 import { BrowserNetworkToolExecutor } from "./browserControl/networkToolExecutor";
@@ -56,6 +58,7 @@ import { BoundaryChoiceToolExecutor } from "./browserControl/boundaryChoiceToolE
 import { ReplayToolExecutor } from "./browserControl/replayToolExecutor";
 import { FullAccessToolExecutor } from "./browserControl/fullAccessToolExecutor";
 import { BrowserConsoleRecorder } from "./browserControl/consoleRecorder";
+import { handlePageContextMessage, type PageContextExtractResponse } from "./pageContextMessageHandler";
 
 type Debuggee = chrome.debugger.Debuggee;
 type ChromeApi = typeof chrome;
@@ -172,6 +175,16 @@ interface BrowserSnapshotElementCandidate {
   axNode?: AccessibilityNode;
 }
 type BrowserScreenshotTarget = "viewport" | "element";
+type BrowserExtractContentMode = "text" | "html";
+type BrowserExtractContentSource = "auto_rule" | "document" | "selector";
+type BrowserExtractContentSelectorType = "css" | "xpath";
+interface BrowserExtractContentArguments {
+  mode: BrowserExtractContentMode;
+  source: BrowserExtractContentSource;
+  selectorType?: BrowserExtractContentSelectorType;
+  selector?: string;
+  maxLength: number;
+}
 interface BrowserScreenshotClip {
   x: number;
   y: number;
@@ -962,6 +975,43 @@ export class BrowserControlManager {
 
   canExposeBrowserTool(): boolean {
     return this.canExposeTakeSnapshotTool();
+  }
+
+  async extractContent(toolCall: ModelToolCall, extractionRules: ExtractionRule[] = []): Promise<ModelToolResult> {
+    if (!this.canExposeBrowserTool()) {
+      return createBrowserActionDisabledResult(toolCall);
+    }
+
+    const validation = validateExtractContentArguments(toolCall);
+    if (!validation.ok) {
+      return createBrowserToolErrorResult(toolCall, validation.message);
+    }
+
+    const tabId = this.connection.attachedTabId;
+    if (typeof tabId !== "number") {
+      return createBrowserToolErrorResult(toolCall, "当前没有受控标签页，无法提取页面内容。");
+    }
+
+    const rules = createExtractContentRules(validation.args, extractionRules);
+    const response = await handlePageContextMessage({
+      type: "pageContext.extract",
+      tabId,
+      rules,
+      maxLength: validation.args.maxLength,
+      extractMode: validation.args.mode === "html" ? "all" : "text",
+      selectorType: validation.args.source === "selector" ? validation.args.selectorType : undefined,
+      allowFallback: validation.args.source !== "selector",
+    }, this.chromeApi ?? getChromeApi());
+
+    if (!response.ok) {
+      return createBrowserToolErrorResult(toolCall, response.message);
+    }
+
+    return {
+      toolCallId: toolCall.id,
+      name: toolCall.name,
+      content: formatExtractContentResult(response, validation.args),
+    };
   }
 
   canExposeNetworkTool(): boolean {
@@ -2367,6 +2417,123 @@ function createPerformanceSummaryExpression(): string {
   })()`;
 }
 
+function validateExtractContentArguments(toolCall: ModelToolCall): { ok: true; args: BrowserExtractContentArguments } | { ok: false; message: string } {
+  const allowedKeys = ["mode", "source", "selectorType", "selector", "maxLength"];
+  const extraKeys = Object.keys(toolCall.arguments).filter((key) => !allowedKeys.includes(key));
+  if (extraKeys.length > 0) {
+    return { ok: false, message: `浏览器内容提取工具不接受参数：${extraKeys.join("、")}。` };
+  }
+
+  const mode = toolCall.arguments.mode === undefined ? "text" : toolCall.arguments.mode;
+  if (mode !== "text" && mode !== "html") {
+    return { ok: false, message: "extract_content 的 mode 必须是 text 或 html。" };
+  }
+
+  const source = toolCall.arguments.source === undefined ? "auto_rule" : toolCall.arguments.source;
+  if (source !== "auto_rule" && source !== "document" && source !== "selector") {
+    return { ok: false, message: "extract_content 的 source 必须是 auto_rule、document 或 selector。" };
+  }
+
+  const selectorType = toolCall.arguments.selectorType;
+  if (selectorType !== undefined && selectorType !== "css" && selectorType !== "xpath") {
+    return { ok: false, message: "extract_content 的 selectorType 必须是 css 或 xpath。" };
+  }
+
+  const selector = typeof toolCall.arguments.selector === "string" ? toolCall.arguments.selector.trim() : "";
+  if (source === "selector") {
+    if (!selector) {
+      return { ok: false, message: "extract_content 使用 selector 来源时必须提供非空 selector。" };
+    }
+    if (selectorType === undefined) {
+      return { ok: false, message: "extract_content 使用 selector 来源时必须提供 selectorType。" };
+    }
+    if (selector.length > 2000) {
+      return { ok: false, message: "extract_content 的 selector 不能超过 2000 个字符。" };
+    }
+    const selectorValidation = validateExtractionSelector(selector, selectorType);
+    if (!selectorValidation.ok) {
+      return { ok: false, message: "extract_content 的 selector 格式不正确。" };
+    }
+  } else {
+    if (selectorType !== undefined || selector) {
+      return { ok: false, message: "extract_content 只有 source=selector 时才允许携带 selectorType 或 selector。" };
+    }
+  }
+
+  const maxLength = normalizeExtractContentMaxLength(toolCall.arguments.maxLength);
+  if (!maxLength.ok) {
+    return maxLength;
+  }
+
+  return {
+    ok: true,
+    args: {
+      mode,
+      source,
+      ...(selectorType ? { selectorType } : {}),
+      ...(selector ? { selector } : {}),
+      maxLength: maxLength.value,
+    },
+  };
+}
+
+function normalizeExtractContentMaxLength(value: unknown): { ok: true; value: number } | { ok: false; message: string } {
+  if (value === undefined) {
+    return { ok: true, value: 30000 };
+  }
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 500 || value > 200000) {
+    return { ok: false, message: "extract_content 的 maxLength 必须是 500 到 200000 的整数。" };
+  }
+  return { ok: true, value };
+}
+
+function createExtractContentRules(args: BrowserExtractContentArguments, extractionRules: ExtractionRule[]): ExtractionRule[] {
+  if (args.source === "auto_rule") {
+    return extractionRules;
+  }
+
+  if (args.source === "document") {
+    return [];
+  }
+
+  return [{
+    id: "tool-selector",
+    alias: "工具临时选择器",
+    urlPattern: ".*",
+    selectorsText: args.selector ?? "",
+    sortOrder: 0,
+    createdAt: 0,
+    updatedAt: 0,
+  }];
+}
+
+function formatExtractContentResult(response: Extract<PageContextExtractResponse, { ok: true }>, args: BrowserExtractContentArguments): string {
+  const sourceLabel: Record<BrowserExtractContentSource, string> = {
+    auto_rule: "提取规则",
+    document: "全文",
+    selector: args.selectorType === "xpath" ? "XPath 选择器" : "CSS 选择器",
+  };
+  const modeLabel: Record<BrowserExtractContentMode, string> = {
+    text: "可见文本",
+    html: "HTML",
+  };
+  const lines = [
+    "页面内容提取结果：",
+    `- 标题：${response.title?.trim() || "无标题"}`,
+    `- URL：${redactPageStateUrl(response.url)}`,
+    `- 模式：${modeLabel[args.mode]}`,
+    `- 来源：${sourceLabel[args.source]}`,
+    `- 使用回退：${response.usedFallback ? "是" : "否"}`,
+    `- 已截断：${response.truncated ? "是" : "否"}`,
+    response.matchedRuleId ? `- 命中规则 ID：${response.matchedRuleId}` : "",
+    args.source === "selector" && args.selector ? `- 选择器：${args.selector}` : "",
+    "",
+    "## 提取内容",
+    response.text || "未提取到内容。",
+  ].filter((line) => line !== "");
+  return lines.join("\n");
+}
+
 function validateInspectElementArguments(toolCall: ModelToolCall): { ok: true } | { ok: false; message: string } {
   const allowedKeys = ["uid"];
   const extraKeys = Object.keys(toolCall.arguments).filter((key) => !allowedKeys.includes(key));
@@ -3263,7 +3430,7 @@ function redactPageStateText(value: string): string {
 }
 
 function isSensitivePageStateName(value: string): boolean {
-  return /(authorization|cookie|token|access[_-]?token|refresh[_-]?token|api[_-]?key|secret|password|passwd|credential|session|sid|csrf|xsrf)/i.test(value);
+  return /(authorization|cookie|token|access[_-]?token|refresh[_-]?token|api[_-]?key|secret|password|passwd|credential|session|sid|code|csrf|xsrf)/i.test(value);
 }
 
 function truncatePageStateText(value: string, maxLength = PAGE_STATE_MAX_TEXT_LENGTH): string {

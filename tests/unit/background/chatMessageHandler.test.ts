@@ -813,6 +813,136 @@ describe("聊天模型请求处理", () => {
     expect(finalBody.tool_choice).toBeUndefined();
   });
 
+  it("携带任务策略设置时会先预选 Playbook 且不改变工具暴露边界", async () => {
+    registeredModelToolsMock.tools = [
+      {
+        id: "browser.take_snapshot",
+        name: "take_snapshot",
+        description: "读取页面结构",
+        parameters: {
+          type: "object",
+          properties: {},
+          required: [],
+          additionalProperties: false,
+        },
+      },
+    ];
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          choices: [{ message: { content: "{\"playbookId\":\"page_reading\",\"confidence\":\"high\",\"reason\":\"用户要求阅读当前页面\"}" } }],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          choices: [
+            {
+              message: {
+                content: "",
+                tool_calls: [
+                  {
+                    id: "call-1",
+                    type: "function",
+                    function: { name: "take_snapshot", arguments: "{}" },
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          choices: [{ message: { content: "阶段收束" } }],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          choices: [{ message: { content: "已总结当前页面" } }],
+        }),
+      });
+
+    const result = await handleChatSendMessage(
+      {
+        type: "chat.send",
+        model: createModel(),
+        messages: [createMessage("user", "帮我看看当前页面讲了什么")],
+        stream: false,
+        enabledToolIds: ["browser.take_snapshot"],
+        toolChoice: "auto",
+        automationPlaybookSettings: { disabledPlaybookIds: [] },
+      },
+      fetcher,
+      {},
+      async (toolCall) => ({
+        toolCallId: toolCall.id,
+        name: toolCall.name,
+        content: "页面结构快照",
+      }),
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      content: "已总结当前页面",
+      toolAttachments: [
+        expect.objectContaining({
+          kind: "automation-report",
+          playbook: expect.objectContaining({
+            playbookId: "page_reading",
+            title: "页面阅读",
+          }),
+        }),
+      ],
+    });
+    const selectionBody = JSON.parse(String(fetcher.mock.calls[0][1]?.body)) as { tools?: unknown[]; messages: Array<{ content?: string }> };
+    expect(selectionBody.tools).toBeUndefined();
+    expect(JSON.stringify(selectionBody.messages)).toContain("候选 Playbook");
+    const decisionBody = JSON.parse(String(fetcher.mock.calls[1][1]?.body)) as { tools?: unknown[]; messages: Array<{ role: string; content?: string }> };
+    expect(decisionBody.tools).toHaveLength(1);
+    expect(JSON.stringify(decisionBody.messages)).toContain("当前选中的浏览器自动化任务策略：页面阅读");
+    expect(JSON.stringify(decisionBody.messages)).not.toContain("候选 Playbook");
+    const finalBody = JSON.parse(String(fetcher.mock.calls[3][1]?.body)) as { tools?: unknown[]; tool_choice?: unknown };
+    expect(finalBody.tools).toBeUndefined();
+    expect(finalBody.tool_choice).toBeUndefined();
+  });
+
+  it("未携带任务策略设置时不会额外执行 Playbook 预选", async () => {
+    registeredModelToolsMock.tools = [
+      {
+        id: "browser.take_snapshot",
+        name: "take_snapshot",
+        parameters: { type: "object", properties: {}, required: [], additionalProperties: false },
+      },
+    ];
+    const fetcher = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ choices: [{ message: { content: "普通回复" } }] }),
+    });
+
+    await handleChatSendMessage(
+      {
+        type: "chat.send",
+        model: createModel(),
+        messages: [createMessage("user", "帮我看看当前页面讲了什么")],
+        stream: false,
+        enabledToolIds: ["browser.take_snapshot"],
+        toolChoice: "auto",
+      },
+      fetcher,
+    );
+
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    for (const call of fetcher.mock.calls) {
+      const body = JSON.parse(String(call[1]?.body));
+      expect(JSON.stringify(body)).not.toContain("候选 Playbook");
+    }
+  });
+
   it("OpenAI-compatible 正文中的 DSML 工具调用会转成工具调用并移除协议文本", async () => {
     registeredModelToolsMock.tools = [
       {

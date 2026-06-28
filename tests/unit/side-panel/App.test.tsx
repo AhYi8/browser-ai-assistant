@@ -2616,6 +2616,7 @@ describe("App", () => {
     expect(screen.getByRole("tab", { name: "渠道管理" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "提取规则" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "同步设置" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "任务策略" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "提示词" })).toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "界面偏好" })).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "设置" }).closest("section")?.className).not.toContain("lg:grid-cols");
@@ -2637,6 +2638,10 @@ describe("App", () => {
     await user.click(screen.getByRole("tab", { name: "提示词" }));
     expect(screen.getByRole("heading", { name: "提示词" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "新增提示词" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "任务策略" }));
+    expect(screen.getByRole("heading", { name: "任务策略" })).toBeInTheDocument();
+    expect(screen.getByText("Network/API 分析")).toBeInTheDocument();
 
     await user.click(screen.getByRole("tab", { name: "同步设置" }));
 

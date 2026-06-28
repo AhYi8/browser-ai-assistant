@@ -198,6 +198,13 @@ describe("通用工具附件聚合", () => {
       objective: "排查登录失败 token=secret",
       conclusion: "发现 Network 500 token=secret",
       fullAccessIncluded: false,
+      playbook: {
+        playbookId: "site_diagnostics",
+        title: "现场诊断",
+        source: "builtin",
+        confidence: "high",
+        reason: "用户要求排查当前页面错误 token=secret",
+      },
       timeline: [
         {
           id: "event-1",
@@ -250,6 +257,11 @@ describe("通用工具附件聚合", () => {
       kind: "automation-report",
       redacted: true,
       reportType: "interface_analysis",
+      playbook: expect.objectContaining({
+        playbookId: "site_diagnostics",
+        title: "现场诊断",
+        reason: "用户要求排查当前页面错误 token=[已脱敏]",
+      }),
       objective: "排查登录失败 token=[已脱敏]",
       conclusion: "发现 Network 500 token=[已脱敏]",
       timeline: [
@@ -266,6 +278,8 @@ describe("通用工具附件聚合", () => {
     expect(formatToolAttachmentForPrompt(attachment!)).not.toContain("123456");
     expect(formatToolAttachmentForExport(attachment!)).toContain("# 自动化任务报告附件");
     expect(formatToolAttachmentForExport(attachment!)).toContain("任务类型：接口分析");
+    expect(formatToolAttachmentForExport(attachment!)).toContain("本次使用策略：现场诊断");
+    expect(formatToolAttachmentForExport(attachment!)).toContain("选择置信度：high");
     expect(formatToolAttachmentForExport(attachment!)).toContain("时间线：");
     expect(formatToolAttachmentForExport(attachment!)).toContain("失败恢复建议");
     expect(formatToolAttachmentForExport(attachment!)).toContain("失败工具：列出 Network 请求");

@@ -1,4 +1,4 @@
-import type { ChatMessage, ChatToolAttachment, ChatToolCallRecord } from "../../shared/types";
+import type { AutomationPlaybookSelection, ChatMessage, ChatToolAttachment, ChatToolCallRecord } from "../../shared/types";
 import type { ModelRequestMessage, ModelResponseData, ModelToolCall, ModelToolExecutor, ModelToolRegistryEntry, ModelToolResultMessage } from "../../shared/models/types";
 import { isBrowserAutomationToolId } from "../../shared/models/toolRegistry";
 import { createAutomationReportToolAttachment } from "../../shared/toolArtifacts";
@@ -20,6 +20,7 @@ export interface RunModelToolLoopInput {
   requestModel: (messages: ModelRequestMessage[]) => Promise<ModelToolLoopResponse>;
   requestFinalModel?: (messages: ModelRequestMessage[]) => Promise<ModelToolLoopResponse>;
   executeTool: ModelToolExecutor;
+  automationPlaybookSelection?: AutomationPlaybookSelection;
   onToolTurnMessage?: (message: ChatMessage) => void;
   onToolCallStart?: (record: ChatToolCallRecord) => void;
   onToolCallComplete?: (record: ChatToolCallRecord, attachments: ChatToolAttachment[]) => void;
@@ -131,6 +132,7 @@ export async function runModelToolLoop(input: RunModelToolLoopInput): Promise<Mo
         conclusion: summarizeAutomationConclusion(currentTurnRecords),
         records: currentTurnRecords,
         attachments: currentTurnAttachments,
+        playbook: input.automationPlaybookSelection,
       });
       if (report) {
         appendUniqueToolAttachments(toolAttachments, [report]);

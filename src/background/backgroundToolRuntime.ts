@@ -1,6 +1,7 @@
 import {
   BROWSER_TAKE_SNAPSHOT_TOOL_ID,
   BROWSER_TAKE_SNAPSHOT_TOOL_NAME,
+  BROWSER_EXTRACT_CONTENT_TOOL_ID,
   CURRENT_TIME_TOOL_NAME,
   RUNTIME_DESCRIBE_FUNCTION_TOOL_ID,
   RUNTIME_INSPECT_GLOBALS_TOOL_ID,
@@ -18,7 +19,8 @@ import {
   TAVILY_SEARCH_TOOL_NAME,
 } from "../shared/models/toolRegistry";
 import type { ModelRequestMessage, ModelSystemMessage, ModelToolCall, ModelToolDefinition, ModelToolExecutor, ModelToolRegistryEntry } from "../shared/models/types";
-import type { ModelConfig } from "../shared/types";
+import { getAutomationPlaybookById } from "../shared/automationPlaybooks";
+import type { AutomationPlaybookSelection, ExtractionRule, ModelConfig } from "../shared/types";
 import { createWebSearchToolAttachment } from "../shared/toolArtifacts";
 import { createTavilySearchContextPrompt } from "../shared/webSearch/tavily";
 import type { TavilySearchOptions } from "../shared/webSearch/tavily";
@@ -31,6 +33,7 @@ const DEFAULT_BROWSER_AUTOMATION_MAX_TOOL_ITERATIONS = 32;
 
 export interface BackgroundToolExecutorMessage {
   model: ModelConfig;
+  extractionRules?: ExtractionRule[];
   tavily?: TavilySearchOptions;
 }
 
@@ -93,6 +96,10 @@ export function createBackgroundToolExecutor(message: BackgroundToolExecutorMess
       return browserControlManager.takeSnapshot(toolCall);
     }
 
+    if (tool.id === BROWSER_EXTRACT_CONTENT_TOOL_ID) {
+      return browserControlManager.extractContent(toolCall, message.extractionRules ?? []);
+    }
+
     if (tool.id.startsWith("browser.")) {
       return browserControlManager.executeBrowserTool(toolCall);
     }
@@ -145,7 +152,11 @@ export function createBackgroundToolExecutor(message: BackgroundToolExecutorMess
   };
 }
 
-export function appendBrowserControlPromptIfNeeded(messages: ModelRequestMessage[], enabledTools: ModelToolRegistryEntry[]): ModelRequestMessage[] {
+export function appendBrowserControlPromptIfNeeded(
+  messages: ModelRequestMessage[],
+  enabledTools: ModelToolRegistryEntry[],
+  automationPlaybookSelection?: AutomationPlaybookSelection,
+): ModelRequestMessage[] {
   if (!enabledTools.some((tool) => isBrowserAutomationToolId(tool.id))) {
     return messages;
   }
@@ -162,6 +173,7 @@ export function appendBrowserControlPromptIfNeeded(messages: ModelRequestMessage
       : []),
     "- 需要当前页面结构时先调用 take_snapshot。",
     "- 需要确认 URL、标题、加载状态、视口、滚动位置或当前焦点时，优先调用 get_page_state。",
+    "- 需要读取当前页面正文、全文 HTML，或按发送前提取规则、CSS、XPath 提取局部 HTML/文本时，调用 extract_content；该工具只读，不执行自定义脚本，不读取 Cookie、Storage 或跨域 iframe。",
     "- 需要确认页面视觉状态时调用 screenshot；截图图片只会作为工具附件返回，正文不会包含 base64。",
     "- 需要排查页面报错、JS 异常、资源加载失败或控制台日志时，优先调用 get_console_messages。",
     "- 需要按文本、role、label、placeholder 或简单 CSS 定位候选元素时，先使用 take_snapshot，再调用 find_elements 获取可继续操作的 UID。",
@@ -202,20 +214,40 @@ export function appendBrowserControlPromptIfNeeded(messages: ModelRequestMessage
         ]
       : []),
   ].join("\n");
+  const playbookPrompt = createSelectedAutomationPlaybookPrompt(automationPlaybookSelection);
+  const finalPrompt = playbookPrompt ? `${browserPrompt}\n\n${playbookPrompt}` : browserPrompt;
   const systemIndex = messages.findIndex((message) => message.role === "system");
   if (systemIndex >= 0) {
     return messages.map((message, index) =>
       index === systemIndex
-        ? { ...message, content: `${message.content}\n\n${browserPrompt}` }
+        ? { ...message, content: `${message.content}\n\n${finalPrompt}` }
         : message,
     );
   }
 
   const systemMessage: ModelSystemMessage = {
     role: "system",
-    content: browserPrompt,
+    content: finalPrompt,
   };
   return [systemMessage, ...messages];
+}
+
+function createSelectedAutomationPlaybookPrompt(selection: AutomationPlaybookSelection | undefined): string | undefined {
+  if (!selection) {
+    return undefined;
+  }
+  const playbook = getAutomationPlaybookById(selection.playbookId);
+  if (!playbook) {
+    return undefined;
+  }
+  return [
+    `当前选中的浏览器自动化任务策略：${playbook.title}`,
+    `选择理由：${selection.reason}`,
+    `置信度：${selection.confidence}`,
+    "策略提示：",
+    playbook.prompt,
+    "注意：任务策略只影响工具调用规划，不会开启未启用工具、提升运行态权限或绕过边界确认。",
+  ].join("\n");
 }
 
 function executeCurrentTimeTool(toolCall: ModelToolCall): Awaited<ReturnType<ModelToolExecutor>> {

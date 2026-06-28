@@ -15,6 +15,8 @@ export const BROWSER_TAKE_SNAPSHOT_TOOL_ID = "browser.take_snapshot";
 export const BROWSER_TAKE_SNAPSHOT_TOOL_NAME = "take_snapshot";
 export const BROWSER_GET_PAGE_STATE_TOOL_ID = "browser.get_page_state";
 export const BROWSER_GET_PAGE_STATE_TOOL_NAME = "get_page_state";
+export const BROWSER_EXTRACT_CONTENT_TOOL_ID = "browser.extract_content";
+export const BROWSER_EXTRACT_CONTENT_TOOL_NAME = "extract_content";
 export const BROWSER_GET_CONSOLE_MESSAGES_TOOL_ID = "browser.get_console_messages";
 export const BROWSER_GET_CONSOLE_MESSAGES_TOOL_NAME = "get_console_messages";
 export const BROWSER_INSPECT_ELEMENT_TOOL_ID = "browser.inspect_element";
@@ -132,6 +134,7 @@ const TOOL_CLASSIFICATION_BY_ID: Record<string, ModelToolClassification> = {
   [TAVILY_SEARCH_TOOL_ID]: { runtime: "external_web", capabilities: ["search_public_web"], risk: "low" },
   [BROWSER_TAKE_SNAPSHOT_TOOL_ID]: { runtime: "browser_control", capabilities: ["observe_page"], risk: "low" },
   [BROWSER_GET_PAGE_STATE_TOOL_ID]: { runtime: "browser_control", capabilities: ["observe_page"], risk: "low" },
+  [BROWSER_EXTRACT_CONTENT_TOOL_ID]: { runtime: "browser_control", capabilities: ["observe_page"], risk: "medium" },
   [BROWSER_GET_CONSOLE_MESSAGES_TOOL_ID]: { runtime: "browser_control", capabilities: ["observe_page", "analyze_site"], risk: "medium" },
   [BROWSER_INSPECT_ELEMENT_TOOL_ID]: { runtime: "browser_control", capabilities: ["observe_page", "analyze_site"], risk: "low" },
   [BROWSER_FIND_ELEMENTS_TOOL_ID]: { runtime: "browser_control", capabilities: ["observe_page"], risk: "low" },
@@ -250,6 +253,46 @@ const RAW_AVAILABLE_MODEL_TOOLS: Omit<ModelToolRegistryEntry, "toolClassificatio
     parameters: {
       type: "object",
       properties: {},
+      required: [],
+      additionalProperties: false,
+    },
+  },
+  {
+    id: BROWSER_EXTRACT_CONTENT_TOOL_ID,
+    name: BROWSER_EXTRACT_CONTENT_TOOL_NAME,
+    groupId: MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
+    requiredCapabilities: ["browser_control"],
+    displayName: "浏览器内容提取",
+    description: "从当前受控页面只读提取可见文本或 HTML。可复用发送前页面提取规则、提取全文，或按合法 CSS/XPath 提取匹配节点；不执行模型自定义脚本，不读取 Cookie、Storage 或跨域 iframe。",
+    parameters: {
+      type: "object",
+      properties: {
+        mode: {
+          type: "string",
+          enum: ["text", "html"],
+          description: "提取模式。text 返回可见文本，html 返回完整 HTML 或匹配节点 outerHTML；默认 text。",
+        },
+        source: {
+          type: "string",
+          enum: ["auto_rule", "document", "selector"],
+          description: "提取来源。auto_rule 使用当前提取规则并允许回退，document 提取全文，selector 使用本次提供的 CSS/XPath；默认 auto_rule。",
+        },
+        selectorType: {
+          type: "string",
+          enum: ["css", "xpath"],
+          description: "source=selector 时指定选择器类型。",
+        },
+        selector: {
+          type: "string",
+          description: "source=selector 时提供的 CSS 或 XPath。必须是合法选择器，不接受 JavaScript 表达式。",
+        },
+        maxLength: {
+          type: "integer",
+          minimum: 500,
+          maximum: 200000,
+          description: "最大返回字符数，默认 30000。超出后会截断并标记 truncated。",
+        },
+      },
       required: [],
       additionalProperties: false,
     },

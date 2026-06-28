@@ -14,6 +14,8 @@ import {
   BROWSER_CONTEXT_CLICK_TOOL_NAME,
   BROWSER_DOUBLE_CLICK_TOOL_ID,
   BROWSER_DOUBLE_CLICK_TOOL_NAME,
+  BROWSER_EXTRACT_CONTENT_TOOL_ID,
+  BROWSER_EXTRACT_CONTENT_TOOL_NAME,
   BROWSER_DRAG_TOOL_ID,
   BROWSER_DRAG_TOOL_NAME,
   BROWSER_FILL_TOOL_ID,
@@ -161,6 +163,34 @@ describe("模型工具注册表", () => {
         required: [],
         additionalProperties: false,
       },
+    });
+  });
+
+  it("注册浏览器内容提取工具且普通浏览器控制模式可用", () => {
+    const extractTool = getRegisteredModelTools().find((tool) => tool.id === BROWSER_EXTRACT_CONTENT_TOOL_ID);
+
+    expect(extractTool).toMatchObject({
+      id: BROWSER_EXTRACT_CONTENT_TOOL_ID,
+      name: BROWSER_EXTRACT_CONTENT_TOOL_NAME,
+      displayName: "浏览器内容提取",
+      requiredCapabilities: ["browser_control"],
+      toolClassification: {
+        runtime: "browser_control",
+        capabilities: ["observe_page"],
+        risk: "medium",
+      },
+      parameters: {
+        type: "object",
+        required: [],
+        additionalProperties: false,
+      },
+    });
+    expect(extractTool?.parameters.properties).toMatchObject({
+      mode: { type: "string", enum: ["text", "html"] },
+      source: { type: "string", enum: ["auto_rule", "document", "selector"] },
+      selectorType: { type: "string", enum: ["css", "xpath"] },
+      selector: { type: "string" },
+      maxLength: { type: "integer", minimum: 500, maximum: 200000 },
     });
   });
 
@@ -656,6 +686,7 @@ describe("模型工具注册表", () => {
     expect(browserGroup?.tools.map((tool) => tool.id)).toEqual([
       BROWSER_TAKE_SNAPSHOT_TOOL_ID,
       BROWSER_GET_PAGE_STATE_TOOL_ID,
+      BROWSER_EXTRACT_CONTENT_TOOL_ID,
       BROWSER_GET_CONSOLE_MESSAGES_TOOL_ID,
       BROWSER_INSPECT_ELEMENT_TOOL_ID,
       BROWSER_FIND_ELEMENTS_TOOL_ID,
@@ -934,6 +965,11 @@ describe("模型工具注册表", () => {
       runtime: "browser_control",
       capabilities: ["observe_page"],
       risk: "low",
+    });
+    expect(classificationById.get(BROWSER_EXTRACT_CONTENT_TOOL_ID)).toEqual({
+      runtime: "browser_control",
+      capabilities: ["observe_page"],
+      risk: "medium",
     });
     expect(classificationById.get(BROWSER_GET_CONSOLE_MESSAGES_TOOL_ID)).toEqual({
       runtime: "browser_control",

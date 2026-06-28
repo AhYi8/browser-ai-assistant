@@ -4,9 +4,11 @@ import { shouldPassDeepSeekReasoningContent } from "../shared/models/openaiChatA
 import { normalizeModelRequestRetryCount, shouldRetryModelResponse, withModelRequestRetry, type ModelRequestRetryProgress } from "../shared/models/modelRequestRetry";
 import { getRegisteredModelTools, isBrowserAutomationToolId, resolveEnabledModelTools } from "../shared/models/toolRegistry";
 import type { ModelRequestMessage, ModelToolCall, ModelToolChoice, ModelToolDefinition, ModelToolExecutor, OpenAIStructuredOutputFormat } from "../shared/models/types";
-import type { ChatMessage, ChatToolAttachment, ChatToolCallRecord, ModelConfig } from "../shared/types";
+import type { AutomationPlaybookSettings, ChatMessage, ChatToolAttachment, ChatToolCallRecord, ExtractionRule, ModelConfig } from "../shared/types";
 import type { TavilySearchOptions } from "../shared/webSearch/tavily";
+import { getEnabledAutomationPlaybooks, normalizeAutomationPlaybookSettings, shouldRunAutomationPlaybookSelection } from "../shared/automationPlaybooks";
 import { appendBrowserControlPromptIfNeeded, createBackgroundToolExecutor, createModelToolDefinition, normalizeBrowserAutomationMaxToolIterations, shouldExposeTool } from "./backgroundToolRuntime";
+import { selectAutomationPlaybook } from "./automationPlaybookSelector";
 import { extractAssistantResponseData } from "./modelAssistantResponseParser";
 import { readModelStreamResponse } from "./modelStreamResponseParser";
 import { runModelToolLoop } from "./toolCalling/toolLoop";
@@ -22,6 +24,8 @@ export interface ChatSendMessage {
   tavily?: TavilySearchOptions;
   retryCount?: number;
   browserAutomationMaxToolIterations?: number;
+  automationPlaybookSettings?: AutomationPlaybookSettings;
+  extractionRules?: ExtractionRule[];
 }
 
 type ChatSendHandlerMessage = ChatSendMessage & {
@@ -71,7 +75,8 @@ export async function handleChatSendMessage(
   const enabledTools = resolveEnabledModelTools(getRegisteredModelTools(), message.enabledToolIds ?? []);
   const exposedTools = message.structuredOutput ? [] : enabledTools.filter(shouldExposeTool);
   const toolExecutor = executeTool ?? createBackgroundToolExecutor(message, fetcher);
-  const initialMessages = appendBrowserControlPromptIfNeeded(message.messages, exposedTools);
+  const automationPlaybookSelection = await maybeSelectAutomationPlaybook(message, exposedTools, fetcher);
+  const initialMessages = appendBrowserControlPromptIfNeeded(message.messages, exposedTools, automationPlaybookSelection);
   const exposedToolIds = exposedTools.map((tool) => tool.id);
   const toolOptions = exposedTools.length > 0
     ? {
@@ -92,6 +97,7 @@ export async function handleChatSendMessage(
         return requestModelOnce({ ...message, messages, stream: message.stream, tools: undefined, toolChoice: undefined }, fetcher, callbacks);
       },
       executeTool: toolExecutor,
+      automationPlaybookSelection,
       signal: message.signal,
       onToolTurnMessage: callbacks.onToolTurnMessage,
       onToolCallStart: callbacks.onToolCallStart,
@@ -103,6 +109,55 @@ export async function handleChatSendMessage(
   }
 
   return requestModelOnce({ ...message, messages: initialMessages, tools: toolOptions.tools, toolChoice: toolOptions.toolChoice }, fetcher, callbacks);
+}
+
+async function maybeSelectAutomationPlaybook(
+  message: ChatSendHandlerMessage,
+  exposedTools: ReturnType<typeof resolveEnabledModelTools>,
+  fetcher: Fetcher,
+) {
+  if (!message.automationPlaybookSettings || message.structuredOutput || exposedTools.length === 0 || !exposedTools.some((tool) => isBrowserAutomationToolId(tool.id))) {
+    return undefined;
+  }
+  const userContent = getLatestUserContent(message.messages);
+  if (!shouldRunAutomationPlaybookSelection(userContent)) {
+    return undefined;
+  }
+  const settings = normalizeAutomationPlaybookSettings(message.automationPlaybookSettings);
+  const playbooks = getEnabledAutomationPlaybooks(settings);
+  if (playbooks.length === 0) {
+    return undefined;
+  }
+  return selectAutomationPlaybook({
+    model: message.model,
+    userContent,
+    pageContextSummary: getPageContextSummary(message.messages),
+    playbooks,
+    retryCount: message.retryCount,
+    fetcher,
+    signal: message.signal,
+  });
+}
+
+function getLatestUserContent(messages: ModelRequestMessage[]): string {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role === "user" && typeof message.content === "string" && message.content.trim()) {
+      return message.content.trim();
+    }
+  }
+  return "";
+}
+
+function getPageContextSummary(messages: ModelRequestMessage[]): string | undefined {
+  const systemText = messages
+    .filter((message): message is Extract<ModelRequestMessage, { role: "system"; content: string }> => message.role === "system" && typeof message.content === "string")
+    .map((message) => message.content)
+    .join("\n");
+  const title = systemText.match(/页面标题[:：]\s*(.+)/)?.[1]?.trim();
+  const url = systemText.match(/当前 URL[:：]\s*(.+)/)?.[1]?.trim() ?? systemText.match(/URL[:：]\s*(https?:\/\/\S+)/)?.[1]?.trim();
+  const parts = [title ? `标题：${title.slice(0, 120)}` : "", url ? `URL：${url.slice(0, 200)}` : ""].filter(Boolean);
+  return parts.length ? parts.join("\n") : undefined;
 }
 
 async function requestModelOnce(

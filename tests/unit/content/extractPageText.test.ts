@@ -176,6 +176,22 @@ describe("extractPageText", () => {
     expect(result.matchedRuleId).toBe("rule-1");
   });
 
+  it("禁用回退时选择器未命中不会返回全文 HTML", () => {
+    document.documentElement.innerHTML = "<head><title>测试</title></head><body><main>正文</main></body>";
+
+    const result = extractPageText({
+      url: "https://example.com/article",
+      rules: [createRule({ selectorsText: ".missing" })],
+      extractMode: "all",
+      allowFallback: false,
+    });
+
+    expect(result.text).toBe("");
+    expect(result.usedFallback).toBe(false);
+    expect(result.truncated).toBe(false);
+    expect(result.matchedRuleId).toBe("rule-1");
+  });
+
   it("提取所有模式命中 XPath 时按顺序返回匹配元素 outerHTML", () => {
     setPage("<section><article>第一段</article><article>第二段</article></section>");
 

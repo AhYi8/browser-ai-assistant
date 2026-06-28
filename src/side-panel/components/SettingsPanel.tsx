@@ -2,15 +2,17 @@ import { useState } from "react";
 import { ChannelManagement } from "./settings/ChannelManagement";
 import { ChatPreferenceSettings } from "./settings/ChatPreferenceSettings";
 import { ExtractionRules } from "./settings/ExtractionRules";
+import { AutomationPlaybookSettings } from "./settings/AutomationPlaybookSettings";
 import { PromptTemplateSettings } from "./settings/PromptTemplateSettings";
 import { SyncSettings } from "./settings/SyncSettings";
 
-type SettingsTab = "channels" | "rules" | "chat" | "prompts" | "sync";
+type SettingsTab = "channels" | "rules" | "chat" | "playbooks" | "prompts" | "sync";
 
 const settingsTabs: Array<{ id: SettingsTab; label: string }> = [
   { id: "channels", label: "渠道管理" },
   { id: "rules", label: "提取规则" },
   { id: "chat", label: "聊天偏好" },
+  { id: "playbooks", label: "任务策略" },
   { id: "prompts", label: "提示词" },
   { id: "sync", label: "同步设置" },
 ];
@@ -48,6 +50,7 @@ export function SettingsPanel() {
           {activeTab === "channels" ? <ChannelManagement /> : null}
           {activeTab === "rules" ? <ExtractionRules /> : null}
           {activeTab === "chat" ? <ChatPreferenceSettings /> : null}
+          {activeTab === "playbooks" ? <AutomationPlaybookSettings /> : null}
           {activeTab === "prompts" ? <PromptTemplateSettings /> : null}
           {activeTab === "sync" ? <SyncSettings /> : null}
         </div>
