@@ -253,6 +253,7 @@
 * 涉及侧边栏关键交互、响应式布局、扩展加载、页面提取或导出菜单时，除单元测试外应补充 `npm run test:e2e` 或等价 Playwright 冒烟验证。
 * 修改 `public/manifest.json`、background、content script、side panel 入口或 Playwright 扩展 fixture 时，应运行 `npx playwright test --project=chrome-extension` 验证真实 Chrome/Edge 扩展加载；fixture 可优先读取 `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`、`CHROME_PATH`、`EDGE_PATH` 或本机 Chrome/Edge 路径，运行前必须能找到 `dist/manifest.json`，缺失时返回明确中文构建提示。
 * `SettingsPanel` 只作为设置页签壳层；渠道管理、提取规则、聊天偏好、提示词和同步设置应继续放在 `src/side-panel/components/settings/*` 独立组件中，共享表单控件优先沉到同目录小组件，避免重新堆回单个超大文件。
+* 渠道模型列表接口并非所有供应商都支持；渠道管理必须保留手动模型 ID 添加路径。新增或修改手动模型输入时，必须支持英文逗号批量添加、过滤空值和重复值，并补充模型 ID 编辑与 IME 组合输入回归测试。当前渠道模型区的“清空所有”按用户要求点击后立即清空当前渠道全部模型，不做二次确认；修改该行为必须补充回归测试。
 
 ### 10.13 Debugger Network 工具化
 
@@ -290,7 +291,8 @@
 * `source-map` 工具附件必须通过通用 `toolAttachments` 保存、展示、导出和后续上下文注入；历史归一化和聚合必须保留候选来源、映射位置、原始片段、失败摘要、`redacted` 与 `truncated` 标记。
 * `source-map` 原始片段即使未实际替换敏感词，也必须标记为已进入脱敏管道；UI 展示、工具正文、导出和后续追问上下文只能输出 `resourceId`、行列、原始 source、name、ignored、sourcesContent 状态和中文失败摘要，不得直接 `JSON.stringify` 完整对象或暴露完整 `resourceUrl`；候选展示只能显示 inline、外部 Source Map 或无 URL 摘要，不得直接渲染完整 map URL。
 * Source Map 原始源码片段展示、导出和再次注入模型前必须复用敏感赋值脱敏和截断规则，避免泄露 Cookie、Authorization、Token、API Key、Secret、Password、Session、CSRF 等凭据。
-* 浏览器自动化授权统一为三种运行态：`normal_restricted` 普通模式、`controlled_enhanced` 受控增强模式、`full_access` 完全访问最高权限模式；模式只属于运行态，不得进入聊天偏好、会话历史、同步快照或导出内容。
+* 浏览器自动化授权统一为三种运行态：`normal_restricted` 普通模式、`controlled_enhanced` 受控增强模式、`full_access` 完全访问最高权限模式；聊天偏好只能保存“开启浏览器控制后的默认模式”，不得保存当前页面的已授权运行态、一次性 grant、会话历史授权或导出授权。
+* 浏览器控制关闭时当前运行态必须显示并收口为 `normal_restricted`；用户开启浏览器控制后，Side Panel 才能按聊天偏好中的默认模式同步到 background，若 background 拒绝必须回退到普通模式并给出中文错误。
 * `.composer-switches` 中流式响应开关左侧必须保留三模式选择；顶部不得恢复“运行时只读分析”按钮。浏览器控制关闭时模式选择必须禁用并显示普通模式。
 * 三模式选择菜单弹层必须使用当前主题已定义的实体背景变量，例如 `--color-canvas`、`--color-surface-soft` 或 `--color-surface-card`；不得引用未定义的 `--color-surface` 导致弹层背景在 Claude light 主题下变成透明。
 * `runtime.inspect_globals`、`runtime.search_modules`、`runtime.describe_function` 已并入普通模式默认能力；它们属于浏览器自动化工具组，但仍必须满足浏览器控制开启、当前 tab 已 attach、Network recorder 已启用和 background 固定只读模板校验。
@@ -328,7 +330,7 @@
 * 关闭浏览器控制、切换受控 tab、导航、刷新、debugger detach、授权过期或终止生成时，必须清理请求重放授权、草案和临时确认，并中止正在进行的重放请求；其中切换受控 tab、导航和刷新不得顺带把用户选择的受控增强模式改回普通模式。
 * 敏感字段解锁和“完全访问”属于请求重放之后的最高风险授权层，默认关闭；用户切换到完全访问模式后，本会话当前受控页面可通过 `full_access.execute_script`、`full_access.fetch`、`full_access.get_network_details`、`full_access.read_storage` 和 `full_access.revoke` 执行最高权限动作，工具结果可原样回灌给 AI。
 * “完全访问”是用户在当前会话当前受控页面显式选择的最高权限模式；该模式下不得再叠加人为逐项确认、只读、脱敏、敏感字段过滤、请求重放沙箱、凭据剥离或目标范围白名单。实现仍只能使用 Chrome、网页和扩展平台本身允许的能力。
-* 完全访问授权不得持久化到聊天偏好、同步快照或导出配置；用户切换模式、关闭浏览器控制、tab 关闭、debugger detach 或用户撤销时必须立即失效，并广播状态变化让所有 Side Panel 收口。刷新、导航、工具轮次变化或生成终止不得擅自把用户选择的完全访问模式改回普通模式。
+* 完全访问的当前页面授权、一次性 grant 与运行态证据不得持久化到聊天偏好、同步快照或导出配置；聊天偏好只允许保存“下次开启浏览器控制后默认进入完全访问”的用户偏好。用户切换模式、关闭浏览器控制、tab 关闭、debugger detach 或用户撤销时，当前完全访问授权必须立即失效，并广播状态变化让所有 Side Panel 收口。刷新、导航、工具轮次变化或生成终止不得擅自把用户选择的完全访问模式改回普通模式。
 * 完全访问模式不再拆成草案和确认执行两步；用户切换模式即视为当前会话授权。实现仍只能使用 Chrome、网页和扩展平台本身允许的能力，不得声称能绕过浏览器、网页 CSP、站点权限或扩展平台硬限制。
 * 修改完全访问工具时，必须覆盖：普通/受控增强不暴露、完全访问暴露、非完全访问伪造调用 fail closed、脚本执行原始返回、fetch 默认 `credentials: "include"`、Network/Storage 原文返回、撤销和生命周期清理。
 * 完全访问工具结果允许原样进入 tool result、聊天消息、工具附件和后续 AI 上下文；Network 详情、列表、等待、聚合附件、展示组件、导出和后续追问上下文必须共同识别 `fullAccess: true` 与 `redacted: false`，不得在附件链路重新脱敏为“已脱敏”。

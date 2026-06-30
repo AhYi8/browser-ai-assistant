@@ -8,6 +8,7 @@ import {
   getRegisteredModelTools,
 } from "../../../shared/models/toolRegistry";
 import type { ModelToolCapability, ModelToolRisk, ModelToolRuntimeRequirement } from "../../../shared/models/types";
+import type { BrowserAutomationMode } from "../../../shared/toolAuthorization";
 import type { ChatPreferenceValues, SendShortcut } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
 import { useComposedTextInput } from "../useComposedTextInput";
@@ -19,6 +20,12 @@ const sendShortcutOptions: Array<{ value: SendShortcut; label: string }> = [
   { value: "ctrl_enter", label: "Ctrl+Enter" },
   { value: "ctrl_shift_enter", label: "Ctrl+Shift+Enter" },
   { value: "alt_enter", label: "Alt+Enter" },
+];
+
+const browserAutomationModeOptions: Array<{ value: BrowserAutomationMode; label: string }> = [
+  { value: "normal_restricted", label: "普通模式" },
+  { value: "controlled_enhanced", label: "受控增强" },
+  { value: "full_access", label: "完全访问" },
 ];
 
 const toolRuntimeLabels: Record<ModelToolRuntimeRequirement, string> = {
@@ -103,6 +110,21 @@ export function ChatPreferenceSettings() {
           step={1}
           onChange={(value) => void updateChatPreferences({ browserAutomationMaxToolIterations: value })}
         />
+        <label className="chat-preference-field">
+          浏览器自动化默认模式
+          <select
+            className="ui-input chat-preference-shortcut-select"
+            aria-label="浏览器自动化默认模式"
+            value={chatPreferences.defaultBrowserAutomationMode ?? "normal_restricted"}
+            onChange={(event) => void updateChatPreferences({ defaultBrowserAutomationMode: event.target.value as BrowserAutomationMode })}
+          >
+            {browserAutomationModeOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
         <GlobalPreferenceNumberInput
           label="temperature"
           value={chatPreferences.temperature}

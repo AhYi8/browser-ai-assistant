@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import type { KeyboardEvent } from "react";
 import type { ModelProvider, ProviderModel } from "../../../shared/types";
 import { parseTavilyIncludeAnswerInput, parseTavilyIncludeRawContentInput } from "../../../shared/webSearch/settings";
 import { useAppStore } from "../../state/appStore";
@@ -56,6 +57,8 @@ export function ChannelManagement() {
   const [selectedProviderId, setSelectedProviderId] = useState(visibleProviders[0].id);
   const [expandedProviderId, setExpandedProviderId] = useState<string>();
   const [remoteModelQuery, setRemoteModelQuery] = useState("");
+  const [batchModelInput, setBatchModelInput] = useState("");
+  const [batchModelError, setBatchModelError] = useState("");
   const [settingsModelId, setSettingsModelId] = useState<string>();
   const [showTavilyApiKey, setShowTavilyApiKey] = useState(false);
   useEffect(() => {
@@ -128,6 +131,36 @@ export function ChannelManagement() {
   const handleAddModel = () => {
     const provider = ensureSelectedProvider();
     addModel(provider.id);
+  };
+  const handleClearModels = () => {
+    const shouldCloseSettings = settingsModelId ? realProviderModels.some((model) => model.id === settingsModelId) : false;
+    realProviderModels.forEach((model) => deleteModel(model.id));
+    if (shouldCloseSettings) {
+      setSettingsModelId(undefined);
+    }
+  };
+  const handleBatchAddModels = () => {
+    const provider = ensureSelectedProvider();
+    const existingModelIds = new Set(models.filter((model) => model.providerId === provider.id).map((model) => model.modelId));
+    const nextModelIds = Array.from(new Set(batchModelInput.split(",").map((item) => item.trim()).filter(Boolean)))
+      .filter((modelId) => !existingModelIds.has(modelId));
+
+    if (nextModelIds.length === 0) {
+      setBatchModelError("请输入至少一个未添加的模型 ID");
+      return;
+    }
+
+    nextModelIds.forEach((modelId) => addModel(provider.id, { modelId, displayName: modelId }));
+    setBatchModelInput("");
+    setBatchModelError("");
+  };
+  const handleBatchModelInputKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key !== "Enter" || event.nativeEvent.isComposing) {
+      return;
+    }
+
+    event.preventDefault();
+    handleBatchAddModels();
   };
   const handleFetchRemoteModels = () => {
     const provider = ensureSelectedProvider();
@@ -271,10 +304,32 @@ export function ChannelManagement() {
       <section className="grid gap-3 border-t border-[var(--color-hairline)] pt-4" aria-label="渠道模型">
         <div className="flex items-center justify-between gap-3">
           <h4 className="text-sm font-semibold">模型</h4>
-          <button className="ui-button-secondary" type="button" onClick={handleAddModel}>
-            添加模型
-          </button>
+          <div className="flex shrink-0 flex-wrap gap-2">
+            <button className="ui-button-secondary" type="button" onClick={handleAddModel}>
+              添加模型
+            </button>
+            <button className="ui-button-secondary" type="button" onClick={handleClearModels} disabled={realProviderModels.length === 0}>
+              清空所有
+            </button>
+          </div>
         </div>
+        <label className="grid gap-1 text-sm">
+          批量添加模型
+          <input
+            className="ui-input"
+            aria-label="批量添加模型"
+            placeholder="输入模型 ID，用英文逗号分隔，回车添加"
+            value={batchModelInput}
+            onChange={(event) => {
+              setBatchModelInput(event.target.value);
+              if (batchModelError) {
+                setBatchModelError("");
+              }
+            }}
+            onKeyDown={handleBatchModelInputKeyDown}
+          />
+          {batchModelError ? <span className="text-xs text-[var(--color-error)]">{batchModelError}</span> : null}
+        </label>
         {remoteModels.length > 0 ? (
           <div className="grid gap-2 rounded-lg border border-[var(--color-hairline)] bg-[var(--color-surface-soft)] p-2">
             <label className="grid gap-1 text-sm">
@@ -484,6 +539,7 @@ export function ChannelManagement() {
         <ModelSettingsDialog
           model={settingsModel}
           onClose={() => setSettingsModelId(undefined)}
+          onChangeModelId={(modelId) => updateModel(settingsModel.id, { modelId })}
           onChangeSupportsVision={(supportsVision) => updateModel(settingsModel.id, { supportsVision })}
         />
       ) : null}
@@ -494,11 +550,23 @@ export function ChannelManagement() {
 interface ModelSettingsDialogProps {
   model: ProviderModel;
   onClose: () => void;
+  onChangeModelId: (modelId: string) => void;
   onChangeSupportsVision: (supportsVision: boolean) => void;
 }
 
-function ModelSettingsDialog({ model, onClose, onChangeSupportsVision }: ModelSettingsDialogProps) {
+function ModelSettingsDialog({ model, onClose, onChangeModelId, onChangeSupportsVision }: ModelSettingsDialogProps) {
+  const [modelIdError, setModelIdError] = useState("");
   const supportsVision = Boolean(model.supportsVision);
+  const modelIdInput = useComposedTextInput(model.modelId, (modelId) => {
+    const trimmedModelId = modelId.trim();
+    if (!trimmedModelId) {
+      setModelIdError("模型 ID 不能为空");
+      return;
+    }
+
+    setModelIdError("");
+    onChangeModelId(trimmedModelId);
+  });
 
   return (
     <>
@@ -513,6 +581,15 @@ function ModelSettingsDialog({ model, onClose, onChangeSupportsVision }: ModelSe
             关闭
           </button>
         </div>
+        <label className="grid gap-1 text-sm">
+          模型 ID
+          <input
+            className="ui-input"
+            aria-label="模型 ID"
+            {...modelIdInput}
+          />
+          {modelIdError ? <span className="text-xs text-[var(--color-error)]">{modelIdError}</span> : null}
+        </label>
         <label className="chat-preference-switch">
           <input
             className="chat-preference-switch-input"

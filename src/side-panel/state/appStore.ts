@@ -108,6 +108,7 @@ import {
 } from "./appStoreModelSelection";
 import {
   createDefaultChatPreferences,
+  normalizeBrowserAutomationMode,
   normalizeChatPreferenceOverrides,
   normalizeChatPreferences,
   resolveDefaultContextMode,
@@ -252,7 +253,7 @@ export interface AppState {
   addExampleModel: () => void;
   addProvider: () => ModelProvider;
   updateProvider: (providerId: string, updates: Partial<Pick<ModelProvider, "name" | "endpointType" | "endpointUrl" | "apiKey">>) => void;
-  addModel: (providerId: string) => ProviderModel;
+  addModel: (providerId: string, overrides?: Partial<Pick<ProviderModel, "displayName" | "modelId">>) => ProviderModel;
   addRemoteModel: (providerId: string, remoteModel: RemoteModelInfo) => ProviderModel;
   updateModel: (modelId: string, updates: Partial<Pick<ProviderModel, "displayName" | "modelId" | "temperature" | "maxTokens" | "topK" | "systemPrompt" | "supportsVision">>) => void;
   setTitleModel: (modelId: string) => void;
@@ -473,7 +474,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
       return { providers };
     }),
-  addModel: (providerId) => createAndStoreModel(providerId, get, set),
+  addModel: (providerId, overrides) => createAndStoreModel(providerId, get, set, overrides),
   addRemoteModel: (providerId, remoteModel) =>
     createAndStoreModel(providerId, get, set, {
       displayName: remoteModel.displayName,
@@ -616,20 +617,38 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
   setBrowserControlEnabled: async (enabled) => {
     const previousEnabled = get().browserControlEnabled;
+    const previousMode = get().browserAutomationMode;
     if (previousEnabled === enabled) {
       return;
     }
 
+    const defaultBrowserAutomationMode = enabled
+      ? normalizeBrowserAutomationMode(get().chatPreferences.defaultBrowserAutomationMode)
+      : "normal_restricted";
     set({
       browserControlEnabled: enabled,
-      ...(enabled ? {} : { runtimeReadonlyEnabled: false, browserAutomationMode: "normal_restricted", pendingBoundaryChoice: undefined }),
+      browserAutomationMode: defaultBrowserAutomationMode,
+      ...(enabled ? { pendingBoundaryChoice: undefined } : { runtimeReadonlyEnabled: false, pendingBoundaryChoice: undefined }),
     });
     const response = await syncBrowserControlEnabled(enabled);
     if (!response.ok) {
       set({
         browserControlEnabled: previousEnabled,
+        browserAutomationMode: previousMode,
         failure: { message: response.message },
       });
+      return;
+    }
+
+    if (enabled && defaultBrowserAutomationMode !== "normal_restricted") {
+      const modeResponse = await syncBrowserAutomationMode(defaultBrowserAutomationMode);
+      if (!modeResponse.ok) {
+        set({
+          browserAutomationMode: "normal_restricted",
+          pendingBoundaryChoice: undefined,
+          failure: { message: modeResponse.message },
+        });
+      }
     }
   },
   setBrowserAutomationMode: async (mode) => {

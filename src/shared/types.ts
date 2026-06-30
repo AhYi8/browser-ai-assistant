@@ -1,3 +1,5 @@
+import type { BrowserAutomationMode } from "./toolAuthorization";
+
 export type EndpointType = "openai_chat" | "anthropic_messages";
 export type ChatRole = "system" | "user" | "assistant";
 export type PageContextExtractMode = "text" | "all";
@@ -63,6 +65,7 @@ export interface ChatPreferenceValues {
   systemPrompt: string;
   aiRequestRetryCount: number;
   browserAutomationMaxToolIterations: number;
+  defaultBrowserAutomationMode?: BrowserAutomationMode;
   toolCallingEnabled: boolean;
   enabledToolIds: string[];
   toolCallDisplayMode: ToolCallDisplayMode;

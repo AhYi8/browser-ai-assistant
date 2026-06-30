@@ -1293,6 +1293,38 @@ describe("App", () => {
     expect(updateChatPreferences).toHaveBeenCalledWith({ sendShortcut: "ctrl_enter" });
   });
 
+  it("聊天偏好可以保存浏览器自动化默认模式", async () => {
+    const user = userEvent.setup();
+    const updateChatPreferences = vi.fn(async () => undefined);
+    useAppStore.setState({
+      chatPreferences: {
+        systemPrompt: "你是网页助手",
+        aiRequestRetryCount: 5,
+        browserAutomationMaxToolIterations: 32,
+        defaultBrowserAutomationMode: "normal_restricted",
+        toolCallingEnabled: false,
+        enabledToolIds: [],
+        temperature: 0.7,
+        maxTokens: 1024,
+        sendShortcut: "enter",
+        historyDrawerDefaultOpen: true,
+        injectPageContextByDefault: true,
+        extractHtmlByDefault: false,
+        toolCallDisplayMode: "assistant_grouped",
+        showToolCallProcessInAssistantMode: false,
+      },
+      updateChatPreferences,
+    });
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("tab", { name: "聊天偏好" }));
+    await user.selectOptions(screen.getByRole("combobox", { name: "浏览器自动化默认模式" }), "controlled_enhanced");
+
+    expect(updateChatPreferences).toHaveBeenCalledWith({ defaultBrowserAutomationMode: "controlled_enhanced" });
+  });
+
   it("聊天偏好可以保存工具调用总开关并显示空工具列表", async () => {
     const user = userEvent.setup();
     const updateChatPreferences = vi.fn(async () => undefined);
@@ -3133,6 +3165,79 @@ describe("App", () => {
 
     expect(screen.getByRole("button", { name: /OpenRouter/ })).toBeInTheDocument();
     expect(screen.getAllByText("gpt-4.1-mini").length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("可以用英文逗号批量手动添加模型", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("button", { name: "新增渠道" }));
+    await user.type(screen.getByRole("textbox", { name: "批量添加模型" }), "qwen-plus, deepseek-chat, qwen-plus{enter}");
+
+    expect(screen.getByText("qwen-plus")).toBeInTheDocument();
+    expect(screen.getByText("deepseek-chat")).toBeInTheDocument();
+    expect(screen.getAllByText("qwen-plus")).toHaveLength(1);
+    expect(useAppStore.getState().models.map((model) => model.modelId)).toEqual(["qwen-plus", "deepseek-chat"]);
+  });
+
+  it("可以在渠道模型中立即清空当前渠道所有模型", async () => {
+    const user = userEvent.setup();
+    const confirmSpy = vi.spyOn(window, "confirm");
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("button", { name: "新增渠道" }));
+    await user.click(screen.getByRole("button", { name: "添加模型" }));
+    await user.type(screen.getByRole("textbox", { name: "批量添加模型" }), "qwen-plus,deepseek-chat{enter}");
+
+    expect(useAppStore.getState().models.map((model) => model.modelId)).toEqual(["gpt-4.1-mini", "qwen-plus", "deepseek-chat"]);
+    await user.click(screen.getByRole("button", { name: "清空所有" }));
+
+    expect(useAppStore.getState().models).toEqual([]);
+    expect(screen.queryByText("gpt-4.1-mini")).not.toBeInTheDocument();
+    expect(screen.queryByText("qwen-plus")).not.toBeInTheDocument();
+    expect(screen.queryByText("deepseek-chat")).not.toBeInTheDocument();
+    expect(confirmSpy).not.toHaveBeenCalled();
+    confirmSpy.mockRestore();
+  });
+
+  it("模型设置弹窗可以修改模型 ID", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("button", { name: "新增渠道" }));
+    await user.click(screen.getByRole("button", { name: "添加模型" }));
+    await user.click(screen.getByRole("button", { name: "设置 gpt-4.1-mini" }));
+    const modelIdInput = screen.getByRole("textbox", { name: "模型 ID" });
+    await user.clear(modelIdInput);
+    await user.type(modelIdInput, "qwen-plus");
+
+    expect(screen.getByRole("button", { name: "测试模型连通性 qwen-plus" })).toBeInTheDocument();
+    expect(useAppStore.getState().models[0].modelId).toBe("qwen-plus");
+  });
+
+  it("模型 ID 使用中文输入法组合输入时只保存最终文本", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("button", { name: "新增渠道" }));
+    await user.click(screen.getByRole("button", { name: "添加模型" }));
+    await user.click(screen.getByRole("button", { name: "设置 gpt-4.1-mini" }));
+
+    const modelIdInput = screen.getByRole("textbox", { name: "模型 ID" });
+    fireEvent.compositionStart(modelIdInput);
+    fireEvent.change(modelIdInput, { target: { value: "shizhong" } });
+
+    expect(modelIdInput).toHaveDisplayValue("shizhong");
+    expect(useAppStore.getState().models[0].modelId).toBe("gpt-4.1-mini");
+
+    fireEvent.compositionEnd(modelIdInput, { target: { value: "始终" } });
+
+    expect(modelIdInput).toHaveDisplayValue("始终");
+    expect(useAppStore.getState().models[0].modelId).toBe("始终");
   });
 
   it("可以拉取模型列表、添加远端模型并直接在已添加模型行测试模型连通性", async () => {

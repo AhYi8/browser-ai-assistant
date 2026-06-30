@@ -9,12 +9,13 @@ describe("浏览器控制全局运行态", () => {
     await clearDatabase();
   });
 
-  it("启动后默认关闭且不从聊天偏好恢复", async () => {
+  it("启动后默认关闭浏览器控制，但会从聊天偏好恢复默认自动化模式", async () => {
     await saveAppSetting({
       key: "chatPreferences",
       value: {
         systemPrompt: "全局提示",
         browserControlEnabled: true,
+        defaultBrowserAutomationMode: "controlled_enhanced",
         temperature: 0.4,
         maxTokens: 2048,
       },
@@ -24,6 +25,8 @@ describe("浏览器控制全局运行态", () => {
     await useAppStore.getState().loadChannelConfig();
 
     expect(useAppStore.getState().browserControlEnabled).toBe(false);
+    expect(useAppStore.getState().chatPreferences.defaultBrowserAutomationMode).toBe("controlled_enhanced");
+    expect(useAppStore.getState().browserAutomationMode).toBe("normal_restricted");
   });
 
   it("开启和关闭全局浏览器控制时同步通知 background", async () => {
@@ -63,6 +66,54 @@ describe("浏览器控制全局运行态", () => {
       reason: "用户在输入区切换浏览器自动化模式。",
     }, expect.any(Function));
     expect(await getAppSetting("chatPreferences")).toBeUndefined();
+  });
+
+  it("开启浏览器控制后会应用聊天偏好中的默认自动化模式", async () => {
+    const sendMessage = vi.fn((message: { type: string; enabled?: boolean; mode?: string }, callback: (response: unknown) => void) => {
+      callback({ ok: true, attached: true, tabId: 7, message: "ok" });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+    await useAppStore.getState().updateChatPreferences({ defaultBrowserAutomationMode: "controlled_enhanced" });
+
+    await useAppStore.getState().setBrowserControlEnabled(true);
+
+    expect(useAppStore.getState().browserControlEnabled).toBe(true);
+    expect(useAppStore.getState().browserAutomationMode).toBe("controlled_enhanced");
+    expect(sendMessage).toHaveBeenNthCalledWith(1, { type: "browserControl.setEnabled", enabled: true }, expect.any(Function));
+    expect(sendMessage).toHaveBeenNthCalledWith(2, {
+      type: "browserControl.setAutomationMode",
+      mode: "controlled_enhanced",
+      reason: "用户在输入区切换浏览器自动化模式。",
+    }, expect.any(Function));
+    expect(await getAppSetting("chatPreferences")).toMatchObject({
+      defaultBrowserAutomationMode: "controlled_enhanced",
+    });
+  });
+
+  it("默认自动化模式同步失败时保持浏览器控制开启并回退普通模式", async () => {
+    const sendMessage = vi.fn((message: { type: string; enabled?: boolean; mode?: string }, callback: (response: unknown) => void) => {
+      if (message.type === "browserControl.setAutomationMode") {
+        callback({ ok: false, message: "当前页面无法切换到完全访问" });
+        return undefined;
+      }
+
+      callback({ ok: true, attached: true, tabId: 7, message: "ok" });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+    await useAppStore.getState().updateChatPreferences({ defaultBrowserAutomationMode: "full_access" });
+
+    await useAppStore.getState().setBrowserControlEnabled(true);
+
+    expect(useAppStore.getState().browserControlEnabled).toBe(true);
+    expect(useAppStore.getState().browserAutomationMode).toBe("normal_restricted");
+    expect(useAppStore.getState().failure?.message).toBe("当前页面无法切换到完全访问");
+    expect(sendMessage).toHaveBeenNthCalledWith(2, {
+      type: "browserControl.setAutomationMode",
+      mode: "full_access",
+      reason: "用户在输入区切换浏览器自动化模式。",
+    }, expect.any(Function));
   });
 
   it("关闭或外部断开浏览器控制会清理增强模式和边界确认", async () => {

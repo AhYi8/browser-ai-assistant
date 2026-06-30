@@ -13,6 +13,7 @@ export function createDefaultChatPreferences(): ChatPreferenceValues {
     systemPrompt: "你是网页助手",
     aiRequestRetryCount: DEFAULT_MODEL_REQUEST_RETRY_COUNT,
     browserAutomationMaxToolIterations: 32,
+    defaultBrowserAutomationMode: "normal_restricted",
     toolCallingEnabled: true,
     enabledToolIds: getRegisteredModelTools().map((tool) => tool.id),
     toolCallDisplayMode: "assistant_grouped",
@@ -56,6 +57,7 @@ export function normalizeChatPreferences(value?: Partial<ChatPreferenceValues>):
       value?.browserAutomationMaxToolIterations,
       defaults.browserAutomationMaxToolIterations,
     ),
+    defaultBrowserAutomationMode: normalizeBrowserAutomationMode(value?.defaultBrowserAutomationMode),
     toolCallingEnabled: normalizeBoolean(value?.toolCallingEnabled, defaults.toolCallingEnabled),
     enabledToolIds: hasEnabledToolIds ? normalizeUserEditableToolIds(value?.enabledToolIds) : defaults.enabledToolIds,
     toolCallDisplayMode: normalizeToolCallDisplayMode(value?.toolCallDisplayMode),
@@ -83,6 +85,10 @@ function normalizeSendShortcut(value: unknown): SendShortcut {
 
 function normalizeToolCallDisplayMode(value: unknown): ChatPreferenceValues["toolCallDisplayMode"] {
   return value === "compact" || value === "assistant_grouped" ? value : "assistant_grouped";
+}
+
+export function normalizeBrowserAutomationMode(value: unknown): BrowserAutomationMode {
+  return value === "controlled_enhanced" || value === "full_access" ? value : "normal_restricted";
 }
 
 function isSendShortcutValue(value: unknown): value is SendShortcut {
