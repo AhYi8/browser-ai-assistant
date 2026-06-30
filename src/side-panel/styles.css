@@ -1109,10 +1109,12 @@ body {
     background: var(--color-surface-cream-strong);
     color: var(--color-body-strong);
     font-weight: 500;
+    vertical-align: middle;
   }
 
   .markdown-table-block-header-content {
-    @apply flex min-w-0 items-center gap-2;
+    @apply flex min-h-7 min-w-0 items-center gap-2;
+    width: 100%;
   }
 
   .markdown-table-block-header-text {

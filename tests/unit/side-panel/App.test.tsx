@@ -4634,6 +4634,7 @@ describe("App", () => {
     const tableActionsRule = styles.match(/\.markdown-table-block-actions \{[\s\S]*?\}/)?.[0] ?? "";
     const tableScrollerRule = styles.match(/\.markdown-table-block-scroller \{[\s\S]*?\}/)?.[0] ?? "";
     const tableRule = styles.match(/\.markdown-table-block table \{[\s\S]*?\}/)?.[0] ?? "";
+    const tableHeaderRule = styles.match(/\.markdown-table-block th \{[\s\S]*?\}/)?.[0] ?? "";
     const tableHeaderContentRule = styles.match(/\.markdown-table-block-header-content \{[\s\S]*?\}/)?.[0] ?? "";
     expect(tableBlockRule).toContain("width: fit-content;");
     expect(tableBlockRule).toContain("position: relative;");
@@ -4642,6 +4643,9 @@ describe("App", () => {
     expect(tableActionsRule).toContain("justify-end");
     expect(tableActionsRule).not.toContain("position: absolute;");
     expect(tableHeaderContentRule).toContain("flex");
+    expect(tableHeaderRule).toContain("vertical-align: middle;");
+    expect(tableHeaderContentRule).toContain("min-h-7");
+    expect(tableHeaderContentRule).toContain("width: 100%;");
     expect(tableScrollerRule).toContain("max-w-full");
     expect(tableRule).toContain("width: fit-content;");
   });
