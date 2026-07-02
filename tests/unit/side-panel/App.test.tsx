@@ -2633,6 +2633,94 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "发送" })).toBeEnabled();
   });
 
+  it("当前模型下拉列表按渠道配置顺序分组显示", async () => {
+    await saveModelProvider({
+      id: "provider-alpha",
+      name: "阿尔法渠道",
+      endpointType: "openai_chat",
+      endpointUrl: "https://alpha.example.com/v1/chat/completions",
+      apiKey: "sk-alpha",
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    await saveModelProvider({
+      id: "provider-beta",
+      name: "贝塔渠道",
+      endpointType: "openai_chat",
+      endpointUrl: "https://beta.example.com/v1/chat/completions",
+      apiKey: "sk-beta",
+      enabled: true,
+      createdAt: 2,
+      updatedAt: 2,
+    });
+    await saveProviderModel({
+      id: "model-beta-1",
+      providerId: "provider-beta",
+      displayName: "贝塔 1",
+      modelId: "beta-1",
+      temperature: 0.7,
+      maxTokens: 1024,
+      systemPrompt: "你是网页助手",
+      isTitleModel: false,
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    await saveProviderModel({
+      id: "model-alpha-1",
+      providerId: "provider-alpha",
+      displayName: "阿尔法 1",
+      modelId: "alpha-1",
+      temperature: 0.7,
+      maxTokens: 1024,
+      systemPrompt: "你是网页助手",
+      isTitleModel: false,
+      enabled: true,
+      createdAt: 2,
+      updatedAt: 2,
+    });
+    await saveProviderModel({
+      id: "model-beta-2",
+      providerId: "provider-beta",
+      displayName: "贝塔 2",
+      modelId: "beta-2",
+      temperature: 0.7,
+      maxTokens: 1024,
+      systemPrompt: "你是网页助手",
+      isTitleModel: false,
+      enabled: true,
+      createdAt: 3,
+      updatedAt: 3,
+    });
+    await saveProviderModel({
+      id: "model-alpha-2",
+      providerId: "provider-alpha",
+      displayName: "阿尔法 2",
+      modelId: "alpha-2",
+      temperature: 0.7,
+      maxTokens: 1024,
+      systemPrompt: "你是网页助手",
+      isTitleModel: false,
+      enabled: true,
+      createdAt: 4,
+      updatedAt: 4,
+    });
+
+    render(<App />);
+
+    const modelSelector = await screen.findByRole("combobox", { name: "当前模型" });
+    await waitFor(() => {
+      expect(Array.from(modelSelector.querySelectorAll("option")).map((option) => option.textContent)).toEqual([
+        "未选择模型",
+        "阿尔法渠道 / 阿尔法 1",
+        "阿尔法渠道 / 阿尔法 2",
+        "贝塔渠道 / 贝塔 1",
+        "贝塔渠道 / 贝塔 2",
+      ]);
+    });
+  });
+
   it("默认按 Enter 触发发送，Shift+Enter 保留换行", async () => {
     const user = userEvent.setup();
     const provider: ModelProvider = {
