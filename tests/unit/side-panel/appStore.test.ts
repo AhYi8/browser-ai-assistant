@@ -4935,4 +4935,124 @@ describe("appStore", () => {
       enabledToolIds: [`mcp.${serverId}.query`],
     });
   });
+
+  it("切换 MCP Server 启用状态时同步维护全局启用工具", async () => {
+    await saveAppSetting({
+      key: "mcpSettings",
+      value: {
+        servers: [
+          {
+            id: "mysql",
+            name: "MySQL",
+            endpointUrl: "https://mcp.example.com/mcp",
+            enabled: true,
+            tools: [
+              {
+                name: "query",
+                description: "查询 SQL",
+                inputSchema: { type: "object", properties: { sql: { type: "string" } }, required: ["sql"] },
+              },
+            ],
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+      },
+      updatedAt: 1,
+    });
+    await saveAppSetting({
+      key: "chatPreferences",
+      value: {
+        ...useAppStore.getState().chatPreferences,
+        enabledToolIds: ["mcp.mysql.query", "web_search.tavily"],
+      },
+      updatedAt: 1,
+    });
+    await useAppStore.getState().loadChannelConfig();
+
+    await useAppStore.getState().setMcpServerEnabled("mysql", false);
+
+    expect(useAppStore.getState().mcpSettings.servers[0]).toMatchObject({ id: "mysql", enabled: false });
+    expect(useAppStore.getState().chatPreferences.enabledToolIds).toEqual(["web_search.tavily"]);
+    await expect(getAppSetting("chatPreferences")).resolves.toMatchObject({
+      enabledToolIds: ["web_search.tavily"],
+    });
+
+    await useAppStore.getState().setMcpServerEnabled("mysql", true);
+
+    expect(useAppStore.getState().mcpSettings.servers[0]).toMatchObject({ id: "mysql", enabled: true });
+    expect(useAppStore.getState().chatPreferences.enabledToolIds).toEqual(["web_search.tavily", "mcp.mysql.query"]);
+    await expect(getAppSetting("chatPreferences")).resolves.toMatchObject({
+      enabledToolIds: ["web_search.tavily", "mcp.mysql.query"],
+    });
+  });
+
+  it("编辑 MCP Server 时仅在启用状态变化后同步全局启用工具", async () => {
+    await saveAppSetting({
+      key: "mcpSettings",
+      value: {
+        servers: [
+          {
+            id: "mysql",
+            name: "MySQL",
+            endpointUrl: "https://mcp.example.com/mcp",
+            enabled: true,
+            tools: [
+              {
+                name: "query",
+                description: "查询 SQL",
+                inputSchema: { type: "object", properties: { sql: { type: "string" } }, required: ["sql"] },
+              },
+            ],
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+      },
+      updatedAt: 1,
+    });
+    await saveAppSetting({
+      key: "chatPreferences",
+      value: {
+        ...useAppStore.getState().chatPreferences,
+        enabledToolIds: ["web_search.tavily"],
+      },
+      updatedAt: 1,
+    });
+    await useAppStore.getState().loadChannelConfig();
+
+    await useAppStore.getState().updateMcpServer("mysql", {
+      name: "MySQL 主库",
+      endpointUrl: "https://mcp.example.com/mcp",
+      enabled: true,
+    });
+
+    expect(useAppStore.getState().chatPreferences.enabledToolIds).toEqual(["web_search.tavily"]);
+
+    await saveAppSetting({
+      key: "chatPreferences",
+      value: {
+        ...useAppStore.getState().chatPreferences,
+        enabledToolIds: ["web_search.tavily", "mcp.mysql.query"],
+      },
+      updatedAt: 2,
+    });
+    await useAppStore.getState().loadChannelConfig();
+
+    await useAppStore.getState().updateMcpServer("mysql", {
+      name: "MySQL 主库",
+      endpointUrl: "https://mcp.example.com/mcp",
+      enabled: false,
+    });
+
+    expect(useAppStore.getState().chatPreferences.enabledToolIds).toEqual(["web_search.tavily"]);
+
+    await useAppStore.getState().updateMcpServer("mysql", {
+      name: "MySQL 主库",
+      endpointUrl: "https://mcp.example.com/mcp",
+      enabled: true,
+    });
+
+    expect(useAppStore.getState().chatPreferences.enabledToolIds).toEqual(["web_search.tavily", "mcp.mysql.query"]);
+  });
 });

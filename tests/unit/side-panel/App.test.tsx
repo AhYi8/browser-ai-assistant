@@ -11,6 +11,7 @@ import { MCP_SETTINGS_KEY } from "../../../src/shared/mcp/settings";
 import type { ModelToolRegistryEntry } from "../../../src/shared/models/types";
 import {
   clearDatabase,
+  getAppSetting,
   getProviderModels,
   saveAppSetting,
   saveChatFolder,
@@ -1496,6 +1497,75 @@ describe("App", () => {
     await user.click(screen.getByRole("button", { name: "启用筛选结果" }));
 
     expect(updateChatPreferences).toHaveBeenCalledWith({ enabledToolIds: ["mcp.mysql.query"] });
+  });
+
+  it("MCP 设置页可以在 Server 列表中禁用远程工具注册", async () => {
+    const user = userEvent.setup();
+    registeredModelToolsMock.tools = [
+      {
+        id: "mcp.mysql.query",
+        name: "mcp_mysql_query",
+        displayName: "MySQL.query",
+        description: "执行 SQL 查询",
+        groupId: "mcp_remote",
+        parameters: { type: "object", properties: { sql: { type: "string" } }, required: ["sql"] },
+        toolClassification: { runtime: "mcp_remote", capabilities: ["call_remote_tool"], risk: "medium" },
+      },
+    ];
+    await saveAppSetting({
+      key: MCP_SETTINGS_KEY,
+      value: {
+        servers: [
+          {
+            id: "mysql",
+            name: "MySQL",
+            endpointUrl: "http://127.0.0.1:3000/mcp",
+            enabled: true,
+            tools: [
+              {
+                name: "query",
+                description: "执行 SQL 查询",
+                inputSchema: { type: "object", properties: { sql: { type: "string" } }, required: ["sql"] },
+              },
+            ],
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+      },
+      updatedAt: 1,
+    });
+    await saveAppSetting({
+      key: "chatPreferences",
+      value: {
+        ...useAppStore.getState().chatPreferences,
+        toolCallingEnabled: true,
+        enabledToolIds: ["mcp.mysql.query"],
+      },
+      updatedAt: 1,
+    });
+    await useAppStore.getState().loadChannelConfig();
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("tab", { name: "MCP 工具" }));
+
+    expect(screen.getByRole("checkbox", { name: "禁用 MCP Server MySQL" })).toBeChecked();
+    expect(screen.getByRole("button", { name: "刷新工具" })).toBeEnabled();
+
+    await user.click(screen.getByRole("checkbox", { name: "禁用 MCP Server MySQL" }));
+
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: "启用 MCP Server MySQL" })).not.toBeChecked());
+    expect(screen.getByText("状态：已禁用 · 已发现工具：1")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "刷新工具" })).toBeDisabled();
+    await expect(getAppSetting("chatPreferences")).resolves.toMatchObject({ enabledToolIds: [] });
+
+    registeredModelToolsMock.tools = [];
+    await user.click(screen.getByRole("tab", { name: "聊天偏好" }));
+    await user.selectOptions(screen.getByRole("combobox", { name: "工具运行要求筛选" }), "mcp_remote");
+
+    expect(screen.queryByRole("checkbox", { name: "启用工具 MySQL.query" })).not.toBeInTheDocument();
   });
 
   it("MCP 设置页删除 Server 需要二次确认", async () => {

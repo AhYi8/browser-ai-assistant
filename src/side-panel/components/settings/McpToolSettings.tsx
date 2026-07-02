@@ -22,6 +22,7 @@ export function McpToolSettings() {
   const mcpSettings = useAppStore((state) => state.mcpSettings);
   const mcpBearerTokens = useAppStore((state) => state.mcpBearerTokens);
   const updateMcpServer = useAppStore((state) => state.updateMcpServer);
+  const setMcpServerEnabled = useAppStore((state) => state.setMcpServerEnabled);
   const deleteMcpServer = useAppStore((state) => state.deleteMcpServer);
   const refreshMcpServerTools = useAppStore((state) => state.refreshMcpServerTools);
   const [draft, setDraft] = useState<McpServerDraft>(EMPTY_DRAFT);
@@ -63,6 +64,10 @@ export function McpToolSettings() {
     setExpandedToolServerIds((current) =>
       current.includes(serverId) ? current.filter((id) => id !== serverId) : [...current, serverId],
     );
+  };
+  const toggleServerEnabled = async (server: McpServerConfig, enabled: boolean) => {
+    await setMcpServerEnabled(server.id, enabled);
+    setMessage(enabled ? "MCP Server 已启用" : "MCP Server 已禁用");
   };
 
   return (
@@ -117,11 +122,24 @@ export function McpToolSettings() {
                   <div className="chat-preference-tool-group-title">{server.name}</div>
                   <p className="ui-muted text-xs">{server.endpointUrl}</p>
                   {server.lastRefreshError ? <p className="text-xs text-[var(--color-error)]">{server.lastRefreshError}</p> : null}
-                  <p className="ui-muted text-xs">已发现工具：{server.tools.length}</p>
+                  <p className="ui-muted text-xs">状态：{server.enabled ? "已启用" : "已禁用"} · 已发现工具：{server.tools.length}</p>
                 </div>
                 <div className="chat-preference-tool-bulk-actions">
+                  <label className="chat-preference-switch" title={server.enabled ? "禁用后不会向模型注册该 MCP Server 的远程工具" : "启用后会重新注册该 MCP Server 的缓存工具"}>
+                    <input
+                      className="chat-preference-switch-input"
+                      type="checkbox"
+                      aria-label={`${server.enabled ? "禁用" : "启用"} MCP Server ${server.name}`}
+                      checked={server.enabled}
+                      onChange={(event) => void toggleServerEnabled(server, event.target.checked)}
+                    />
+                    <span className="chat-preference-switch-control" aria-hidden="true">
+                      <span className="chat-preference-switch-thumb" />
+                    </span>
+                    <span className="chat-preference-switch-label">{server.enabled ? "已启用" : "已禁用"}</span>
+                  </label>
                   <button className="ui-button-secondary" type="button" onClick={() => editServer(server)}>编辑</button>
-                  <button className="ui-button-secondary" type="button" onClick={() => void refreshMcpServerTools(server.id)}>刷新工具</button>
+                  <button className="ui-button-secondary" type="button" disabled={!server.enabled} onClick={() => void refreshMcpServerTools(server.id)}>刷新工具</button>
                   <button className="ui-button-secondary" type="button" onClick={() => void handleDeleteServer(server.id)}>删除</button>
                   <button
                     className="ui-button-secondary"

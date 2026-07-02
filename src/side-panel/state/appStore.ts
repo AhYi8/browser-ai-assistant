@@ -323,6 +323,7 @@ export interface AppState {
   updateSyncSecret: (key: keyof SyncSecrets, value: string) => Promise<void>;
   updateWebSearchSettings: (updates: Partial<WebSearchSettings>) => Promise<void>;
   updateMcpServer: (serverId: string | undefined, draft: Pick<McpServerConfig, "name" | "endpointUrl" | "enabled"> & { bearerToken?: string }) => Promise<{ ok: true; server: McpServerConfig } | { ok: false; message: string }>;
+  setMcpServerEnabled: (serverId: string, enabled: boolean) => Promise<void>;
   deleteMcpServer: (serverId: string) => Promise<void>;
   refreshMcpServerTools: (serverId: string) => Promise<void>;
   loadRemoteBackups: () => Promise<void>;
@@ -1162,6 +1163,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   updateSyncSecret: (key, value) => updateSyncSecretAction({ key, value, set }),
   updateWebSearchSettings: (updates) => updateWebSearchSettingsAction({ updates, get, set }),
   updateMcpServer: (serverId, draft) => updateMcpServerAction({ serverId, draft, get, set }),
+  setMcpServerEnabled: (serverId, enabled) => setMcpServerEnabledAction({ serverId, enabled, get, set }),
   deleteMcpServer: (serverId) => deleteMcpServerAction({ serverId, get, set }),
   refreshMcpServerTools: (serverId) => refreshMcpServerToolsAction({ serverId, get, set }),
   backupNow: () => backupNowAction({ set }),
@@ -1812,6 +1814,7 @@ async function updateMcpServerAction(input: {
   const currentSettings = input.get().mcpSettings;
   const existing = input.serverId ? currentSettings.servers.find((server) => server.id === input.serverId) : undefined;
   const isNewServer = !existing;
+  const enabledChanged = Boolean(existing && existing.enabled !== input.draft.enabled);
   const server: McpServerConfig = {
     id: existing?.id ?? `mcp-${now}-${Math.random().toString(36).slice(2, 8)}`,
     name,
@@ -1835,8 +1838,43 @@ async function updateMcpServerAction(input: {
   input.set({ mcpSettings, mcpBearerTokens });
   if (isNewServer && server.enabled) {
     await refreshMcpServerToolsAction({ serverId: server.id, get: input.get, set: input.set, enableDiscoveredTools: true });
+  } else if (enabledChanged) {
+    if (server.enabled) {
+      await enableMcpToolsForServerAction({ serverId: server.id, mcpSettings, get: input.get, set: input.set });
+    } else {
+      await disableMcpToolsForServerAction({ serverId: server.id, get: input.get, set: input.set });
+    }
   }
   return { ok: true, server };
+}
+
+async function setMcpServerEnabledAction(input: { serverId: string; enabled: boolean; get: StoreGetter; set: StoreSetter }): Promise<void> {
+  const currentSettings = input.get().mcpSettings;
+  const server = currentSettings.servers.find((item) => item.id === input.serverId);
+  if (!server || server.enabled === input.enabled) {
+    return;
+  }
+
+  const now = Date.now();
+  const mcpSettings = {
+    servers: currentSettings.servers.map((item) =>
+      item.id === input.serverId
+        ? {
+            ...item,
+            enabled: input.enabled,
+            updatedAt: now,
+          }
+        : item,
+    ),
+  };
+
+  await saveMcpSettings(mcpSettings);
+  input.set({ mcpSettings });
+  if (input.enabled) {
+    await enableMcpToolsForServerAction({ serverId: input.serverId, mcpSettings, get: input.get, set: input.set });
+  } else {
+    await disableMcpToolsForServerAction({ serverId: input.serverId, get: input.get, set: input.set });
+  }
 }
 
 async function deleteMcpServerAction(input: { serverId: string; get: StoreGetter; set: StoreSetter }): Promise<void> {
@@ -1895,6 +1933,24 @@ async function enableMcpToolsForServerAction(input: { serverId: string; mcpSetti
   const chatPreferences = normalizeChatPreferences({
     ...input.get().chatPreferences,
     enabledToolIds: Array.from(new Set([...input.get().chatPreferences.enabledToolIds, ...toolIds])),
+  });
+  await saveAppSetting({
+    key: "chatPreferences",
+    value: chatPreferences,
+    updatedAt: Date.now(),
+  });
+  input.set({ chatPreferences });
+}
+
+async function disableMcpToolsForServerAction(input: { serverId: string; get: StoreGetter; set: StoreSetter }): Promise<void> {
+  const nextEnabledToolIds = input.get().chatPreferences.enabledToolIds.filter((toolId) => parseMcpToolId(toolId)?.serverId !== input.serverId);
+  if (nextEnabledToolIds.length === input.get().chatPreferences.enabledToolIds.length) {
+    return;
+  }
+
+  const chatPreferences = normalizeChatPreferences({
+    ...input.get().chatPreferences,
+    enabledToolIds: nextEnabledToolIds,
   });
   await saveAppSetting({
     key: "chatPreferences",
