@@ -25,7 +25,6 @@ import { PromptInlineEditor, PromptTokenContent } from "./PromptInlineEditor";
 import type { ChatRetryProgress } from "../state/appStore";
 
 const MESSAGE_LIST_BOTTOM_THRESHOLD = 8;
-
 interface MessageListProps {
   messages: ChatMessage[];
   retryProgressByMessageId: Record<string, ChatRetryProgress>;
@@ -160,9 +159,9 @@ export function MessageList({
     <section aria-label="消息列表" className="message-list" ref={messageListRef} onScroll={handleMessageListScroll}>
       {messages.map((message) => {
         const isToolCallTurn = message.role === "assistant" && message.assistantMessageKind === "tool_call_turn";
+        const toolCallRecords = message.toolCallRecords ?? [];
         const shouldShowToolCallTimeline = shouldShowToolCallTimelineForMessage(message, toolCallDisplayMode, showToolCallProcessInAssistantMode);
         const hideToolTurnContent = shouldHideToolTurnContent(message, toolCallDisplayMode);
-        const toolCallRecords = message.toolCallRecords ?? [];
         const hasVisibleThinking = message.role === "assistant" && !isToolCallTurn && Boolean(message.thinking) && !hideToolTurnContent;
         const hasVisibleContent = Boolean(message.content.trim()) && !hideToolTurnContent;
         const hasPromptTokens = message.role === "user" && Boolean(message.promptInvocations?.length);
@@ -365,11 +364,11 @@ export function MessageList({
         </article>
         ) : null}
         {shouldShowToolCallTimeline ? (
-          <ToolCallTimeline
-            records={message.toolCallRecords}
-            attachments={collectRawMessageToolAttachments(message)}
-            activeToolCallId={activeToolCallId}
-            popoverRef={toolCallPopoverRef}
+            <ToolCallTimeline
+              records={toolCallRecords}
+              attachments={collectRawMessageToolAttachments(message)}
+              activeToolCallId={activeToolCallId}
+              popoverRef={toolCallPopoverRef}
             panelCentered
             onToggle={(recordId) => setActiveToolCallId((current) => (current === recordId ? undefined : recordId))}
           />

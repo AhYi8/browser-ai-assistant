@@ -21,6 +21,7 @@ import {
   type CurrentTabUrlMessage,
   type UrlPatternGenerationMessage,
 } from "./urlPatternGenerationMessageHandler";
+import { handleMcpMessage, type McpMessage } from "./mcpMessageHandler";
 
 const DEBUG_PREFIX = "[提取规则 AI 生成诊断]";
 
@@ -84,7 +85,8 @@ type RuntimeMessage =
   | ChatSendMessage
   | TabCaptureVisibleMessage
   | SyncBackupMessage
-  | BrowserControlMessage;
+  | BrowserControlMessage
+  | McpMessage;
 
 interface ChatStreamStartMessage {
   type: "chat.stream.start";
@@ -175,6 +177,11 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResp
 
   if (message.type === "sync.backupNow" || message.type === "sync.listRemoteBackups" || message.type === "sync.restoreNow" || message.type === "sync.configureAlarm") {
     void handleSyncBackupMessage(message).then(sendResponse);
+    return true;
+  }
+
+  if (message.type === "mcp.listTools") {
+    void handleMcpMessage(message).then(sendResponse);
     return true;
   }
 

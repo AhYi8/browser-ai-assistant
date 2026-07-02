@@ -5,13 +5,15 @@ import { ExtractionRules } from "./settings/ExtractionRules";
 import { AutomationPlaybookSettings } from "./settings/AutomationPlaybookSettings";
 import { PromptTemplateSettings } from "./settings/PromptTemplateSettings";
 import { SyncSettings } from "./settings/SyncSettings";
+import { McpToolSettings } from "./settings/McpToolSettings";
 
-type SettingsTab = "channels" | "rules" | "chat" | "playbooks" | "prompts" | "sync";
+type SettingsTab = "channels" | "rules" | "chat" | "mcp" | "playbooks" | "prompts" | "sync";
 
 const settingsTabs: Array<{ id: SettingsTab; label: string }> = [
   { id: "channels", label: "渠道管理" },
   { id: "rules", label: "提取规则" },
   { id: "chat", label: "聊天偏好" },
+  { id: "mcp", label: "MCP 工具" },
   { id: "playbooks", label: "任务策略" },
   { id: "prompts", label: "提示词" },
   { id: "sync", label: "同步设置" },
@@ -50,6 +52,7 @@ export function SettingsPanel() {
           {activeTab === "channels" ? <ChannelManagement /> : null}
           {activeTab === "rules" ? <ExtractionRules /> : null}
           {activeTab === "chat" ? <ChatPreferenceSettings /> : null}
+          {activeTab === "mcp" ? <McpToolSettings /> : null}
           {activeTab === "playbooks" ? <AutomationPlaybookSettings /> : null}
           {activeTab === "prompts" ? <PromptTemplateSettings /> : null}
           {activeTab === "sync" ? <SyncSettings /> : null}

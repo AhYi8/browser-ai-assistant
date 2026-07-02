@@ -20,12 +20,14 @@ import {
 } from "../shared/models/toolRegistry";
 import type { ModelRequestMessage, ModelSystemMessage, ModelToolCall, ModelToolDefinition, ModelToolExecutor, ModelToolRegistryEntry } from "../shared/models/types";
 import { getAutomationPlaybookById } from "../shared/automationPlaybooks";
-import type { AutomationPlaybookSelection, ExtractionRule, ModelConfig } from "../shared/types";
+import type { AutomationPlaybookSelection, ExtractionRule, McpServerSecretMap, McpSettings, ModelConfig } from "../shared/types";
 import { createWebSearchToolAttachment } from "../shared/toolArtifacts";
 import { createTavilySearchContextPrompt } from "../shared/webSearch/tavily";
 import type { TavilySearchOptions } from "../shared/webSearch/tavily";
 import { browserControlManager } from "./browserControlMessageHandler";
 import { executeTavilySearchFromSettings } from "./webSearchMessageHandler";
+import { callMcpTool } from "../shared/mcp/httpClient";
+import { parseMcpToolId } from "../shared/mcp/toolAdapter";
 
 type Fetcher = typeof fetch;
 
@@ -35,6 +37,7 @@ export interface BackgroundToolExecutorMessage {
   model: ModelConfig;
   extractionRules?: ExtractionRule[];
   tavily?: TavilySearchOptions;
+  mcp?: McpSettings & { bearerTokens?: McpServerSecretMap };
 }
 
 export function normalizeBrowserAutomationMaxToolIterations(value: unknown): number {
@@ -146,6 +149,10 @@ export function createBackgroundToolExecutor(message: BackgroundToolExecutorMess
 
     if (tool.name === CURRENT_TIME_TOOL_NAME) {
       return executeCurrentTimeTool(toolCall);
+    }
+
+    if (parseMcpToolId(tool.id)) {
+      return executeMcpRemoteTool(toolCall, tool, message.mcp, fetcher);
     }
 
     return createUnavailableToolResult(toolCall);
@@ -340,6 +347,49 @@ function createUnavailableToolResult(toolCall: ModelToolCall): Awaited<ReturnTyp
     toolCallId: toolCall.id,
     name: toolCall.name,
     content: `工具 ${toolCall.name} 暂未实现，已拒绝执行。`,
+    isError: true,
+  };
+}
+
+async function executeMcpRemoteTool(
+  toolCall: ModelToolCall,
+  tool: ModelToolRegistryEntry,
+  mcp: BackgroundToolExecutorMessage["mcp"],
+  fetcher: Fetcher,
+): Promise<Awaited<ReturnType<ModelToolExecutor>>> {
+  const metadata = parseMcpToolId(tool.id);
+  if (!metadata) {
+    return createMcpToolError(toolCall, "MCP 工具标识无效，已拒绝执行。");
+  }
+
+  const server = mcp?.servers.find((item) => item.id === metadata.serverId && item.enabled);
+  const discoveredTool = server?.tools.find((item) => item.name === metadata.toolName && !item.disabledReason);
+  if (!server || !discoveredTool) {
+    return createMcpToolError(toolCall, "MCP 工具未在当前发现列表中，已拒绝执行。");
+  }
+
+  try {
+    return {
+      toolCallId: toolCall.id,
+      name: toolCall.name,
+      content: await callMcpTool({
+        server,
+        toolName: metadata.toolName,
+        arguments: toolCall.arguments,
+        bearerToken: mcp?.bearerTokens?.[server.id],
+        fetcher,
+      }),
+    };
+  } catch {
+    return createMcpToolError(toolCall, "MCP 工具执行失败，请检查服务连接、鉴权或工具参数。");
+  }
+}
+
+function createMcpToolError(toolCall: ModelToolCall, content: string): Awaited<ReturnType<ModelToolExecutor>> {
+  return {
+    toolCallId: toolCall.id,
+    name: toolCall.name,
+    content,
     isError: true,
   };
 }

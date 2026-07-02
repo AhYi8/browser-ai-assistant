@@ -14,6 +14,35 @@ export type AutomationPlaybookSource = "builtin" | "skill" | "user";
 export type AutomationPlaybookRisk = "low" | "medium" | "high" | "critical";
 export type AutomationPlaybookConfidence = "low" | "medium" | "high";
 
+export interface McpDiscoveredTool {
+  name: string;
+  description?: string;
+  inputSchema: Record<string, unknown>;
+  disabledReason?: string;
+}
+
+export interface McpServerConfig {
+  id: string;
+  name: string;
+  endpointUrl: string;
+  enabled: boolean;
+  tools: McpDiscoveredTool[];
+  lastRefreshError?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface McpSettings {
+  servers: McpServerConfig[];
+}
+
+export type McpServerSecretMap = Record<string, string>;
+
+export interface McpToolRuntimeMetadata {
+  serverId: string;
+  toolName: string;
+}
+
 export interface AutomationPlaybookSelection {
   playbookId: string;
   title: string;

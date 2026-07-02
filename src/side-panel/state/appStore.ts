@@ -35,6 +35,14 @@ import {
   DEFAULT_WEB_SEARCH_SETTINGS,
   getWebSearchSettings,
 } from "../../shared/webSearch/settings";
+import {
+  clearMcpBearerToken,
+  getMcpBearerToken,
+  getMcpSettings,
+  saveMcpBearerToken,
+  saveMcpSettings,
+} from "../../shared/mcp/settings";
+import { parseMcpToolId } from "../../shared/mcp/toolAdapter";
 import type { SyncSecrets, SyncSettings } from "../../shared/sync/types";
 import type { SyncRemoteBackupMeta } from "../../shared/sync/types";
 import type { TavilySearchOptions } from "../../shared/webSearch/tavily";
@@ -52,6 +60,9 @@ import type {
   EndpointType,
   ExtractionRule,
   ModelProvider,
+  McpServerConfig,
+  McpServerSecretMap,
+  McpSettings,
   PageContextExtractMode,
   PromptTemplate,
   ProviderModel,
@@ -241,6 +252,8 @@ export interface AppState {
   syncSettings: SyncSettings;
   syncSecrets: SyncSecrets;
   webSearchSettings: WebSearchSettings;
+  mcpSettings: McpSettings;
+  mcpBearerTokens: McpServerSecretMap;
   remoteBackups: SyncRemoteBackupMeta[];
   syncOperation: SyncOperationState;
   failure?: RequestFailure;
@@ -309,6 +322,9 @@ export interface AppState {
   updateSyncSettings: (updates: Partial<SyncSettings>) => Promise<void>;
   updateSyncSecret: (key: keyof SyncSecrets, value: string) => Promise<void>;
   updateWebSearchSettings: (updates: Partial<WebSearchSettings>) => Promise<void>;
+  updateMcpServer: (serverId: string | undefined, draft: Pick<McpServerConfig, "name" | "endpointUrl" | "enabled"> & { bearerToken?: string }) => Promise<{ ok: true; server: McpServerConfig } | { ok: false; message: string }>;
+  deleteMcpServer: (serverId: string) => Promise<void>;
+  refreshMcpServerTools: (serverId: string) => Promise<void>;
   loadRemoteBackups: () => Promise<void>;
   backupNow: () => Promise<void>;
   restoreNow: (backupId: string) => Promise<void>;
@@ -389,6 +405,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
   syncSettings: DEFAULT_SYNC_SETTINGS,
   syncSecrets: DEFAULT_SYNC_SECRETS,
   webSearchSettings: DEFAULT_WEB_SEARCH_SETTINGS,
+  mcpSettings: { servers: [] },
+  mcpBearerTokens: {},
   remoteBackups: [],
   syncOperation: {
     loading: false,
@@ -796,14 +814,16 @@ export const useAppStore = create<AppState>()((set, get) => ({
     }
   },
   loadChannelConfig: async () => {
-    const [providers, models, savedDefaultChatModelId, savedChatPreferences, savedAutomationPlaybookSettings, webSearchSettings] = await Promise.all([
+    const [providers, models, savedDefaultChatModelId, savedChatPreferences, savedAutomationPlaybookSettings, webSearchSettings, mcpSettings] = await Promise.all([
       getModelProviders(),
       getProviderModels(),
       getAppSetting<string>("defaultChatModelId"),
       getAppSetting<Partial<ChatPreferenceValues>>("chatPreferences"),
       getAppSetting<Partial<AutomationPlaybookSettings>>(AUTOMATION_PLAYBOOK_SETTINGS_KEY),
       getWebSearchSettings(),
+      getMcpSettings(),
     ]);
+    const mcpBearerTokens = await readMcpBearerTokens(mcpSettings);
     const defaultChatModelId = resolveConfiguredModelId(savedDefaultChatModelId ?? "", models, providers);
     const currentSelectedModelId = get().selectedModelId;
     const selectedModelStillExists = Boolean(
@@ -823,6 +843,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
       chatPreferences,
       automationPlaybookSettings,
       webSearchSettings,
+      mcpSettings,
+      mcpBearerTokens,
       appendPageContextToSystemPrompt: chatPreferences.injectPageContextByDefault,
       contextMode: resolveDefaultContextMode(chatPreferences),
       pageContext: {
@@ -1139,6 +1161,9 @@ export const useAppStore = create<AppState>()((set, get) => ({
   updateSyncSettings: (updates) => updateSyncSettingsAction({ updates, get, set }),
   updateSyncSecret: (key, value) => updateSyncSecretAction({ key, value, set }),
   updateWebSearchSettings: (updates) => updateWebSearchSettingsAction({ updates, get, set }),
+  updateMcpServer: (serverId, draft) => updateMcpServerAction({ serverId, draft, get, set }),
+  deleteMcpServer: (serverId) => deleteMcpServerAction({ serverId, get, set }),
+  refreshMcpServerTools: (serverId) => refreshMcpServerToolsAction({ serverId, get, set }),
   backupNow: () => backupNowAction({ set }),
   loadRemoteBackups: () => loadRemoteBackupsAction({ set }),
   restoreNow: (backupId) => restoreNowAction({ backupId, get, set }),
@@ -1209,6 +1234,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
       syncSettings: DEFAULT_SYNC_SETTINGS,
       syncSecrets: DEFAULT_SYNC_SECRETS,
       webSearchSettings: DEFAULT_WEB_SEARCH_SETTINGS,
+      mcpSettings: { servers: [] },
+      mcpBearerTokens: {},
       browserControlEnabled: false,
       browserAutomationMode: "normal_restricted",
       runtimeReadonlyEnabled: false,
@@ -1260,6 +1287,7 @@ export type AppChatSendMessage = {
   browserAutomationMaxToolIterations?: number;
   automationPlaybookSettings?: AutomationPlaybookSettings;
   extractionRules?: ExtractionRule[];
+  mcp?: McpSettings & { bearerTokens?: McpServerSecretMap };
 };
 
 interface SendChatMessageWithStateInput {
@@ -1562,9 +1590,10 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
       });
     }
 
+    const registeredModelTools = getRegisteredModelTools(input.state.mcpSettings);
     const enabledTools = effectiveChatPreferences.toolCallingEnabled
       ? resolveEnabledModelTools(
-          getRegisteredModelTools(),
+          registeredModelTools,
           resolveRuntimeEnabledToolIds(effectiveChatPreferences.enabledToolIds, input.state.browserControlEnabled, input.state.browserAutomationMode),
         )
       : [];
@@ -1586,6 +1615,10 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
       browserAutomationMaxToolIterations: effectiveChatPreferences.browserAutomationMaxToolIterations,
       automationPlaybookSettings: input.state.automationPlaybookSettings,
       extractionRules: input.state.extractionRules,
+      mcp: {
+        ...input.state.mcpSettings,
+        bearerTokens: input.state.mcpBearerTokens,
+      },
       tavily: {
         includeAnswer: input.state.webSearchSettings.tavily.includeAnswer,
         includeRawContent: input.state.webSearchSettings.tavily.includeRawContent,
@@ -1751,6 +1784,133 @@ function clearChatRetryProgressForSession(state: AppState, sessionId: string): R
     delete nextProgress[messageId];
   }
   return nextProgress;
+}
+
+async function readMcpBearerTokens(settings: McpSettings): Promise<McpServerSecretMap> {
+  const entries = await Promise.all(
+    settings.servers.map(async (server) => [server.id, await getMcpBearerToken(server.id)] as const),
+  );
+  return Object.fromEntries(entries.filter(([, token]) => token));
+}
+
+async function updateMcpServerAction(input: {
+  serverId: string | undefined;
+  draft: Pick<McpServerConfig, "name" | "endpointUrl" | "enabled"> & { bearerToken?: string };
+  get: StoreGetter;
+  set: StoreSetter;
+}): Promise<{ ok: true; server: McpServerConfig } | { ok: false; message: string }> {
+  const name = input.draft.name.trim();
+  const endpointUrl = normalizeMcpEndpointUrl(input.draft.endpointUrl);
+  if (!name) {
+    return { ok: false, message: "MCP Server 名称不能为空" };
+  }
+  if (!endpointUrl) {
+    return { ok: false, message: "MCP Server 地址必须是合法的 HTTP 或 HTTPS URL" };
+  }
+
+  const now = Date.now();
+  const currentSettings = input.get().mcpSettings;
+  const existing = input.serverId ? currentSettings.servers.find((server) => server.id === input.serverId) : undefined;
+  const isNewServer = !existing;
+  const server: McpServerConfig = {
+    id: existing?.id ?? `mcp-${now}-${Math.random().toString(36).slice(2, 8)}`,
+    name,
+    endpointUrl,
+    enabled: input.draft.enabled,
+    tools: existing?.tools ?? [],
+    lastRefreshError: existing?.lastRefreshError,
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+  };
+  const servers = existing
+    ? currentSettings.servers.map((item) => (item.id === server.id ? server : item))
+    : [...currentSettings.servers, server];
+  const mcpSettings = { servers };
+
+  await saveMcpSettings(mcpSettings);
+  if (input.draft.bearerToken !== undefined) {
+    await saveMcpBearerToken(server.id, input.draft.bearerToken);
+  }
+  const mcpBearerTokens = await readMcpBearerTokens(mcpSettings);
+  input.set({ mcpSettings, mcpBearerTokens });
+  if (isNewServer && server.enabled) {
+    await refreshMcpServerToolsAction({ serverId: server.id, get: input.get, set: input.set, enableDiscoveredTools: true });
+  }
+  return { ok: true, server };
+}
+
+async function deleteMcpServerAction(input: { serverId: string; get: StoreGetter; set: StoreSetter }): Promise<void> {
+  const mcpSettings = {
+    servers: input.get().mcpSettings.servers.filter((server) => server.id !== input.serverId),
+  };
+  await saveMcpSettings(mcpSettings);
+  await clearMcpBearerToken(input.serverId);
+  const mcpBearerTokens = await readMcpBearerTokens(mcpSettings);
+  input.set({ mcpSettings, mcpBearerTokens });
+}
+
+async function refreshMcpServerToolsAction(input: { serverId: string; get: StoreGetter; set: StoreSetter; enableDiscoveredTools?: boolean }): Promise<void> {
+  const server = input.get().mcpSettings.servers.find((item) => item.id === input.serverId);
+  if (!server) {
+    return;
+  }
+
+  const response = await sendRuntimeMessage<{ ok: true; tools: McpServerConfig["tools"] } | { ok: false; message: string } | undefined>({
+    type: "mcp.listTools",
+    serverId: server.id,
+  });
+  const now = Date.now();
+  const mcpSettings = {
+    servers: input.get().mcpSettings.servers.map((item) =>
+      item.id === input.serverId
+        ? {
+            ...item,
+            tools: response?.ok ? response.tools : item.tools,
+            lastRefreshError: response?.ok ? undefined : response?.message ?? "MCP 工具刷新失败",
+            updatedAt: now,
+          }
+        : item,
+    ),
+  };
+  await saveMcpSettings(mcpSettings);
+  input.set({ mcpSettings });
+  if (input.enableDiscoveredTools && response?.ok) {
+    await enableMcpToolsForServerAction({
+      serverId: input.serverId,
+      mcpSettings,
+      get: input.get,
+      set: input.set,
+    });
+  }
+}
+
+async function enableMcpToolsForServerAction(input: { serverId: string; mcpSettings: McpSettings; get: StoreGetter; set: StoreSetter }): Promise<void> {
+  const toolIds = getRegisteredModelTools(input.mcpSettings)
+    .filter((tool) => parseMcpToolId(tool.id)?.serverId === input.serverId)
+    .map((tool) => tool.id);
+  if (toolIds.length === 0) {
+    return;
+  }
+
+  const chatPreferences = normalizeChatPreferences({
+    ...input.get().chatPreferences,
+    enabledToolIds: Array.from(new Set([...input.get().chatPreferences.enabledToolIds, ...toolIds])),
+  });
+  await saveAppSetting({
+    key: "chatPreferences",
+    value: chatPreferences,
+    updatedAt: Date.now(),
+  });
+  input.set({ chatPreferences });
+}
+
+function normalizeMcpEndpointUrl(value: string): string | undefined {
+  try {
+    const url = new URL(value.trim());
+    return url.protocol === "http:" || url.protocol === "https:" ? url.toString().replace(/\/$/, "") : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function createAndStoreModel(

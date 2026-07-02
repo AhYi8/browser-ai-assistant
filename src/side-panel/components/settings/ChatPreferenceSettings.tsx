@@ -34,6 +34,7 @@ const toolRuntimeLabels: Record<ModelToolRuntimeRequirement, string> = {
   browser_control: "浏览器控制",
   controlled_enhanced: "受控增强",
   full_access: "完全访问",
+  mcp_remote: "MCP 远程工具",
 };
 
 const toolCapabilityLabels: Record<ModelToolCapability, string> = {
@@ -44,6 +45,7 @@ const toolCapabilityLabels: Record<ModelToolCapability, string> = {
   deliver_result: "交付结果",
   search_public_web: "公开搜索",
   system_context: "系统上下文",
+  call_remote_tool: "调用远程工具",
 };
 
 const toolRiskLabels: Record<ModelToolRisk, string> = {
@@ -58,8 +60,9 @@ export function ChatPreferenceSettings() {
   const [capabilityFilter, setCapabilityFilter] = useState<ModelToolCapability | "">("");
   const [riskFilter, setRiskFilter] = useState<ModelToolRisk | "">("");
   const chatPreferences = useAppStore((state) => state.chatPreferences);
+  const mcpSettings = useAppStore((state) => state.mcpSettings);
   const updateChatPreferences = useAppStore((state) => state.updateChatPreferences);
-  const registeredTools = getRegisteredModelTools();
+  const registeredTools = getRegisteredModelTools(mcpSettings);
   const filteredTools = filterModelToolsByClassification(registeredTools, {
     ...(runtimeFilter ? { runtime: runtimeFilter } : {}),
     ...(capabilityFilter ? { capability: capabilityFilter } : {}),
@@ -217,15 +220,16 @@ export function ChatPreferenceSettings() {
               <div key={group.id} className="chat-preference-tool-group">
                 <div className="chat-preference-tool-group-title">{group.label}</div>
                 {group.tools.map((tool) => {
+                  const toolDisplayName = tool.groupId === "mcp_remote" ? (tool.displayName ?? tool.name) : tool.name;
                   return (
                     <label key={tool.id} className="chat-preference-network-type-chip">
                       <input
                         type="checkbox"
-                        aria-label={`启用工具 ${tool.name}`}
+                        aria-label={`启用工具 ${toolDisplayName}`}
                         checked={chatPreferences.enabledToolIds.includes(tool.id)}
                         onChange={(event) => handleToolToggle(tool.id, event.target.checked)}
                       />
-                      <span>{tool.name}</span>
+                      <span>{toolDisplayName}</span>
                     </label>
                   );
                 })}

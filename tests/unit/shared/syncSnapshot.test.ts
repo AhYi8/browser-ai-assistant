@@ -5,6 +5,7 @@ import {
   SYNC_S3_SECRET_KEY,
   SYNC_WEBDAV_PASSWORD_KEY,
 } from "../../../src/shared/sync/settings";
+import { MCP_BEARER_TOKEN_SETTING_PREFIX, MCP_SETTINGS_KEY } from "../../../src/shared/mcp/settings";
 import {
   clearDatabase,
   getAppSetting,
@@ -231,5 +232,72 @@ describe("网络搜索同步快照", () => {
         maxResults: 12,
       },
     });
+  });
+});
+
+describe("MCP 同步快照", () => {
+  afterEach(async () => {
+    await clearDatabase();
+  });
+
+  it("导出同步快照时过滤 MCP Bearer Token 并保留 server 配置", async () => {
+    await saveAppSetting({
+      key: MCP_SETTINGS_KEY,
+      value: {
+        servers: [
+          {
+            id: "mysql",
+            name: "MySQL",
+            endpointUrl: "http://127.0.0.1:3000/mcp",
+            enabled: true,
+            tools: [],
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+      },
+      updatedAt: 1,
+    });
+    await saveAppSetting({ key: `${MCP_BEARER_TOKEN_SETTING_PREFIX}mysql`, value: "mcp-secret", updatedAt: 1 });
+
+    const snapshot = await exportSyncSnapshot();
+
+    expect(snapshot.appSettings.find((setting) => setting.key === MCP_SETTINGS_KEY)).toBeTruthy();
+    expect(JSON.stringify(snapshot)).not.toContain("mcp-secret");
+  });
+
+  it("恢复同步快照时保留本地 MCP Bearer Token", async () => {
+    await saveAppSetting({ key: `${MCP_BEARER_TOKEN_SETTING_PREFIX}mysql`, value: "local-mcp-secret", updatedAt: 1 });
+
+    await restoreSyncSnapshot({
+      version: 1,
+      modelConfigs: [],
+      modelProviders: [],
+      providerModels: [],
+      extractionRules: [],
+      chatSessions: [],
+      chatFolders: [],
+      appSettings: [
+        {
+          key: MCP_SETTINGS_KEY,
+          value: {
+            servers: [
+              {
+                id: "mysql",
+                name: "MySQL",
+                endpointUrl: "http://127.0.0.1:3000/mcp",
+                enabled: true,
+                tools: [],
+                createdAt: 2,
+                updatedAt: 2,
+              },
+            ],
+          },
+          updatedAt: 2,
+        },
+      ],
+    });
+
+    await expect(getAppSetting(`${MCP_BEARER_TOKEN_SETTING_PREFIX}mysql`)).resolves.toBe("local-mcp-secret");
   });
 });

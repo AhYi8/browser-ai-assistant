@@ -4884,4 +4884,55 @@ describe("appStore", () => {
     expect(state.privateChatSession?.messages.map((message) => message.content)).toEqual(["隐私问题", "隐私回复"]);
     expect(state.activeSessionId).toBe("");
   });
+
+  it("新增 MCP Server 后会自动刷新工具并默认启用新发现工具", async () => {
+    const sendMessage = vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+      if (message.type === "mcp.listTools") {
+        callback({
+          ok: true,
+          tools: [
+            {
+              name: "query",
+              description: "查询 SQL",
+              inputSchema: { type: "object", properties: { sql: { type: "string" } }, required: ["sql"] },
+            },
+          ],
+        });
+        return undefined;
+      }
+
+      callback(undefined);
+      return undefined;
+    });
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+    await useAppStore.getState().loadChannelConfig();
+    useAppStore.setState({
+      chatPreferences: {
+        ...useAppStore.getState().chatPreferences,
+        enabledToolIds: [],
+      },
+    });
+
+    const result = await useAppStore.getState().updateMcpServer(undefined, {
+      name: "MySQL",
+      endpointUrl: "https://mcp.example.com/mcp",
+      enabled: true,
+      bearerToken: "",
+    });
+
+    expect(result.ok).toBe(true);
+    const serverId = result.ok ? result.server.id : "";
+    expect(sendMessage).toHaveBeenCalledWith({ type: "mcp.listTools", serverId }, expect.any(Function));
+    expect(useAppStore.getState().mcpSettings.servers[0]?.tools).toEqual([
+      {
+        name: "query",
+        description: "查询 SQL",
+        inputSchema: { type: "object", properties: { sql: { type: "string" } }, required: ["sql"] },
+      },
+    ]);
+    expect(useAppStore.getState().chatPreferences.enabledToolIds).toEqual([`mcp.${serverId}.query`]);
+    await expect(getAppSetting("chatPreferences")).resolves.toMatchObject({
+      enabledToolIds: [`mcp.${serverId}.query`],
+    });
+  });
 });

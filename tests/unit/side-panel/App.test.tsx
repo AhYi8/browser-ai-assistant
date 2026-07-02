@@ -7,6 +7,7 @@ import postcss from "postcss";
 import tailwindcss from "tailwindcss";
 import { App } from "../../../src/side-panel/App";
 import { useAppStore } from "../../../src/side-panel/state/appStore";
+import { MCP_SETTINGS_KEY } from "../../../src/shared/mcp/settings";
 import type { ModelToolRegistryEntry } from "../../../src/shared/models/types";
 import {
   clearDatabase,
@@ -1418,6 +1419,120 @@ describe("App", () => {
     await user.click(screen.getByRole("button", { name: "启用筛选结果" }));
 
     expect(updateChatPreferences).toHaveBeenCalledWith({ enabledToolIds: ["browser.take_snapshot"] });
+  });
+  it("MCP 设置页可以新增 Server 并通过工具列表按钮展开已发现工具", async () => {
+    const user = userEvent.setup();
+    const updateChatPreferences = vi.fn(async () => undefined);
+    registeredModelToolsMock.tools = [
+      {
+        id: "mcp.mysql.query",
+        name: "mcp_mysql_query",
+        displayName: "MySQL.query",
+        description: "执行 SQL 查询",
+        groupId: "mcp_remote",
+        parameters: { type: "object", properties: { sql: { type: "string" } }, required: ["sql"] },
+        toolClassification: { runtime: "mcp_remote", capabilities: ["call_remote_tool"], risk: "medium" },
+      },
+    ];
+    await saveAppSetting({
+      key: MCP_SETTINGS_KEY,
+      value: {
+        servers: [
+          {
+            id: "mysql",
+            name: "MySQL",
+            endpointUrl: "http://127.0.0.1:3000/mcp",
+            enabled: true,
+            tools: [
+              {
+                name: "query",
+                description: "执行 SQL 查询",
+                inputSchema: { type: "object", properties: { sql: { type: "string" } }, required: ["sql"] },
+              },
+            ],
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+      },
+      updatedAt: 1,
+    });
+    await useAppStore.getState().loadChannelConfig();
+    useAppStore.setState({
+      updateChatPreferences,
+      chatPreferences: {
+        ...useAppStore.getState().chatPreferences,
+        toolCallingEnabled: true,
+        enabledToolIds: [],
+      },
+    });
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("tab", { name: "MCP 工具" }));
+    expect(screen.getByRole("heading", { name: "MCP 工具" })).toBeInTheDocument();
+    expect(screen.getByText("MySQL")).toBeInTheDocument();
+    expect(screen.queryByText("query")).not.toBeInTheDocument();
+
+    const toggleButton = screen.getByRole("button", { name: "工具列表" });
+    expect(toggleButton).toHaveAttribute("aria-expanded", "false");
+    await user.click(toggleButton);
+    expect(toggleButton).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("region", { name: "MySQL 工具列表" })).toBeInTheDocument();
+    expect(screen.getByText("query")).toBeInTheDocument();
+    expect(screen.getByText("执行 SQL 查询")).toBeInTheDocument();
+    expect(screen.getByTitle("query · 执行 SQL 查询")).toBeInTheDocument();
+
+    await user.click(toggleButton);
+    expect(toggleButton).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("region", { name: "MySQL 工具列表" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "聊天偏好" }));
+    await user.selectOptions(screen.getByRole("combobox", { name: "工具运行要求筛选" }), "mcp_remote");
+    expect(screen.getByRole("checkbox", { name: "启用工具 MySQL.query" })).toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "启用工具 mcp_mysql_query" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "启用筛选结果" }));
+
+    expect(updateChatPreferences).toHaveBeenCalledWith({ enabledToolIds: ["mcp.mysql.query"] });
+  });
+
+  it("MCP 设置页删除 Server 需要二次确认", async () => {
+    const user = userEvent.setup();
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+    await saveAppSetting({
+      key: MCP_SETTINGS_KEY,
+      value: {
+        servers: [
+          {
+            id: "mysql",
+            name: "MySQL",
+            endpointUrl: "http://127.0.0.1:3000/mcp",
+            enabled: true,
+            tools: [],
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+      },
+      updatedAt: 1,
+    });
+    await useAppStore.getState().loadChannelConfig();
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("tab", { name: "MCP 工具" }));
+
+    await user.click(screen.getByRole("button", { name: "删除" }));
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("MySQL")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "删除" }));
+    expect(confirmSpy).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(screen.queryByText("MySQL")).not.toBeInTheDocument());
+    confirmSpy.mockRestore();
   });
 
   it("聊天偏好可以保存工具调用展示方式", async () => {
@@ -5304,6 +5419,177 @@ describe("App", () => {
     const finalEntry = screen.getByText("最终回答。").closest(".message-entry");
     expect(toolTurnEntry?.querySelector(".message-regenerate-action")).toBeNull();
     expect(finalEntry?.querySelector(".message-regenerate-action")).not.toBeNull();
+  });
+
+  it("默认按工具轮助手消息展示 MCP 回复正文但隐藏工具调用过程", async () => {
+    await saveChatSession(
+      createChatSession({
+        id: "session-mcp-tool-turn-visible",
+        title: "MCP 工具过程",
+        messages: [
+          createChatMessage({
+            id: "message-mcp-tool-turn",
+            role: "assistant",
+            assistantMessageKind: "tool_call_turn",
+            content: "调用成功！继续下一步思考：",
+            toolCallRecords: [
+              {
+                id: "call-mcp-sequential-1",
+                toolId: "mcp.mcp-server.sequentialthinking",
+                name: "mcp_mcp_server_sequentialthinking",
+                displayName: "Sequential Thinking",
+                arguments: {
+                  thought: "第一步验证通过，MCP 工具确实被成功调用。",
+                  nextThoughtNeeded: true,
+                  thoughtNumber: 2,
+                  totalThoughts: 3,
+                },
+                status: "success",
+                startedAt: 1,
+                completedAt: 2,
+                resultSummary: "返回 thoughtNumber=2",
+              },
+            ],
+          }),
+        ],
+      }),
+    );
+
+    render(<App />);
+
+    expect(await screen.findByText("调用成功！继续下一步思考：")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "已调用 Sequential Thinking" })).not.toBeInTheDocument();
+    expect(screen.queryByText("第一步验证通过，MCP 工具确实被成功调用。")).not.toBeInTheDocument();
+    expect(screen.queryByText("第 2/3 步")).not.toBeInTheDocument();
+    expect(screen.queryByText("需要继续：是")).not.toBeInTheDocument();
+    expect(screen.queryByText("参数 thought")).not.toBeInTheDocument();
+    const styles = readFileSync(resolve(process.cwd(), "src/side-panel/styles.css"), "utf8");
+    expect(styles).not.toContain(".message-tool-call-row-mcp");
+    expect(styles).not.toContain(".message-tool-call-argument-summary");
+  });
+
+  it("开启偏好后按内置工具调用过程样式展示 MCP 工具调用行并可查看详情参数", async () => {
+    await saveAppSetting({
+      key: "chatPreferences",
+      value: {
+        ...useAppStore.getState().chatPreferences,
+        toolCallDisplayMode: "assistant_grouped",
+        showToolCallProcessInAssistantMode: true,
+      },
+      updatedAt: 2,
+    });
+    await saveChatSession(
+      createChatSession({
+        id: "session-mcp-tool-turn-preference-visible",
+        title: "MCP 工具过程受偏好控制",
+        messages: [
+          createChatMessage({
+            id: "message-mcp-tool-turn-preference-visible",
+            role: "assistant",
+            assistantMessageKind: "tool_call_turn",
+            content: "调用成功！继续下一步思考：",
+            toolCallRecords: [
+              {
+                id: "call-mcp-sequential-preference-visible",
+                toolId: "mcp.mcp-server.sequentialthinking",
+                name: "mcp_mcp_server_sequentialthinking",
+                displayName: "Sequential Thinking",
+                arguments: {
+                  thought: "第一步验证通过，MCP 工具确实被成功调用。",
+                  nextThoughtNeeded: true,
+                  thoughtNumber: 2,
+                  totalThoughts: 3,
+                },
+                status: "success",
+                startedAt: 1,
+                completedAt: 2,
+                resultSummary: "返回 thoughtNumber=2",
+              },
+            ],
+          }),
+        ],
+      }),
+    );
+
+    render(<App />);
+
+    expect(await screen.findByText("调用成功！继续下一步思考：")).toBeInTheDocument();
+    const toolButton = screen.getByRole("button", { name: "已调用 Sequential Thinking" });
+    expect(toolButton).toHaveClass("message-tool-call-trigger");
+    expect(screen.queryByText("第一步验证通过，MCP 工具确实被成功调用。")).not.toBeInTheDocument();
+    await userEvent.click(toolButton);
+
+    const dialog = await screen.findByRole("dialog", { name: "Sequential Thinking 调用详情" });
+    expect(dialog).toHaveTextContent("\"thought\": \"第一步验证通过，MCP 工具确实被成功调用。\"");
+  });
+
+  it("默认隐藏多轮 MCP 工具调用行并不展开每轮参数", async () => {
+    await saveChatSession(
+      createChatSession({
+        id: "session-mcp-multi-tool-turn-visible",
+        title: "多轮 MCP 工具过程",
+        messages: [
+          createChatMessage({
+            id: "message-mcp-tool-turn-1",
+            role: "assistant",
+            assistantMessageKind: "tool_call_turn",
+            content: "第一轮：",
+            toolCallRecords: [
+              {
+                id: "call-mcp-sequential-1",
+                toolId: "mcp.server.sequentialthinking",
+                name: "mcp_server_sequentialthinking",
+                displayName: "sequentialthinking",
+                arguments: {
+                  thought: "先确认 MCP 工具是否可以被调用。",
+                  nextThoughtNeeded: true,
+                  thoughtNumber: 1,
+                  totalThoughts: 3,
+                },
+                status: "success",
+                startedAt: 1,
+                completedAt: 2,
+                resultSummary: "第一轮完成",
+              },
+            ],
+          }),
+          createChatMessage({
+            id: "message-mcp-tool-turn-2",
+            role: "assistant",
+            assistantMessageKind: "tool_call_turn",
+            content: "第二轮：",
+            toolCallRecords: [
+              {
+                id: "call-mcp-sequential-2",
+                toolId: "mcp.server.sequentialthinking",
+                name: "mcp_server_sequentialthinking",
+                displayName: "sequentialthinking",
+                arguments: {
+                  thought: "再确认工具返回结果是否进入后续上下文。",
+                  nextThoughtNeeded: false,
+                  thoughtNumber: 2,
+                  totalThoughts: 2,
+                },
+                status: "success",
+                startedAt: 3,
+                completedAt: 4,
+                resultSummary: "第二轮完成",
+              },
+            ],
+          }),
+        ],
+      }),
+    );
+
+    render(<App />);
+
+    expect(await screen.findByText("第一轮：")).toBeInTheDocument();
+    expect(screen.queryAllByRole("button", { name: "已调用 sequentialthinking" })).toHaveLength(0);
+    expect(screen.queryByText("先确认 MCP 工具是否可以被调用。")).not.toBeInTheDocument();
+    expect(screen.queryByText("再确认工具返回结果是否进入后续上下文。")).not.toBeInTheDocument();
+    expect(screen.queryByText("第 1/3 步")).not.toBeInTheDocument();
+    expect(screen.queryByText("第 2/2 步")).not.toBeInTheDocument();
+    expect(screen.queryByText("需要继续：否")).not.toBeInTheDocument();
   });
 
   it("开启偏好后非紧凑模式会在工具轮助手消息下方显示工具调用过程", async () => {

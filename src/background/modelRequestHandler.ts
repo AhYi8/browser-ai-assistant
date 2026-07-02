@@ -26,6 +26,7 @@ export interface ChatSendMessage {
   browserAutomationMaxToolIterations?: number;
   automationPlaybookSettings?: AutomationPlaybookSettings;
   extractionRules?: ExtractionRule[];
+  mcp?: import("../shared/types").McpSettings & { bearerTokens?: import("../shared/types").McpServerSecretMap };
 }
 
 type ChatSendHandlerMessage = ChatSendMessage & {
@@ -72,7 +73,7 @@ export async function handleChatSendMessage(
   callbacks: ChatStreamCallbacks = {},
   executeTool?: ModelToolExecutor,
 ): Promise<ChatSendResponse> {
-  const enabledTools = resolveEnabledModelTools(getRegisteredModelTools(), message.enabledToolIds ?? []);
+  const enabledTools = resolveEnabledModelTools(getRegisteredModelTools(message.mcp), message.enabledToolIds ?? []);
   const exposedTools = message.structuredOutput ? [] : enabledTools.filter(shouldExposeTool);
   const toolExecutor = executeTool ?? createBackgroundToolExecutor(message, fetcher);
   const automationPlaybookSelection = await maybeSelectAutomationPlaybook(message, exposedTools, fetcher);

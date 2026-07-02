@@ -121,6 +121,7 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   const contextTabs = useAppStore((state) => state.contextTabs);
   const contextTabsLoading = useAppStore((state) => state.contextTabsLoading);
   const contextTabsError = useAppStore((state) => state.contextTabsError);
+  const mcpSettings = useAppStore((state) => state.mcpSettings);
   const setStreamMode = useAppStore((state) => state.setStreamMode);
   const setBrowserAutomationMode = useAppStore((state) => state.setBrowserAutomationMode);
   const setContextMode = useAppStore((state) => state.setContextMode);
@@ -133,7 +134,7 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   const sendChatMessage = useAppStore((state) => state.sendChatMessage);
   const abortActiveChatTask = useAppStore((state) => state.abortActiveChatTask);
   const respondBoundaryChoice = useAppStore((state) => state.respondBoundaryChoice);
-  const registeredTools = useMemo(() => getRegisteredModelTools(), []);
+  const registeredTools = useMemo(() => getRegisteredModelTools(mcpSettings), [mcpSettings]);
   const registeredToolGroups = useMemo(() => getModelToolGroups(registeredTools), [registeredTools]);
   const effectiveBrowserAutomationMode: BrowserAutomationMode = browserControlEnabled ? browserAutomationMode : "normal_restricted";
   const runtimeEditableToolIds = useMemo(
@@ -661,6 +662,7 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
                           <p className="composer-tool-menu-group-hint">需开启浏览器控制后才能启用本组工具。</p>
                         ) : null}
                         {group.tools.map((tool) => {
+                          const toolDisplayName = tool.groupId === "mcp_remote" ? (tool.displayName ?? tool.name) : tool.name;
                           const runtimeAvailable = isToolRuntimeAvailable(tool, browserControlEnabled, effectiveBrowserAutomationMode);
                           const debuggerRuntime = tool.toolClassification ? isDebuggerRuntimeRequirement(tool.toolClassification.runtime) : false;
                           const active = runtimeAvailable && enabledToolIds.includes(tool.id);
@@ -676,17 +678,17 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
                                 ]
                                   .filter(Boolean)
                                   .join(" ")
-                              }
-                              type="button"
-                              aria-pressed={active}
-                              aria-label={`${tool.name} ${tool.description ?? ""}`.trim()}
-                              disabled={disabled}
-                              onClick={() => handleToolToggle(tool.id, !active)}
-                            >
-                              <span className="composer-tool-menu-item-name">{tool.name}</span>
-                              {!runtimeAvailable ? <span className="composer-tool-menu-item-description">需开启浏览器控制</span> : null}
-                              {tool.description ? <span className="composer-tool-menu-item-description">{tool.description}</span> : null}
-                            </button>
+                            }
+                            type="button"
+                            aria-pressed={active}
+                            aria-label={`${toolDisplayName} ${tool.description ?? ""}`.trim()}
+                            disabled={disabled}
+                            onClick={() => handleToolToggle(tool.id, !active)}
+                          >
+                            <span className="composer-tool-menu-item-name">{toolDisplayName}</span>
+                            {!runtimeAvailable ? <span className="composer-tool-menu-item-description">需开启浏览器控制</span> : null}
+                            {tool.description ? <span className="composer-tool-menu-item-description">{tool.description}</span> : null}
+                          </button>
                           );
                         })}
                       </div>

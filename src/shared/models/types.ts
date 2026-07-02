@@ -13,7 +13,7 @@ export interface ModelToolDefinition {
   parameters: Record<string, unknown>;
 }
 
-export type ModelToolRuntimeRequirement = "local" | "external_web" | "browser_control" | "controlled_enhanced" | "full_access";
+export type ModelToolRuntimeRequirement = "local" | "external_web" | "browser_control" | "controlled_enhanced" | "full_access" | "mcp_remote";
 
 export type ModelToolCapability =
   | "observe_page"
@@ -22,7 +22,8 @@ export type ModelToolCapability =
   | "confirm_boundary"
   | "deliver_result"
   | "search_public_web"
-  | "system_context";
+  | "system_context"
+  | "call_remote_tool";
 
 export type ModelToolRisk = "low" | "medium" | "high" | "critical";
 

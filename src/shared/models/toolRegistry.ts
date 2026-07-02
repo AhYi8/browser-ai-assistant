@@ -6,6 +6,8 @@ import type {
   ModelToolRisk,
   ModelToolRuntimeRequirement,
 } from "./types";
+import type { McpSettings } from "../types";
+import { createMcpToolRegistryEntries, MODEL_TOOL_GROUP_MCP_REMOTE_ID } from "../mcp/toolAdapter";
 
 export const TAVILY_SEARCH_TOOL_ID = "web_search.tavily";
 export const TAVILY_SEARCH_TOOL_NAME = "tavily_search";
@@ -117,7 +119,7 @@ export const FULL_ACCESS_REVOKE_TOOL_NAME = "full_access_revoke";
 export const MODEL_TOOL_GROUP_SYSTEM_ID = "system";
 export const MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID = "browser_automation";
 
-export const MODEL_TOOL_RUNTIME_VALUES = ["local", "external_web", "browser_control", "controlled_enhanced", "full_access"] as const;
+export const MODEL_TOOL_RUNTIME_VALUES = ["local", "external_web", "browser_control", "controlled_enhanced", "full_access", "mcp_remote"] as const;
 export const MODEL_TOOL_CAPABILITY_VALUES = [
   "observe_page",
   "operate_page",
@@ -126,6 +128,7 @@ export const MODEL_TOOL_CAPABILITY_VALUES = [
   "deliver_result",
   "search_public_web",
   "system_context",
+  "call_remote_tool",
 ] as const;
 export const MODEL_TOOL_RISK_VALUES = ["low", "medium", "high", "critical"] as const;
 
@@ -1377,6 +1380,7 @@ export const AVAILABLE_MODEL_TOOLS: ModelToolRegistryEntry[] = RAW_AVAILABLE_MOD
 }));
 
 const TOOL_ID_PATTERN = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/;
+const MCP_TOOL_ID_PATTERN = /^mcp\.[^.]+\..+$/;
 
 function getRequiredToolClassification(toolId: string): ModelToolClassification {
   const classification = TOOL_CLASSIFICATION_BY_ID[toolId];
@@ -1387,13 +1391,14 @@ function getRequiredToolClassification(toolId: string): ModelToolClassification 
   return classification;
 }
 
-export function getRegisteredModelTools(): ModelToolRegistryEntry[] {
-  return AVAILABLE_MODEL_TOOLS;
+export function getRegisteredModelTools(mcpSettings?: McpSettings): ModelToolRegistryEntry[] {
+  return mcpSettings ? [...AVAILABLE_MODEL_TOOLS, ...createMcpToolRegistryEntries(mcpSettings.servers)] : AVAILABLE_MODEL_TOOLS;
 }
 
 export function getModelToolGroups(tools: ModelToolRegistryEntry[] = getRegisteredModelTools()): ModelToolGroup[] {
   const systemTools = tools.filter((tool) => (tool.groupId ?? MODEL_TOOL_GROUP_SYSTEM_ID) === MODEL_TOOL_GROUP_SYSTEM_ID && !isBrowserAutomationToolId(tool.id));
   const browserTools = tools.filter((tool) => (tool.groupId ?? (isBrowserAutomationToolId(tool.id) ? MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID : MODEL_TOOL_GROUP_SYSTEM_ID)) === MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID);
+  const mcpTools = tools.filter((tool) => (tool.groupId ?? "") === MODEL_TOOL_GROUP_MCP_REMOTE_ID);
 
   return [
     {
@@ -1405,6 +1410,11 @@ export function getModelToolGroups(tools: ModelToolRegistryEntry[] = getRegister
       id: MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
       label: "浏览器自动化",
       tools: browserTools,
+    },
+    {
+      id: MODEL_TOOL_GROUP_MCP_REMOTE_ID,
+      label: "MCP 远程工具",
+      tools: mcpTools,
     },
   ].filter((group) => group.tools.length > 0);
 }
@@ -1438,7 +1448,7 @@ export function isToolRuntimeAvailable(
   browserAutomationMode: BrowserAutomationMode = "normal_restricted",
 ): boolean {
   const runtime = tool.toolClassification?.runtime;
-  if (runtime === "local" || runtime === "external_web" || runtime === undefined) {
+  if (runtime === "local" || runtime === "external_web" || runtime === "mcp_remote" || runtime === undefined) {
     return true;
   }
 
@@ -1507,7 +1517,16 @@ function createSourceMapLocationSchema(): Record<string, unknown> {
 }
 
 export function isValidModelToolId(value: unknown): value is string {
-  return typeof value === "string" && TOOL_ID_PATTERN.test(value.trim());
+  if (typeof value !== "string") {
+    return false;
+  }
+
+  const trimmedValue = value.trim();
+  if (!trimmedValue) {
+    return false;
+  }
+
+  return TOOL_ID_PATTERN.test(trimmedValue) || MCP_TOOL_ID_PATTERN.test(trimmedValue);
 }
 
 export function normalizeEnabledToolIds(value: unknown): string[] {

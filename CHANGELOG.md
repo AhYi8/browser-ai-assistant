@@ -1,5 +1,44 @@
 # 更新日志
 
+## v3.3.0 - 2026-07-02
+
+本版本新增 MCP 远程工具集成能力，第一版以 MVP 策略接入 HTTP/Streamable HTTP MCP Server 的 Tools 能力，不支持 stdio、resources、prompts、OAuth 或自定义 header。
+
+### 新增功能
+
+- 新增 MCP 工具设置页，可新增、编辑、删除、启用/停用 HTTP MCP Server。
+- 支持可选 Bearer Token，本地敏感存储，不进入同步快照。
+- 支持自动发现 MCP 工具，并接入现有聊天工具调用体系。
+- 新增 MCP 远程工具运行类型 `mcp_remote`，独立于浏览器自动化权限。
+- 新增 MCP 工具在聊天偏好和当前聊天工具菜单中的启用/禁用能力。
+- 新增 MCP Server 保存后自动刷新工具列表，并默认启用新发现的 MCP 工具。
+- MCP 工具在工具列表中以 `MCP名称.tool_name` 形式展示，保留内部工具 ID 和模型侧函数名稳定不变。
+
+### 安全与边界
+
+- MCP 工具执行前在 background 二次校验 Server、工具名、启用状态和发现缓存。
+- MCP 工具不受普通模式、受控增强、完全访问等浏览器自动化模式影响。
+- MCP HTTP 请求增加默认超时，避免远端无响应导致聊天流程挂起。
+- MCP Server 删除增加二次确认。
+- 修复 MCP 工具 ID 解析对点号 `serverId` 的歧义。
+- 修复 MCP 模型侧工具名冲突时可能误执行其他远程工具的问题。
+- background 刷新 MCP 工具列表时只接收 `serverId`，不信任 UI 传入的完整 Server 对象。
+
+### 体验优化
+
+- MCP 设置页工具列表默认收起，通过“工具列表”按钮展开。
+- 工具列表标题和描述分两行展示，长文本截断并支持悬浮查看完整内容。
+- MCP 工具调用过程复用内置工具调用样式，并受现有聊天偏好控制。
+- 移除 MCP 参数摘要展示逻辑，完整参数仍通过调用详情查看。
+
+### 验证
+
+- 通过 `npm run typecheck`
+- 通过 `npm run build:extension`
+- 通过 `npm run test`
+- 通过 `npm run check`
+- 已生成本地扩展打包产物
+
 ## v3.2.1 - 2026-06-30
 
 本版本修复 [#1](https://github.com/AhYi8/browser-ai-assistant/issues/1)：部分渠道无法获取模型列表时，用户只能手动添加模型，但默认模型 ID 固定且不可编辑，导致新渠道配置后不可用。

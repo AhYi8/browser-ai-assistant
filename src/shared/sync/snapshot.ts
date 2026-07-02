@@ -3,6 +3,7 @@ import { SYNC_SECRET_SETTING_KEYS } from "./settings";
 import type { SyncDataSnapshot } from "./types";
 import type { AppSetting } from "../types";
 import { normalizeWebSearchSettings, WEB_SEARCH_SETTINGS_KEY } from "../webSearch/settings";
+import { MCP_BEARER_TOKEN_SETTING_PREFIX } from "../mcp/settings";
 
 export async function exportSyncSnapshot(): Promise<SyncDataSnapshot> {
   const snapshot = await exportAllDataForSync();
@@ -17,10 +18,11 @@ export async function exportSyncSnapshot(): Promise<SyncDataSnapshot> {
 export async function restoreSyncSnapshot(snapshot: SyncDataSnapshot): Promise<void> {
   assertValidSnapshot(snapshot);
   const localSecretSettings = await readLocalSecretSettings();
+  const localMcpSecretSettings = await readLocalMcpSecretSettings();
   const localWebSearchSettings = await getAppSetting(WEB_SEARCH_SETTINGS_KEY);
   await replaceAllDataFromSync({
     ...snapshot,
-    appSettings: mergeAppSettings(mergeWebSearchSettingsForRestore(snapshot.appSettings, localWebSearchSettings), localSecretSettings),
+    appSettings: mergeAppSettings(mergeWebSearchSettingsForRestore(snapshot.appSettings, localWebSearchSettings), [...localSecretSettings, ...localMcpSecretSettings]),
   });
 }
 
@@ -48,6 +50,13 @@ function mergeAppSettings(remoteSettings: AppSetting[], localSettings: AppSettin
 }
 
 function sanitizeAppSettingForSync(setting: AppSetting): AppSetting {
+  if (setting.key.startsWith(MCP_BEARER_TOKEN_SETTING_PREFIX)) {
+    return {
+      ...setting,
+      value: "",
+    };
+  }
+
   if (setting.key !== WEB_SEARCH_SETTINGS_KEY) {
     return setting;
   }
@@ -63,6 +72,11 @@ function sanitizeAppSettingForSync(setting: AppSetting): AppSetting {
       },
     },
   };
+}
+
+async function readLocalMcpSecretSettings(): Promise<AppSetting[]> {
+  const snapshot = await exportAllDataForSync();
+  return snapshot.appSettings.filter((setting) => setting.key.startsWith(MCP_BEARER_TOKEN_SETTING_PREFIX));
 }
 
 function mergeWebSearchSettingsForRestore(remoteSettings: AppSetting[], localValue: unknown): AppSetting[] {
