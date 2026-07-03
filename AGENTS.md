@@ -256,6 +256,7 @@
 * 发布大版本前必须先用 `git log origin/master..HEAD` 核对本地未推送提交范围，并在 `CHANGELOG.md` 中记录发布覆盖范围，避免遗漏本地已完成但尚未推送的功能与修复。
 * 发布小版本同样必须核对 `git log origin/master..HEAD`，并确保 `CHANGELOG.md` 发布范围、`package.json`、`package-lock.json` 和 `public/manifest.json` 的版本号一致。
 * 发布 GitHub Release 前必须确认对应版本 tag 不存在、GitHub CLI 已登录且目标分支已推送；Release 正文应与本次版本说明一致，避免本地变更日志和远端发布说明漂移。
+* 发布 GitHub Release 的 tag 和 Release title 不得包含中文或功能说明，只允许使用 `vX.Y.Z` 形式，例如 `v3.4.0`，避免 Release 列表标题混杂中文导致可读性和检索一致性下降。
 * 发布 GitHub Release 时必须上传本地打包好的插件压缩包，例如 `artifacts/browser-ai-assistant-vX.Y.Z.zip`；不得只发布 GitHub 自动生成的源码包。
 * Windows PowerShell 中创建或更新 GitHub Release 正文时，必须优先使用 UTF-8 文件并通过 `--notes-file` 传入，避免中文内容经管道传输后乱码。
 * HTML 资源引用校验必须先解析到打包目录内再检查存在性；遇到 `../` 或归一化后会跳出 `artifacts/chrome-extension` 的路径时，必须按缺失资源处理，不能读取项目其他目录来让校验通过。
