@@ -804,7 +804,7 @@ describe("App", () => {
     expect(styles).toContain(".chat-preference-switch-input:checked + .chat-preference-switch-control");
     expect(styles).toContain("border-radius: 9999px;");
     expect(styles).toContain("transform: translateX(18px);");
-    expect(styles).toContain("grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));");
+    expect(styles).toContain("grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));");
     expect(styles).toContain(".chat-preference-field");
     expect(styles).toContain(".chat-preference-number-input");
     expect(styles).toContain("width: 100%;");
