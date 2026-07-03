@@ -1,6 +1,7 @@
 import { parseAssistantResponse } from "../shared/chat/parseAssistantResponse";
+import { createTokenUsageEntry, maxTokenUsage, normalizeModelTokenUsage } from "../shared/chat/tokenUsage";
 import { shouldPassDeepSeekReasoningContent } from "../shared/models/openaiChatAdapter";
-import type { ModelConfig } from "../shared/types";
+import type { ChatTokenUsage, ChatTokenUsageSource, ModelConfig } from "../shared/types";
 import type { ChatSendResponse } from "./modelRequestHandler";
 
 const STREAM_INTERRUPTED_MESSAGE = "流式响应异常中断，请重新生成后重试";
@@ -14,6 +15,7 @@ export async function readModelStreamResponse(
   response: Response,
   model: ModelConfig,
   callbacks: ModelStreamCallbacks = {},
+  tokenUsageSource: ChatTokenUsageSource = "chat",
 ): Promise<ChatSendResponse> {
   if (!response.body) {
     return { ok: false, message: "模型响应中没有可用内容" };
@@ -27,6 +29,7 @@ export async function readModelStreamResponse(
   let rawThinking = "";
   let visibleThinking = "";
   let sawDone = false;
+  let tokenUsage: ChatTokenUsage | undefined;
   const contentChunkFilter = new DsmlStreamChunkFilter();
   const thinkingChunkFilter = new DsmlStreamChunkFilter();
 
@@ -39,6 +42,7 @@ export async function readModelStreamResponse(
     buffer += decoder.decode(value, { stream: true });
     const parsed = consumeSseBuffer(buffer, model.endpointType);
     buffer = parsed.remaining;
+    tokenUsage = maxTokenUsage(tokenUsage, parsed.tokenUsage);
     for (const chunk of parsed.contentChunks) {
       rawContent += chunk;
       const visibleChunk = contentChunkFilter.push(chunk);
@@ -66,6 +70,7 @@ export async function readModelStreamResponse(
   // 流结束时有些兼容渠道不会补最后的空行，这里主动补分隔符以消费尾部未闭合事件。
   const tail = consumeSseBuffer(`${buffer}\n\n`, model.endpointType);
   sawDone = sawDone || tail.done;
+  tokenUsage = maxTokenUsage(tokenUsage, tail.tokenUsage);
   for (const chunk of tail.contentChunks) {
     rawContent += chunk;
     const visibleChunk = contentChunkFilter.push(chunk);
@@ -104,10 +109,19 @@ export async function readModelStreamResponse(
 
   const parsedContent = parseAssistantResponse(visibleContent || rawContent);
   const parsedThinking = parseAssistantResponse(visibleThinking || rawThinking);
+  const tokenUsageEntry = tokenUsage
+    ? createTokenUsageEntry({
+        usage: tokenUsage,
+        source: tokenUsageSource,
+        modelId: model.id,
+        endpointType: model.endpointType,
+      })
+    : undefined;
   return {
     ok: true,
     content: parsedContent.content,
     thinking: visibleThinking || parsedThinking.thinking || parsedContent.thinking,
+    ...(tokenUsageEntry ? { tokenUsageEntries: [tokenUsageEntry] } : {}),
     ...(shouldPassDeepSeekReasoningContent(model) && (visibleThinking || rawThinking)
       ? { reasoningContent: visibleThinking || rawThinking }
       : {}),
@@ -235,9 +249,10 @@ function isPotentialDsmlToolCallStartPrefix(value: string): boolean {
 function consumeSseBuffer(
   buffer: string,
   endpointType: ModelConfig["endpointType"],
-): { contentChunks: string[]; thinkingChunks: string[]; done: boolean; remaining: string } {
+): { contentChunks: string[]; thinkingChunks: string[]; tokenUsage?: ChatTokenUsage; done: boolean; remaining: string } {
   const contentChunks: string[] = [];
   const thinkingChunks: string[] = [];
+  let tokenUsage: ChatTokenUsage | undefined;
   let done = false;
   let remaining = buffer;
 
@@ -252,16 +267,17 @@ function consumeSseBuffer(
     const parsed = parseSseEventBlock(eventBlock, endpointType);
     contentChunks.push(...parsed.contentChunks);
     thinkingChunks.push(...parsed.thinkingChunks);
+    tokenUsage = maxTokenUsage(tokenUsage, parsed.tokenUsage);
     done = done || parsed.done;
   }
 
-  return { contentChunks, thinkingChunks, done, remaining };
+  return { contentChunks, thinkingChunks, tokenUsage, done, remaining };
 }
 
 function parseSseEventBlock(
   eventBlock: string,
   endpointType: ModelConfig["endpointType"],
-): { contentChunks: string[]; thinkingChunks: string[]; done: boolean } {
+): { contentChunks: string[]; thinkingChunks: string[]; tokenUsage?: ChatTokenUsage; done: boolean } {
   const dataLines = eventBlock
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -270,6 +286,7 @@ function parseSseEventBlock(
 
   const contentChunks: string[] = [];
   const thinkingChunks: string[] = [];
+  let tokenUsage: ChatTokenUsage | undefined;
   let done = false;
 
   for (const dataLine of dataLines) {
@@ -291,6 +308,7 @@ function parseSseEventBlock(
       if (chunk.thinking) {
         thinkingChunks.push(chunk.thinking);
       }
+      tokenUsage = maxTokenUsage(tokenUsage, normalizeModelTokenUsage(data));
 
       done = done || isAnthropicStreamStop(data);
     } catch {
@@ -298,7 +316,7 @@ function parseSseEventBlock(
     }
   }
 
-  return { contentChunks, thinkingChunks, done };
+  return { contentChunks, thinkingChunks, tokenUsage, done };
 }
 
 function extractOpenAIStreamChunk(data: unknown): { content: string; thinking: string } {

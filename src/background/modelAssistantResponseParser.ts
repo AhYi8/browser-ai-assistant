@@ -1,10 +1,12 @@
 import type { ModelToolCall, OpenAIStructuredOutputFormat } from "../shared/models/types";
+import type { ChatTokenUsage } from "../shared/types";
+import { normalizeModelTokenUsage } from "../shared/chat/tokenUsage";
 import { extractAnthropicToolCalls, extractDsmlToolCallsFromContent, extractOpenAIToolCalls } from "./modelResponseToolParser";
 
 export function extractAssistantResponseData(
   data: unknown,
   options: { structuredOutput?: OpenAIStructuredOutputFormat; collectToolCalls?: boolean } = {},
-): { content: string; reasoningContent?: string; toolCalls?: ModelToolCall[] } {
+): { content: string; reasoningContent?: string; toolCalls?: ModelToolCall[]; tokenUsage?: ChatTokenUsage } {
   if (isOpenAIResponse(data)) {
     return extractOpenAIAssistantResponse(data, options);
   }
@@ -19,23 +21,24 @@ export function extractAssistantResponseData(
 function extractOpenAIAssistantResponse(
   data: unknown,
   options: { structuredOutput?: OpenAIStructuredOutputFormat; collectToolCalls?: boolean },
-): { content: string; reasoningContent?: string; toolCalls?: ModelToolCall[] } {
+): { content: string; reasoningContent?: string; toolCalls?: ModelToolCall[]; tokenUsage?: ChatTokenUsage } {
+  const tokenUsage = normalizeModelTokenUsage(data);
   if (!data || typeof data !== "object" || !("choices" in data) || !Array.isArray(data.choices)) {
-    return { content: "" };
+    return { content: "", ...(tokenUsage ? { tokenUsage } : {}) };
   }
 
   const firstChoice = data.choices[0];
   if (!firstChoice || typeof firstChoice !== "object" || !("message" in firstChoice)) {
-    return { content: "" };
+    return { content: "", ...(tokenUsage ? { tokenUsage } : {}) };
   }
 
   const { message } = firstChoice;
   if (!message || typeof message !== "object") {
-    return { content: "" };
+    return { content: "", ...(tokenUsage ? { tokenUsage } : {}) };
   }
 
   if (options.structuredOutput && "tool_calls" in message && Array.isArray(message.tool_calls)) {
-    return { content: extractFirstOpenAIToolArguments(message.tool_calls) };
+    return { content: extractFirstOpenAIToolArguments(message.tool_calls), ...(tokenUsage ? { tokenUsage } : {}) };
   }
 
   if ("content" in message && typeof message.content === "string") {
@@ -47,11 +50,12 @@ function extractOpenAIAssistantResponse(
       content: dsmlToolCalls.content,
       ...(reasoningContent ? { reasoningContent } : {}),
       ...(toolCalls.length ? { toolCalls } : {}),
+      ...(tokenUsage ? { tokenUsage } : {}),
     };
   }
 
   if (!("tool_calls" in message) || !Array.isArray(message.tool_calls)) {
-    return { content: "" };
+    return { content: "", ...(tokenUsage ? { tokenUsage } : {}) };
   }
 
   const toolCalls = options.collectToolCalls ? extractOpenAIToolCalls(message) : [];
@@ -60,6 +64,7 @@ function extractOpenAIAssistantResponse(
     content: "",
     ...(reasoningContent ? { reasoningContent } : {}),
     ...(toolCalls.length ? { toolCalls } : {}),
+    ...(tokenUsage ? { tokenUsage } : {}),
   };
 }
 
@@ -86,9 +91,10 @@ function extractFirstOpenAIToolArguments(toolCalls: unknown[]): string {
 function extractAnthropicAssistantResponse(
   data: unknown,
   options: { collectToolCalls?: boolean } = {},
-): { content: string; toolCalls?: ModelToolCall[] } {
+): { content: string; toolCalls?: ModelToolCall[]; tokenUsage?: ChatTokenUsage } {
+  const tokenUsage = normalizeModelTokenUsage(data);
   if (!isAnthropicResponse(data)) {
-    return { content: "" };
+    return { content: "", ...(tokenUsage ? { tokenUsage } : {}) };
   }
 
   const text = data.content
@@ -109,6 +115,7 @@ function extractAnthropicAssistantResponse(
   return {
     content: text,
     ...(toolCalls.length ? { toolCalls } : {}),
+    ...(tokenUsage ? { tokenUsage } : {}),
   };
 }
 

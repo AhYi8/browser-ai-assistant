@@ -158,6 +158,7 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResp
   }
 
   if (message.type === "chat.send") {
+    // 非流式 sendMessage 没有稳定端口可推送中间事件，Token 用量随最终响应一次性返回给调用方。
     void handleChatSendMessage(message).then(sendResponse);
     return true;
   }
@@ -219,6 +220,7 @@ chrome.runtime.onConnect.addListener((port) => {
       onThinkingChunk: (content) => postToPort({ type: "thinking", content }),
       onRetryProgress: (progress) => postToPort({ type: "retry:progress", ...progress }),
       onFinalResponseStart: () => postToPort({ type: "assistant:final-start" }),
+      onTokenUsageEntries: (tokenUsageEntries) => postToPort({ type: "token_usage", tokenUsageEntries }),
       onToolTurnMessage: (assistantMessage: ChatMessage) => postToPort({ type: "assistant:tool-turn", message: assistantMessage }),
       onToolCallStart: (record: ChatToolCallRecord) => postToPort({ type: "tool:start", record }),
       onToolCallComplete: (record: ChatToolCallRecord, attachments: ChatToolAttachment[]) => postToPort({ type: "tool:complete", record, attachments }),
@@ -235,6 +237,7 @@ chrome.runtime.onConnect.addListener((port) => {
             reasoningContent: response.reasoningContent,
             toolCallRecords: response.toolCallRecords,
             toolAttachments: response.toolAttachments,
+            tokenUsageEntries: response.tokenUsageEntries,
           });
           return;
         }

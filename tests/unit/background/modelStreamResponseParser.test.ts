@@ -62,6 +62,38 @@ describe("模型流式响应解析", () => {
     expect(onContentChunk).toHaveBeenNthCalledWith(3, "案");
   });
 
+  it("OpenAI-compatible SSE 会抽取最终 usage chunk 作为会话 Token 用量", async () => {
+    const result = await readModelStreamResponse(
+      new Response(
+        createStream([
+          'data: {"choices":[{"delta":{"content":"回答"}}]}\n\n',
+          'data: {"choices":[],"usage":{"prompt_tokens":120,"completion_tokens":20,"prompt_tokens_details":{"cached_tokens":30}}}\n\n',
+          "data: [DONE]\n\n",
+        ]),
+      ),
+      createModel(),
+      {},
+      "tool_final",
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      content: "回答",
+      thinking: undefined,
+      tokenUsageEntries: [
+        expect.objectContaining({
+          source: "tool_final",
+          modelId: "model-1",
+          endpointType: "openai_chat",
+          inputTokens: 90,
+          outputTokens: 20,
+          cacheWriteTokens: 0,
+          cacheReadTokens: 30,
+        }),
+      ],
+    });
+  });
+
   it("OpenAI-compatible SSE 会逐段回调 reasoning_content 并按模型决定是否保留协议原文", async () => {
     const onThinkingChunk = vi.fn();
     const result = await readModelStreamResponse(
@@ -197,6 +229,37 @@ describe("模型流式响应解析", () => {
     expect(result).toEqual({ ok: true, content: "第一段第二段", thinking: undefined });
     expect(onContentChunk).toHaveBeenNthCalledWith(1, "第一段");
     expect(onContentChunk).toHaveBeenNthCalledWith(2, "第二段");
+  });
+
+  it("Anthropic SSE 会合并 message_start 和 message_delta 中的 Token 用量", async () => {
+    const result = await readModelStreamResponse(
+      new Response(
+        createStream([
+          'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":12,"cache_creation_input_tokens":4,"cache_read_input_tokens":5}}}\n\n',
+          'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"回答"}}\n\n',
+          'event: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":7}}\n\n',
+          'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+        ]),
+      ),
+      createModel({ endpointType: "anthropic_messages" }),
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      content: "回答",
+      thinking: undefined,
+      tokenUsageEntries: [
+        expect.objectContaining({
+          source: "chat",
+          modelId: "model-1",
+          endpointType: "anthropic_messages",
+          inputTokens: 12,
+          outputTokens: 7,
+          cacheWriteTokens: 4,
+          cacheReadTokens: 5,
+        }),
+      ],
+    });
   });
 
   it("缺少响应体或没有可用增量时返回中文错误", async () => {

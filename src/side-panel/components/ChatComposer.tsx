@@ -7,8 +7,9 @@ import {
   isDebuggerRuntimeRequirement,
   isToolRuntimeAvailable,
 } from "../../shared/models/toolRegistry";
+import { hasTokenUsage, sumSessionTokenUsage } from "../../shared/chat/tokenUsage";
 import { isPngDataUrl, isTabCaptureImageAttachment, TAB_CAPTURE_VISIBLE_MESSAGE_TYPE, type TabCaptureVisibleResponse } from "../../shared/tabCapture";
-import type { ChatImageAttachment, ChatPromptInvocation, PromptTemplate, SendShortcut } from "../../shared/types";
+import type { ChatImageAttachment, ChatPromptInvocation, ChatTokenUsage, PromptTemplate, SendShortcut } from "../../shared/types";
 import { useAppStore } from "../state/appStore";
 import { BoundaryChoiceDialog } from "./BoundaryChoiceDialog";
 import { PromptInlineEditor } from "./PromptInlineEditor";
@@ -16,6 +17,8 @@ import { PromptInlineEditor } from "./PromptInlineEditor";
 const MAX_IMAGE_ATTACHMENTS = 5;
 const MAX_IMAGE_ATTACHMENT_BYTES = 5 * 1024 * 1024;
 const ACCEPTED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+const TOKEN_KILO_THRESHOLD = 1_000;
+const TOKEN_MEGA_THRESHOLD = 1_000_000;
 const SWITCH_ICON_PATHS = {
   appendContext: "M7 7h10M12 7v10M6 3h12a3 3 0 0 1 3 3v12a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3Z",
   stream: "M13 2 5 14h6l-1 8 8-12h-6l1-8Z",
@@ -118,6 +121,11 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   const appendPageContextToSystemPrompt = useAppStore((state) => state.appendPageContextToSystemPrompt);
   const sending = useAppStore((state) => state.sending);
   const pageContext = useAppStore((state) => state.pageContext);
+  const activeSession = useAppStore((state) =>
+    state.privateModeActive
+      ? state.privateChatSession
+      : state.chatSessions.find((session) => session.id === state.activeSessionId),
+  );
   const contextTabs = useAppStore((state) => state.contextTabs);
   const contextTabsLoading = useAppStore((state) => state.contextTabsLoading);
   const contextTabsError = useAppStore((state) => state.contextTabsError);
@@ -448,6 +456,7 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   const filteredPromptTemplates = filterPromptTemplates(promptTemplates, slashQuery);
   const hasDraft = input.trim().length > 0 || attachments.length > 0 || promptInvocations.length > 0;
   const canSubmit = canSend && hasDraft;
+  const sessionTokenUsage = sumSessionTokenUsage(activeSession);
 
   return (
     <section className="chat-composer" aria-label="聊天输入区">
@@ -472,6 +481,7 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
         </div>
       ) : null}
       <div className="context-strip">
+        <TokenUsageMeter usage={sessionTokenUsage} sending={sending} />
         <button
           className="ui-button-secondary context-view-button"
           type="button"
@@ -782,6 +792,38 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
       ) : null}
     </section>
   );
+}
+
+function TokenUsageMeter({ usage, sending }: { usage: ChatTokenUsage; sending: boolean }) {
+  const hasUsage = hasTokenUsage(usage);
+  return (
+    <div className={`token-usage-meter${hasUsage ? "" : " token-usage-meter-empty"}`} aria-label="当前会话 Token 用量" title="当前会话 Token 用量">
+      {hasUsage ? (
+        <>
+          <span>输入 {formatTokenCount(usage.inputTokens)}</span>
+          <span>输出 {formatTokenCount(usage.outputTokens)}</span>
+          <span>写入 {formatTokenCount(usage.cacheWriteTokens)}</span>
+          <span>读取 {formatTokenCount(usage.cacheReadTokens)}</span>
+        </>
+      ) : (
+        <span>{sending ? "Token 统计中" : "Token 暂无"}</span>
+      )}
+    </div>
+  );
+}
+
+function formatTokenCount(value: number): string {
+  if (value >= TOKEN_MEGA_THRESHOLD) {
+    return `${trimTokenNumber(value / TOKEN_MEGA_THRESHOLD)}M`;
+  }
+  if (value >= TOKEN_KILO_THRESHOLD) {
+    return `${trimTokenNumber(value / TOKEN_KILO_THRESHOLD)}k`;
+  }
+  return String(Math.max(0, Math.floor(value)));
+}
+
+function trimTokenNumber(value: number): string {
+  return value >= 10 ? value.toFixed(0) : value.toFixed(1).replace(/\.0$/, "");
 }
 
 function getPastedImageFiles(clipboardData: DataTransfer): File[] {

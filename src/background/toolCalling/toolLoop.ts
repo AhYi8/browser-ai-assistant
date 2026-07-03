@@ -1,4 +1,4 @@
-import type { AutomationPlaybookSelection, ChatMessage, ChatToolAttachment, ChatToolCallRecord } from "../../shared/types";
+import type { AutomationPlaybookSelection, ChatMessage, ChatTokenUsageEntry, ChatToolAttachment, ChatToolCallRecord } from "../../shared/types";
 import type { ModelRequestMessage, ModelResponseData, ModelToolCall, ModelToolExecutor, ModelToolRegistryEntry, ModelToolResultMessage } from "../../shared/models/types";
 import { isBrowserAutomationToolId } from "../../shared/models/toolRegistry";
 import { createAutomationReportToolAttachment } from "../../shared/toolArtifacts";
@@ -42,6 +42,7 @@ export async function runModelToolLoop(input: RunModelToolLoopInput): Promise<Mo
   const toolCallRecords: ChatToolCallRecord[] = [];
   const toolAttachments: ChatToolAttachment[] = [];
   const toolTurnMessages: ChatMessage[] = [];
+  const tokenUsageEntries: ChatTokenUsageEntry[] = [];
   let lastResponse: ModelToolLoopResponse | undefined;
 
   for (let iteration = 0; iteration < maxIterations; iteration += 1) {
@@ -55,6 +56,7 @@ export async function runModelToolLoop(input: RunModelToolLoopInput): Promise<Mo
     if (!response.ok) {
       return response;
     }
+    tokenUsageEntries.push(...(response.tokenUsageEntries ?? []));
 
     if (!response.toolCalls?.length) {
       lastResponse = {
@@ -64,6 +66,7 @@ export async function runModelToolLoop(input: RunModelToolLoopInput): Promise<Mo
         ...(response.reasoningContent ? { reasoningContent: response.reasoningContent } : {}),
         ...(toolAttachments.length ? { toolAttachments } : {}),
         ...(toolTurnMessages.length ? { toolTurnMessages } : {}),
+        ...(tokenUsageEntries.length ? { tokenUsageEntries: [...tokenUsageEntries] } : {}),
       };
       break;
     }
@@ -171,6 +174,7 @@ export async function runModelToolLoop(input: RunModelToolLoopInput): Promise<Mo
     if (!finalResponse.ok) {
       return finalResponse;
     }
+    tokenUsageEntries.push(...(finalResponse.tokenUsageEntries ?? []));
 
     return {
       ok: true,
@@ -179,6 +183,7 @@ export async function runModelToolLoop(input: RunModelToolLoopInput): Promise<Mo
       ...(finalResponse.reasoningContent ? { reasoningContent: finalResponse.reasoningContent } : {}),
       ...(toolAttachments.length ? { toolAttachments } : {}),
       ...(toolTurnMessages.length ? { toolTurnMessages } : {}),
+      ...(tokenUsageEntries.length ? { tokenUsageEntries: [...tokenUsageEntries] } : {}),
     };
   }
 

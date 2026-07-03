@@ -415,6 +415,24 @@ export interface ChatPromptInvocation {
   contentSnapshot: string;
 }
 
+export type ChatTokenUsageSource = "chat" | "tool_decision" | "tool_final" | "title";
+
+export interface ChatTokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheWriteTokens: number;
+  cacheReadTokens: number;
+}
+
+export interface ChatTokenUsageEntry extends ChatTokenUsage {
+  id: string;
+  usageSchemaVersion: number;
+  source: ChatTokenUsageSource;
+  modelId: string;
+  endpointType: EndpointType;
+  createdAt: number;
+}
+
 export interface ExtractionRule {
   id: string;
   alias: string;
@@ -459,6 +477,7 @@ export interface ChatSession {
   createdAt: number;
   updatedAt: number;
   messages: ChatMessage[];
+  tokenUsageEntries?: ChatTokenUsageEntry[];
   chatPreferenceOverrides?: ChatSessionPreferenceOverrides;
 }
 

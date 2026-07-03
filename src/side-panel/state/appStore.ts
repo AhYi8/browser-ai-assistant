@@ -2,6 +2,7 @@ import { create, type StoreApi } from "zustand";
 import { buildChatRequestMessages } from "../../shared/chat/buildChatRequestMessages";
 import { createModelConfig } from "../../shared/chat/modelConfig";
 import { createPageContextPrompt } from "../../shared/chat/pageContextPrompt";
+import { mergeTokenUsageEntries } from "../../shared/chat/tokenUsage";
 import {
   AUTOMATION_PLAYBOOK_SETTINGS_KEY,
   normalizeAutomationPlaybookSettings,
@@ -55,6 +56,8 @@ import type {
   ChatPreferenceValues,
   ChatSession,
   ChatSessionPreferenceOverrides,
+  ChatTokenUsageEntry,
+  ChatTokenUsageSource,
   ChatToolAttachment,
   ChatToolCallRecord,
   EndpointType,
@@ -1286,6 +1289,7 @@ export type AppChatSendMessage = {
   toolChoice?: ModelToolChoice;
   tavily?: TavilySearchOptions;
   retryCount?: number;
+  tokenUsageSource?: ChatTokenUsageSource;
   browserAutomationMaxToolIterations?: number;
   automationPlaybookSettings?: AutomationPlaybookSettings;
   extractionRules?: ExtractionRule[];
@@ -1672,6 +1676,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
           toolCallRecords?: ChatToolCallRecord[];
           toolAttachments?: ChatToolAttachment[];
           toolTurnMessages?: ChatMessage[];
+          tokenUsageEntries?: ChatTokenUsageEntry[];
         }
       | { ok: false; message: string }
       | undefined
@@ -1718,6 +1723,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
           privateChatSession: {
             ...currentSession,
             updatedAt: assistantMessage.createdAt,
+            tokenUsageEntries: mergeTokenUsageEntries(currentSession.tokenUsageEntries, response.tokenUsageEntries),
             messages: [...currentSession.messages, ...assistantMessages],
           },
         };
@@ -1728,6 +1734,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
     const completedSession = await updateChatSession(nextSession.id, (latestSession) => ({
       ...latestSession,
       updatedAt: assistantMessage.createdAt,
+      tokenUsageEntries: mergeTokenUsageEntries(latestSession.tokenUsageEntries, response.tokenUsageEntries),
       messages: [...latestSession.messages, ...assistantMessages],
     }));
     if (!completedSession) {
@@ -1744,6 +1751,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
         chatSessions: upsertSession(current.chatSessions, {
           ...currentSession,
           updatedAt: assistantMessage.createdAt,
+          tokenUsageEntries: mergeTokenUsageEntries(currentSession.tokenUsageEntries, response.tokenUsageEntries),
           messages: [...currentSession.messages, ...assistantMessages],
         }),
       };

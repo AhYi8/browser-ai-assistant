@@ -15,6 +15,7 @@ import type {
   ProviderModel,
 } from "../types";
 import { createNetworkToolAttachment, mergeCompatibleToolAttachments, normalizeToolAttachment } from "../toolArtifacts";
+import { normalizeTokenUsageEntries } from "../chat/tokenUsage";
 
 export async function saveModelConfig(model: ModelConfig): Promise<void> {
   await db.modelConfigs.put(model);
@@ -289,6 +290,7 @@ function normalizeChatSession(session: ChatSession): ChatSession {
     archived: session.archived ?? false,
     chatPreferenceOverrides: normalizeChatPreferenceOverrides(session.chatPreferenceOverrides),
     messages: session.messages.map(normalizeChatMessage),
+    tokenUsageEntries: normalizeTokenUsageEntries(session.tokenUsageEntries),
   };
 }
 

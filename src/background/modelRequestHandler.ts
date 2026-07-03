@@ -1,10 +1,11 @@
 import { parseAssistantResponse } from "../shared/chat/parseAssistantResponse";
+import { createTokenUsageEntry } from "../shared/chat/tokenUsage";
 import { createModelRequestPayload } from "../shared/models/modelRequestPayload";
 import { shouldPassDeepSeekReasoningContent } from "../shared/models/openaiChatAdapter";
 import { normalizeModelRequestRetryCount, shouldRetryModelResponse, withModelRequestRetry, type ModelRequestRetryProgress } from "../shared/models/modelRequestRetry";
 import { getRegisteredModelTools, isBrowserAutomationToolId, resolveEnabledModelTools } from "../shared/models/toolRegistry";
 import type { ModelRequestMessage, ModelToolCall, ModelToolChoice, ModelToolDefinition, ModelToolExecutor, OpenAIStructuredOutputFormat } from "../shared/models/types";
-import type { AutomationPlaybookSettings, ChatMessage, ChatToolAttachment, ChatToolCallRecord, ExtractionRule, ModelConfig } from "../shared/types";
+import type { AutomationPlaybookSettings, ChatMessage, ChatTokenUsageEntry, ChatTokenUsageSource, ChatToolAttachment, ChatToolCallRecord, ExtractionRule, ModelConfig } from "../shared/types";
 import type { TavilySearchOptions } from "../shared/webSearch/tavily";
 import { getEnabledAutomationPlaybooks, normalizeAutomationPlaybookSettings, shouldRunAutomationPlaybookSelection } from "../shared/automationPlaybooks";
 import { appendBrowserControlPromptIfNeeded, createBackgroundToolExecutor, createModelToolDefinition, normalizeBrowserAutomationMaxToolIterations, shouldExposeTool } from "./backgroundToolRuntime";
@@ -23,6 +24,7 @@ export interface ChatSendMessage {
   toolChoice?: ModelToolChoice;
   tavily?: TavilySearchOptions;
   retryCount?: number;
+  tokenUsageSource?: ChatTokenUsageSource;
   browserAutomationMaxToolIterations?: number;
   automationPlaybookSettings?: AutomationPlaybookSettings;
   extractionRules?: ExtractionRule[];
@@ -47,6 +49,7 @@ export type ChatSendResponse =
       toolCallRecords?: ChatToolCallRecord[];
       toolAttachments?: ChatToolAttachment[];
       toolTurnMessages?: ChatMessage[];
+      tokenUsageEntries?: ChatTokenUsageEntry[];
     }
   | {
       ok: false;
@@ -62,6 +65,7 @@ interface ChatStreamCallbacks {
   onThinkingChunk?: (content: string) => void;
   onRetryProgress?: (progress: ModelRequestRetryProgress) => void;
   onFinalResponseStart?: () => void;
+  onTokenUsageEntries?: (entries: ChatTokenUsageEntry[]) => void;
   onToolTurnMessage?: (message: ChatMessage) => void;
   onToolCallStart?: (record: ChatToolCallRecord) => void;
   onToolCallComplete?: (record: ChatToolCallRecord, attachments: ChatToolAttachment[]) => void;
@@ -91,11 +95,12 @@ export async function handleChatSendMessage(
       initialMessages,
       tools: exposedTools,
       enabledToolIds: exposedToolIds,
+      // 工具链路会产生决策与最终回答两次模型响应，需要固定来源，不能沿用调用方传入的普通请求来源。
       requestModel: (messages) =>
-        requestModelOnce({ ...message, messages, stream: false, tools: toolOptions.tools, toolChoice: toolOptions.toolChoice }, fetcher),
+        requestModelOnce({ ...message, messages, stream: false, tools: toolOptions.tools, toolChoice: toolOptions.toolChoice, tokenUsageSource: "tool_decision" }, fetcher, callbacks),
       requestFinalModel: (messages: ModelRequestMessage[]) => {
         callbacks.onFinalResponseStart?.();
-        return requestModelOnce({ ...message, messages, stream: message.stream, tools: undefined, toolChoice: undefined }, fetcher, callbacks);
+        return requestModelOnce({ ...message, messages, stream: message.stream, tools: undefined, toolChoice: undefined, tokenUsageSource: "tool_final" }, fetcher, callbacks);
       },
       executeTool: toolExecutor,
       automationPlaybookSelection,
@@ -192,7 +197,11 @@ async function requestModelOnce(
         };
       }
 
-      return readModelStreamResponse(streamResponse, message.model, callbacks);
+      const response = await readModelStreamResponse(streamResponse, message.model, callbacks, message.tokenUsageSource ?? "chat");
+      if (response.ok && response.tokenUsageEntries?.length) {
+        callbacks.onTokenUsageEntries?.(response.tokenUsageEntries);
+      }
+      return response;
     }
 
     const modelResponse = await withModelRequestRetry(() => fetchAndReadModelResponse(fetcher, payload.url, requestInit), retryCount, {
@@ -219,6 +228,17 @@ async function requestModelOnce(
     }
 
     const parsed = parseAssistantResponse(responseData.content);
+    const tokenUsageEntry = responseData.tokenUsage
+      ? createTokenUsageEntry({
+          usage: responseData.tokenUsage,
+          source: message.tokenUsageSource ?? "chat",
+          modelId: message.model.id,
+          endpointType: message.model.endpointType,
+        })
+      : undefined;
+    if (tokenUsageEntry) {
+      callbacks.onTokenUsageEntries?.([tokenUsageEntry]);
+    }
     return {
       ok: true,
       content: parsed.content,
@@ -227,6 +247,7 @@ async function requestModelOnce(
         ? { reasoningContent: responseData.reasoningContent }
         : {}),
       ...(responseData.toolCalls?.length ? { toolCalls: responseData.toolCalls } : {}),
+      ...(tokenUsageEntry ? { tokenUsageEntries: [tokenUsageEntry] } : {}),
     };
   } catch {
     return {

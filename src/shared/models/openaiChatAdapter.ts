@@ -28,6 +28,10 @@ export function createOpenAIChatPayload(
     body.top_k = model.topK;
   }
 
+  if (stream) {
+    body.stream_options = { include_usage: true };
+  }
+
   if (structuredOutput?.type === "json_schema") {
     body.response_format = structuredOutput;
   }

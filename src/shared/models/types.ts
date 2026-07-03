@@ -1,4 +1,4 @@
-import type { ChatMessage, ChatToolAttachment, ChatToolCallRecord } from "../types";
+import type { ChatMessage, ChatTokenUsageEntry, ChatToolAttachment, ChatToolCallRecord } from "../types";
 import type { ToolRiskCapability } from "../toolAuthorization";
 
 export interface ModelRequestPayload {
@@ -100,6 +100,7 @@ export interface ModelResponseData {
   toolCallRecords?: ChatToolCallRecord[];
   toolAttachments?: ChatToolAttachment[];
   toolTurnMessages?: ChatMessage[];
+  tokenUsageEntries?: ChatTokenUsageEntry[];
 }
 
 export interface OpenAIJsonSchemaResponseFormat {

@@ -162,6 +162,9 @@ describe("模型适配器", () => {
         temperature: 0.2,
         max_tokens: 256,
         stream: true,
+        stream_options: {
+          include_usage: true,
+        },
       },
     });
   });

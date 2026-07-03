@@ -1,7 +1,8 @@
 import { createModelConfig } from "../../shared/chat/modelConfig";
+import { mergeTokenUsageEntries } from "../../shared/chat/tokenUsage";
 import { createTitleGenerationMessages, generateSessionTitle } from "../../shared/models/titleGeneration";
 import { updateChatSession } from "../../shared/storage/repositories";
-import type { ChatMessage, ChatSession } from "../../shared/types";
+import type { ChatMessage, ChatSession, ChatTokenUsageEntry } from "../../shared/types";
 import type { AppState, StoreGetter, StoreSetter } from "./appStore";
 import { upsertSession } from "./appStoreSessionUtils";
 import { sendRuntimeMessage } from "./runtimeMessage";
@@ -25,6 +26,7 @@ export function hasAvailableTitleModel(state: AppState): boolean {
 }
 
 export async function generateTitleForSession(input: GenerateTitleForSessionInput): Promise<void> {
+  let tokenUsageEntries: ChatTokenUsageEntry[] | undefined;
   try {
     const state = input.get();
     const titleModel = state.models.find((model) => model.isTitleModel && model.enabled);
@@ -52,28 +54,31 @@ export async function generateTitleForSession(input: GenerateTitleForSessionInpu
       titleModel: titleModelConfig,
       retryCount: input.retryCount,
       requestTitle: async (model, messages, retryCount) => {
-        const response = await sendRuntimeMessage<{ ok: true; content: string } | { ok: false; message: string } | undefined>({
+        const response = await sendRuntimeMessage<{ ok: true; content: string; tokenUsageEntries?: ChatTokenUsageEntry[] } | { ok: false; message: string } | undefined>({
           type: "chat.send",
           model,
           messages,
           stream: false,
           retryCount,
+          tokenUsageSource: "title",
         });
         if (!response?.ok) {
           throw new Error(response?.message ?? "标题生成失败");
         }
 
+        tokenUsageEntries = response.tokenUsageEntries;
         return response.content;
       },
     });
 
-    await updateGeneratedTitle(input, title);
+    await updateGeneratedTitle(input, title, tokenUsageEntries);
   } catch {
     await clearTitleGenerating(input);
   }
 }
 
 export async function generateTitleFromSavedPrivateSession(input: { session: ChatSession; get: StoreGetter; set: StoreSetter }): Promise<void> {
+  let tokenUsageEntries: ChatTokenUsageEntry[] | undefined;
   try {
     const state = input.get();
     const titleModel = state.models.find((model) => model.isTitleModel && model.enabled);
@@ -98,17 +103,19 @@ export async function generateTitleFromSavedPrivateSession(input: { session: Cha
       titleModel: titleModelConfig,
       retryCount: state.chatPreferences.aiRequestRetryCount,
       requestTitle: async (model, messages, retryCount) => {
-        const response = await sendRuntimeMessage<{ ok: true; content: string } | { ok: false; message: string } | undefined>({
+        const response = await sendRuntimeMessage<{ ok: true; content: string; tokenUsageEntries?: ChatTokenUsageEntry[] } | { ok: false; message: string } | undefined>({
           type: "chat.send",
           model,
           messages,
           stream: false,
           retryCount,
+          tokenUsageSource: "title",
         });
         if (!response?.ok) {
           throw new Error(response?.message ?? "标题生成失败");
         }
 
+        tokenUsageEntries = response.tokenUsageEntries;
         return response.content;
       },
     });
@@ -116,6 +123,7 @@ export async function generateTitleFromSavedPrivateSession(input: { session: Cha
     await updateSavedPrivateSessionTitle({
       sessionId: input.session.id,
       title,
+      tokenUsageEntries,
       set: input.set,
     });
   } catch {
@@ -130,11 +138,12 @@ function formatSessionMessagesForTitle(messages: ChatMessage[]): string {
     .join("\n\n");
 }
 
-async function updateSavedPrivateSessionTitle(input: { sessionId: string; title: string; set: StoreSetter }): Promise<void> {
+async function updateSavedPrivateSessionTitle(input: { sessionId: string; title: string; tokenUsageEntries?: ChatTokenUsageEntry[]; set: StoreSetter }): Promise<void> {
   const updatedSession = await updateChatSession(input.sessionId, (latestSession) => ({
     ...latestSession,
     title: input.title,
     titleGenerating: false,
+    tokenUsageEntries: mergeTokenUsageEntries(latestSession.tokenUsageEntries, input.tokenUsageEntries),
   }));
   if (!updatedSession) {
     return;
@@ -145,23 +154,25 @@ async function updateSavedPrivateSessionTitle(input: { sessionId: string; title:
   }));
 }
 
-async function updateGeneratedTitle(input: GenerateTitleForSessionInput, title: string): Promise<void> {
+async function updateGeneratedTitle(input: GenerateTitleForSessionInput, title: string, tokenUsageEntries?: ChatTokenUsageEntry[]): Promise<void> {
   const updatedSession = await updateChatSession(input.sessionId, (latestSession) => {
+    const nextTokenUsageEntries = mergeTokenUsageEntries(latestSession.tokenUsageEntries, tokenUsageEntries);
     if (latestSession.title !== input.fallbackTitle) {
-      return { ...latestSession, titleGenerating: false };
+      return { ...latestSession, titleGenerating: false, tokenUsageEntries: nextTokenUsageEntries };
     }
 
     return {
       ...latestSession,
       title,
       titleGenerating: false,
+      tokenUsageEntries: nextTokenUsageEntries,
     };
   });
   if (!updatedSession) {
     return;
   }
 
-  input.set((current) => updateGeneratedTitleInState(current, input.sessionId, input.fallbackTitle, title));
+  input.set((current) => updateGeneratedTitleInState(current, updatedSession));
 }
 
 async function clearTitleGenerating(input: GenerateTitleForSessionInput): Promise<void> {
@@ -170,11 +181,9 @@ async function clearTitleGenerating(input: GenerateTitleForSessionInput): Promis
 
 function updateGeneratedTitleInState(
   state: AppState,
-  sessionId: string,
-  fallbackTitle: string,
-  title: string,
+  updatedSession: ChatSession,
 ): Partial<AppState> {
-  const currentSession = state.chatSessions.find((session) => session.id === sessionId);
+  const currentSession = state.chatSessions.find((session) => session.id === updatedSession.id);
   if (!currentSession) {
     return {};
   }
@@ -182,8 +191,9 @@ function updateGeneratedTitleInState(
   return {
     chatSessions: upsertSession(state.chatSessions, {
       ...currentSession,
-      title: currentSession.title === fallbackTitle ? title : currentSession.title,
+      title: updatedSession.title,
       titleGenerating: false,
+      tokenUsageEntries: updatedSession.tokenUsageEntries,
     }),
   };
 }

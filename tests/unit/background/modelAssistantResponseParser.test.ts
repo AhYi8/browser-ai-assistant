@@ -77,6 +77,29 @@ describe("模型 assistant 响应抽取", () => {
     expect(result).toEqual({ content: "{\"answer\":\"ok\"}" });
   });
 
+  it("抽取 OpenAI-compatible 响应中的 Token 用量", () => {
+    const result = extractAssistantResponseData({
+      choices: [{ message: { content: "回答" } }],
+      usage: {
+        prompt_tokens: 30,
+        completion_tokens: 8,
+        prompt_tokens_details: {
+          cached_tokens: 10,
+        },
+      },
+    });
+
+    expect(result).toEqual({
+      content: "回答",
+      tokenUsage: {
+        inputTokens: 20,
+        outputTokens: 8,
+        cacheWriteTokens: 0,
+        cacheReadTokens: 10,
+      },
+    });
+  });
+
   it("结构化输出模式兼容空字符串 content 与 tool_calls 同时存在", () => {
     const structuredOutput: OpenAIStructuredOutputFormat = {
       type: "tool",

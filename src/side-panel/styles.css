@@ -1337,6 +1337,22 @@ body {
     color: var(--color-body);
   }
 
+  .token-usage-meter {
+    @apply ml-auto inline-flex min-h-8 max-w-full flex-wrap items-center justify-end gap-x-2 gap-y-1 rounded-md px-2 py-1 text-xs font-medium;
+    order: 99;
+    background: var(--color-canvas);
+    border: 1px solid var(--color-hairline);
+    color: var(--color-body-strong);
+  }
+
+  .token-usage-meter span {
+    @apply whitespace-nowrap;
+  }
+
+  .token-usage-meter-empty {
+    color: var(--color-muted);
+  }
+
   .context-view-button {
     @apply shrink-0;
   }

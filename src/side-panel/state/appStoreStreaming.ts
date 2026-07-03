@@ -1,7 +1,9 @@
 import { updateChatSession } from "../../shared/storage/repositories";
+import { mergeTokenUsageEntries } from "../../shared/chat/tokenUsage";
 import type {
   ChatMessage,
   ChatNetworkContextAttachment,
+  ChatTokenUsageEntry,
   ChatToolAttachment,
   ChatToolCallRecord,
   EndpointType,
@@ -18,6 +20,7 @@ type ChatStreamPortMessage =
   | { type: "thinking"; content: string }
   | { type: "retry:progress"; currentRetry: number; maxRetries: number }
   | { type: "assistant:final-start" }
+  | { type: "token_usage"; tokenUsageEntries?: ChatTokenUsageEntry[] }
   | { type: "assistant:tool-turn"; message: ChatMessage }
   | { type: "tool:start"; record: ChatToolCallRecord }
   | { type: "tool:complete"; record: ChatToolCallRecord; attachments?: ChatToolAttachment[] }
@@ -29,6 +32,7 @@ type ChatStreamPortMessage =
       toolCallRecords?: ChatToolCallRecord[];
       toolAttachments?: ChatToolAttachment[];
       toolTurnMessages?: ChatMessage[];
+      tokenUsageEntries?: ChatTokenUsageEntry[];
     }
   | { type: "error"; message?: string };
 
@@ -150,6 +154,7 @@ export async function sendStreamingChatMessage(input: StreamingChatInput): Promi
     let settled = false;
     let receivedFinalComplete = false;
     let canceledByUser = false;
+    let pendingTokenUsageEntries: ChatTokenUsageEntry[] | undefined;
     let writeQueue = Promise.resolve();
 
     const finish = (result: StreamingChatResult, options: { disconnect: boolean } = { disconnect: true }) => {
@@ -240,6 +245,14 @@ export async function sendStreamingChatMessage(input: StreamingChatInput): Promi
         return;
       }
 
+      if (message.type === "token_usage") {
+        void enqueueWrite(async () => {
+          pendingTokenUsageEntries = mergeTokenUsageEntries(pendingTokenUsageEntries, message.tokenUsageEntries);
+          previewTokenUsageEntriesInState(input.sessionId, pendingTokenUsageEntries, input.set, input.privateMode);
+        });
+        return;
+      }
+
       if (message.type === "assistant:tool-turn") {
         void enqueueWrite(async () => {
           const storedMessage = await appendAssistantMessageToSession(input.sessionId, message.message, input.set, input.privateMode);
@@ -278,6 +291,7 @@ export async function sendStreamingChatMessage(input: StreamingChatInput): Promi
           await finalizeAssistantMessage(input.sessionId, finalAssistantMessage.id, message.content, message.thinking, input.set, input.privateMode, {
             reasoningContent: message.reasoningContent,
             toolAttachments: mergeToolAttachments(input.toolAttachments, message.toolAttachments),
+            tokenUsageEntries: mergeTokenUsageEntries(pendingTokenUsageEntries, message.tokenUsageEntries),
           });
         }).then(() => finish({ completed: true, assistantContent: message.content }));
         return;
@@ -289,12 +303,12 @@ export async function sendStreamingChatMessage(input: StreamingChatInput): Promi
       }
       void enqueueWrite(async () => {
         const finalAssistantMessage = await ensureFinalAssistantMessage();
-        if (finalAssistantMessage) {
-          pendingRetryProgress = undefined;
-          clearAssistantRetryProgress(finalAssistantMessage.id, input.set);
-          await failAssistantMessage(input.sessionId, finalAssistantMessage.id, failureMessage, input.set, input.privateMode);
-        }
-      }).then(() => finish({ completed: true, failed: true }));
+          if (finalAssistantMessage) {
+            pendingRetryProgress = undefined;
+            clearAssistantRetryProgress(finalAssistantMessage.id, input.set);
+            await failAssistantMessage(input.sessionId, finalAssistantMessage.id, failureMessage, input.set, input.privateMode, pendingTokenUsageEntries);
+          }
+        }).then(() => finish({ completed: true, failed: true }));
     });
 
     port.onDisconnect.addListener(() => {
@@ -312,7 +326,7 @@ export async function sendStreamingChatMessage(input: StreamingChatInput): Promi
           if (finalAssistantMessage) {
             pendingRetryProgress = undefined;
             clearAssistantRetryProgress(finalAssistantMessage.id, input.set);
-            await failAssistantMessage(input.sessionId, finalAssistantMessage.id, STREAM_CANCELED_MESSAGE, input.set, input.privateMode);
+            await failAssistantMessage(input.sessionId, finalAssistantMessage.id, STREAM_CANCELED_MESSAGE, input.set, input.privateMode, pendingTokenUsageEntries);
           }
         }).then(() => finish({ completed: true, canceled: true }, { disconnect: false }));
         return;
@@ -326,7 +340,7 @@ export async function sendStreamingChatMessage(input: StreamingChatInput): Promi
         if (finalAssistantMessage) {
           pendingRetryProgress = undefined;
           clearAssistantRetryProgress(finalAssistantMessage.id, input.set);
-          await failAssistantMessage(input.sessionId, finalAssistantMessage.id, STREAM_FAILURE_MESSAGE, input.set, input.privateMode);
+          await failAssistantMessage(input.sessionId, finalAssistantMessage.id, STREAM_FAILURE_MESSAGE, input.set, input.privateMode, pendingTokenUsageEntries);
         }
       }).then(() => finish({ completed: true, failed: true }, { disconnect: false }));
     });
@@ -335,6 +349,93 @@ export async function sendStreamingChatMessage(input: StreamingChatInput): Promi
       type: "chat.stream.start",
       payload: input.request,
     });
+  });
+}
+
+function previewTokenUsageEntriesInState(
+  sessionId: string,
+  tokenUsageEntries: ChatTokenUsageEntry[] | undefined,
+  set: StoreSetter,
+  privateMode = false,
+): void {
+  if (!tokenUsageEntries?.length) {
+    return;
+  }
+
+  if (privateMode) {
+    set((current) => {
+      const session = current.privateChatSession;
+      if (!current.privateModeActive || !session || session.id !== sessionId) {
+        return {};
+      }
+
+      return {
+        privateChatSession: {
+          ...session,
+          tokenUsageEntries: mergeTokenUsageEntries(session.tokenUsageEntries, tokenUsageEntries),
+        },
+      };
+    });
+    return;
+  }
+
+  set((current) => {
+    const session = current.chatSessions.find((item) => item.id === sessionId);
+    if (!session) {
+      return {};
+    }
+
+    return {
+      chatSessions: upsertSession(current.chatSessions, {
+        ...session,
+        tokenUsageEntries: mergeTokenUsageEntries(session.tokenUsageEntries, tokenUsageEntries),
+      }),
+    };
+  });
+}
+
+function removePreviewTokenUsageEntries(
+  sessionId: string,
+  tokenUsageEntries: ChatTokenUsageEntry[] | undefined,
+  set: StoreSetter,
+  privateMode = false,
+): void {
+  if (!tokenUsageEntries?.length) {
+    return;
+  }
+
+  const pendingIds = new Set(tokenUsageEntries.map((entry) => entry.id));
+  if (privateMode) {
+    set((current) => {
+      const session = current.privateChatSession;
+      if (!current.privateModeActive || !session || session.id !== sessionId) {
+        return {};
+      }
+
+      const nextTokenUsageEntries = session.tokenUsageEntries?.filter((entry) => !pendingIds.has(entry.id));
+      return {
+        privateChatSession: {
+          ...session,
+          tokenUsageEntries: nextTokenUsageEntries?.length ? nextTokenUsageEntries : undefined,
+        },
+      };
+    });
+    return;
+  }
+
+  set((current) => {
+    const session = current.chatSessions.find((item) => item.id === sessionId);
+    if (!session) {
+      return {};
+    }
+
+    const nextTokenUsageEntries = session.tokenUsageEntries?.filter((entry) => !pendingIds.has(entry.id));
+    return {
+      chatSessions: upsertSession(current.chatSessions, {
+        ...session,
+        tokenUsageEntries: nextTokenUsageEntries?.length ? nextTokenUsageEntries : undefined,
+      }),
+    };
   });
 }
 
@@ -399,6 +500,7 @@ async function failAssistantMessage(
   failureMessage: string,
   set: StoreSetter,
   privateMode = false,
+  tokenUsageEntriesToDiscard?: ChatTokenUsageEntry[],
 ): Promise<void> {
   const applyFailure = (message: ChatMessage): ChatMessage => {
     const content = message.content.trim() ? `${message.content}\n\n${failureMessage}` : failureMessage;
@@ -411,6 +513,7 @@ async function failAssistantMessage(
 
   if (privateMode) {
     set((current) => updatePrivateAssistantMessageInState(current, sessionId, messageId, applyFailure));
+    removePreviewTokenUsageEntries(sessionId, tokenUsageEntriesToDiscard, set, privateMode);
     return;
   }
 
@@ -421,6 +524,7 @@ async function failAssistantMessage(
   }));
 
   set((current) => updateAssistantMessageInState(current, sessionId, messageId, applyFailure));
+  removePreviewTokenUsageEntries(sessionId, tokenUsageEntriesToDiscard, set, privateMode);
 }
 
 async function appendAssistantThinkingChunk(sessionId: string, messageId: string, content: string, set: StoreSetter, privateMode = false): Promise<void> {
@@ -539,6 +643,7 @@ interface FinalizeAssistantOptions {
   reasoningContent?: string;
   toolCallRecords?: ChatToolCallRecord[];
   toolAttachments?: ChatToolAttachment[];
+  tokenUsageEntries?: ChatTokenUsageEntry[];
 }
 
 async function finalizeAssistantMessage(
@@ -551,8 +656,8 @@ async function finalizeAssistantMessage(
   options: FinalizeAssistantOptions = {},
 ): Promise<void> {
   if (privateMode) {
-    set((current) =>
-      updatePrivateAssistantMessageInState(current, sessionId, messageId, (message) => ({
+    set((current) => {
+      const updated = updatePrivateAssistantMessageInState(current, sessionId, messageId, (message) => ({
         ...message,
         content,
         thinking,
@@ -560,14 +665,25 @@ async function finalizeAssistantMessage(
         toolCallRecords: options.toolCallRecords ?? message.toolCallRecords,
         toolAttachments: mergeToolAttachments(message.toolAttachments, options.toolAttachments),
         streaming: false,
-      })),
-    );
+      }));
+      if (!updated.privateChatSession) {
+        return updated;
+      }
+      return {
+        ...updated,
+        privateChatSession: {
+          ...updated.privateChatSession,
+          tokenUsageEntries: mergeTokenUsageEntries(updated.privateChatSession.tokenUsageEntries, options.tokenUsageEntries),
+        },
+      };
+    });
     return;
   }
 
   await updateChatSession(sessionId, (latestSession) => ({
     ...latestSession,
     updatedAt: Date.now(),
+    tokenUsageEntries: mergeTokenUsageEntries(latestSession.tokenUsageEntries, options.tokenUsageEntries),
     messages: latestSession.messages.map((message) =>
       message.id === messageId
         ? {
@@ -584,15 +700,21 @@ async function finalizeAssistantMessage(
   }));
 
   set((current) =>
-    updateAssistantMessageInState(current, sessionId, messageId, (message) => ({
-      ...message,
-      content,
-      thinking,
-      reasoningContent: options.reasoningContent ?? message.reasoningContent,
-      toolCallRecords: options.toolCallRecords ?? message.toolCallRecords,
-      toolAttachments: mergeToolAttachments(message.toolAttachments, options.toolAttachments),
-      streaming: false,
-    })),
+    updateAssistantMessageInState(
+      current,
+      sessionId,
+      messageId,
+      (message) => ({
+        ...message,
+        content,
+        thinking,
+        reasoningContent: options.reasoningContent ?? message.reasoningContent,
+        toolCallRecords: options.toolCallRecords ?? message.toolCallRecords,
+        toolAttachments: mergeToolAttachments(message.toolAttachments, options.toolAttachments),
+        streaming: false,
+      }),
+      options.tokenUsageEntries,
+    ),
   );
 }
 
@@ -601,6 +723,7 @@ function updateAssistantMessageInState(
   sessionId: string,
   messageId: string,
   updater: (message: ChatMessage) => ChatMessage,
+  tokenUsageEntries?: ChatTokenUsageEntry[],
 ): Partial<AppState> {
   const session = state.chatSessions.find((item) => item.id === sessionId);
   if (!session) {
@@ -611,6 +734,7 @@ function updateAssistantMessageInState(
     chatSessions: upsertSession(state.chatSessions, {
       ...session,
       messages: session.messages.map((message) => (message.id === messageId ? updater(message) : message)),
+      tokenUsageEntries: mergeTokenUsageEntries(session.tokenUsageEntries, tokenUsageEntries),
     }),
   };
 }
