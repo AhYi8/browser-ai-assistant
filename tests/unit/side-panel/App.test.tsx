@@ -7,6 +7,7 @@ import postcss from "postcss";
 import tailwindcss from "tailwindcss";
 import { App } from "../../../src/side-panel/App";
 import { useAppStore } from "../../../src/side-panel/state/appStore";
+import { registerChatTaskFollowUpHandle } from "../../../src/side-panel/state/appStoreChatTasks";
 import { MCP_SETTINGS_KEY } from "../../../src/shared/mcp/settings";
 import type { ModelToolRegistryEntry } from "../../../src/shared/models/types";
 import {
@@ -798,6 +799,8 @@ describe("App", () => {
     expect(screen.queryByRole("textbox", { name: "Network 请求相关性筛选 Prompt" })).not.toBeInTheDocument();
     expect(screen.getByRole("spinbutton", { name: "全局 temperature" })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "发送快捷键" })).toHaveDisplayValue("Enter");
+    expect(Array.from(screen.getByRole("combobox", { name: "发送快捷键" }).querySelectorAll("option")).map((option) => option.textContent)).not.toContain("Ctrl+Shift+Enter");
+    expect(screen.getByRole("combobox", { name: "跟进行为" })).toHaveDisplayValue("排队");
     expect(screen.getByRole("checkbox", { name: "默认展开左侧历史面板" })).toBeInTheDocument();
     expect(styles).toContain(".chat-preference-switch-input");
     expect(styles).toContain(".chat-preference-switch-control");
@@ -1277,6 +1280,7 @@ describe("App", () => {
         temperature: 0.7,
         maxTokens: 1024,
         sendShortcut: "enter",
+        followUpBehavior: "queue",
         historyDrawerDefaultOpen: true,
         injectPageContextByDefault: true,
         extractHtmlByDefault: false,
@@ -1295,6 +1299,38 @@ describe("App", () => {
     expect(updateChatPreferences).toHaveBeenCalledWith({ sendShortcut: "ctrl_enter" });
   });
 
+  it("聊天偏好可以保存运行中跟进行为", async () => {
+    const user = userEvent.setup();
+    const updateChatPreferences = vi.fn(async () => undefined);
+    useAppStore.setState({
+      chatPreferences: {
+        systemPrompt: "你是网页助手",
+        aiRequestRetryCount: 5,
+        browserAutomationMaxToolIterations: 32,
+        toolCallingEnabled: false,
+        enabledToolIds: [],
+        temperature: 0.7,
+        maxTokens: 1024,
+        sendShortcut: "enter",
+        followUpBehavior: "queue",
+        historyDrawerDefaultOpen: true,
+        injectPageContextByDefault: true,
+        extractHtmlByDefault: false,
+        toolCallDisplayMode: "assistant_grouped",
+        showToolCallProcessInAssistantMode: false,
+      },
+      updateChatPreferences,
+    });
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("tab", { name: "聊天偏好" }));
+    await user.selectOptions(screen.getByRole("combobox", { name: "跟进行为" }), "guide");
+
+    expect(updateChatPreferences).toHaveBeenCalledWith({ followUpBehavior: "guide" });
+  });
+
   it("聊天偏好可以保存浏览器自动化默认模式", async () => {
     const user = userEvent.setup();
     const updateChatPreferences = vi.fn(async () => undefined);
@@ -1309,6 +1345,7 @@ describe("App", () => {
         temperature: 0.7,
         maxTokens: 1024,
         sendShortcut: "enter",
+        followUpBehavior: "queue",
         historyDrawerDefaultOpen: true,
         injectPageContextByDefault: true,
         extractHtmlByDefault: false,
@@ -1340,6 +1377,7 @@ describe("App", () => {
         temperature: 0.7,
         maxTokens: 1024,
         sendShortcut: "enter",
+        followUpBehavior: "queue",
         historyDrawerDefaultOpen: true,
         injectPageContextByDefault: true,
         extractHtmlByDefault: false,
@@ -1659,6 +1697,7 @@ describe("App", () => {
         temperature: 0.7,
         maxTokens: 1024,
         sendShortcut: "enter",
+        followUpBehavior: "queue",
         historyDrawerDefaultOpen: true,
         injectPageContextByDefault: true,
         extractHtmlByDefault: false,
@@ -1694,6 +1733,7 @@ describe("App", () => {
         temperature: 0.7,
         maxTokens: 1024,
         sendShortcut: "enter",
+        followUpBehavior: "queue",
         historyDrawerDefaultOpen: true,
         injectPageContextByDefault: true,
         extractHtmlByDefault: false,
@@ -1725,6 +1765,7 @@ describe("App", () => {
         temperature: 0.7,
         maxTokens: 1024,
         sendShortcut: "enter",
+        followUpBehavior: "queue",
         historyDrawerDefaultOpen: true,
         injectPageContextByDefault: true,
         extractHtmlByDefault: false,
@@ -2769,7 +2810,6 @@ describe("App", () => {
   it.each([
     { shortcut: "shift_enter", eventInit: { key: "Enter", shiftKey: true } },
     { shortcut: "ctrl_enter", eventInit: { key: "Enter", ctrlKey: true } },
-    { shortcut: "ctrl_shift_enter", eventInit: { key: "Enter", ctrlKey: true, shiftKey: true } },
     { shortcut: "alt_enter", eventInit: { key: "Enter", altKey: true } },
   ] satisfies Array<{ shortcut: SendShortcut; eventInit: Parameters<typeof fireEvent.keyDown>[1] }>)("按聊天偏好的 $shortcut 触发发送", async ({ shortcut, eventInit }) => {
     const user = userEvent.setup();
@@ -2823,6 +2863,617 @@ describe("App", () => {
     const chatRequest = getLastChatRequest(sendMessage);
     expect(chatRequest?.messages?.at(-1)?.content).toBe("快捷发送");
     expect(input.textContent).toBe("");
+  });
+
+  it("非运行中 Ctrl+Shift+Enter 不会绕过普通发送快捷键偏好", async () => {
+    const user = userEvent.setup();
+    const provider: ModelProvider = {
+      id: "provider-shortcut-ctrl-shift",
+      name: "快捷键渠道",
+      endpointType: "openai_chat",
+      endpointUrl: "https://api.example.com/v1/chat/completions",
+      apiKey: "sk-shortcut",
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const model: ProviderModel = {
+      id: "model-shortcut-ctrl-shift",
+      providerId: "provider-shortcut-ctrl-shift",
+      displayName: "快捷键模型",
+      modelId: "gpt-shortcut",
+      temperature: 0.7,
+      maxTokens: 1024,
+      systemPrompt: "你是网页助手",
+      isTitleModel: false,
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const sendMessage = createShortcutRuntimeMock();
+    await saveAppSetting({
+      key: "chatPreferences",
+      value: {
+        systemPrompt: "你是网页助手",
+        temperature: 0.7,
+        maxTokens: 1024,
+        sendShortcut: "ctrl_enter",
+        historyDrawerDefaultOpen: true,
+      },
+      updatedAt: 1,
+    });
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+
+    render(<App />);
+
+    await screen.findByDisplayValue("快捷键渠道 / 快捷键模型");
+    const input = screen.getByLabelText("对话输入");
+    await user.type(input, "不要误发");
+
+    fireEvent.keyDown(input, { key: "Enter", ctrlKey: true, shiftKey: true });
+
+    expect(hasChatSendCall(sendMessage)).toBe(false);
+    expect(input.textContent).toContain("不要误发");
+  });
+
+  it("运行中有草稿时按钮切换为发送并将内容加入排队列表", async () => {
+    const user = userEvent.setup();
+    const provider: ModelProvider = {
+      id: "provider-running",
+      name: "运行中渠道",
+      endpointType: "openai_chat",
+      endpointUrl: "https://api.example.com/v1/chat/completions",
+      apiKey: "sk-running",
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const model: ProviderModel = {
+      id: "model-running",
+      providerId: "provider-running",
+      displayName: "运行中模型",
+      modelId: "gpt-running",
+      temperature: 0.7,
+      maxTokens: 1024,
+      systemPrompt: "你是网页助手",
+      isTitleModel: false,
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await saveChatSession(createChatSession({
+      id: "session-running",
+      title: "运行中会话",
+      selectedModelId: "model-running",
+      messages: [],
+    }));
+
+    render(<App />);
+    await screen.findByDisplayValue("运行中渠道 / 运行中模型");
+    act(() => {
+      useAppStore.setState((state) => ({
+        sending: true,
+        activeSessionId: "session-running",
+        selectedModelId: "model-running",
+        chatPreferences: {
+          ...state.chatPreferences,
+          followUpBehavior: "queue",
+        },
+        chatTasksBySessionId: {
+          "session-running": {
+            id: "task-running",
+            sessionId: "session-running",
+            status: "running",
+            startedAt: 1,
+          },
+        },
+      }));
+    });
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "终止" })).toBeInTheDocument());
+    await user.type(screen.getByLabelText("对话输入"), "继续问一个问题");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    expect(useAppStore.getState().followUpsBySessionId["session-running"]?.map((item) => item.content)).toEqual(["继续问一个问题"]);
+    expect(screen.queryByText("排队对话（1）")).not.toBeInTheDocument();
+    expect(within(screen.getByLabelText("下一条排队对话")).getByRole("button", { name: "展开排队对话" })).toHaveClass("follow-up-queue-icon-button");
+    expect(screen.queryByRole("button", { name: "清空" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "终止" })).toBeInTheDocument();
+  });
+
+  it("运行中 Ctrl+Shift+Enter 会执行相反跟进行为", async () => {
+    const user = userEvent.setup();
+    const provider: ModelProvider = {
+      id: "provider-opposite-follow-up",
+      name: "相反行为渠道",
+      endpointType: "openai_chat",
+      endpointUrl: "https://api.example.com/v1/chat/completions",
+      apiKey: "sk-running",
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const model: ProviderModel = {
+      id: "model-opposite-follow-up",
+      providerId: "provider-opposite-follow-up",
+      displayName: "相反行为模型",
+      modelId: "gpt-running",
+      temperature: 0.7,
+      maxTokens: 1024,
+      systemPrompt: "你是网页助手",
+      isTitleModel: false,
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await saveChatSession(createChatSession({
+      id: "session-opposite-follow-up",
+      title: "运行中会话",
+      selectedModelId: "model-opposite-follow-up",
+      messages: [],
+    }));
+
+    const followUpHandle = vi.fn();
+    render(<App />);
+    await screen.findByDisplayValue("相反行为渠道 / 相反行为模型");
+    act(() => {
+      useAppStore.setState((state) => ({
+        sending: true,
+        activeSessionId: "session-opposite-follow-up",
+        selectedModelId: "model-opposite-follow-up",
+        chatPreferences: {
+          ...state.chatPreferences,
+          followUpBehavior: "queue",
+        },
+        chatTasksBySessionId: {
+          "session-opposite-follow-up": {
+            id: "task-opposite-follow-up",
+            sessionId: "session-opposite-follow-up",
+            status: "running",
+            startedAt: 1,
+          },
+        },
+      }));
+    });
+    registerChatTaskFollowUpHandle("session-opposite-follow-up", "task-opposite-follow-up", followUpHandle);
+
+    const input = screen.getByLabelText("对话输入");
+    await user.type(input, "改用引导");
+    fireEvent.keyDown(input, { key: "Enter", ctrlKey: true, shiftKey: true });
+
+    expect(followUpHandle).toHaveBeenCalledWith(expect.objectContaining({ content: "改用引导" }));
+    expect(useAppStore.getState().followUpsBySessionId["session-opposite-follow-up"]?.[0]).toMatchObject({
+      content: "改用引导",
+      behavior: "guide",
+    });
+    expect(screen.getAllByText("改用引导").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("排队对话可以单条改为引导", async () => {
+    const user = userEvent.setup();
+    const provider: ModelProvider = {
+      id: "provider-queue-guide",
+      name: "队列引导渠道",
+      endpointType: "openai_chat",
+      endpointUrl: "https://api.example.com/v1/chat/completions",
+      apiKey: "sk-running",
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const model: ProviderModel = {
+      id: "model-queue-guide",
+      providerId: "provider-queue-guide",
+      displayName: "队列引导模型",
+      modelId: "gpt-running",
+      temperature: 0.7,
+      maxTokens: 1024,
+      systemPrompt: "你是网页助手",
+      isTitleModel: false,
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await saveChatSession(createChatSession({
+      id: "session-queue-guide",
+      title: "运行中会话",
+      selectedModelId: "model-queue-guide",
+      messages: [],
+    }));
+
+    const followUpHandle = vi.fn();
+    render(<App />);
+    await screen.findByDisplayValue("队列引导渠道 / 队列引导模型");
+    act(() => {
+      useAppStore.setState((state) => ({
+        sending: true,
+        activeSessionId: "session-queue-guide",
+        selectedModelId: "model-queue-guide",
+        chatPreferences: {
+          ...state.chatPreferences,
+          followUpBehavior: "queue",
+        },
+        chatTasksBySessionId: {
+          "session-queue-guide": {
+            id: "task-queue-guide",
+            sessionId: "session-queue-guide",
+            status: "running",
+            startedAt: 1,
+          },
+        },
+      }));
+    });
+    registerChatTaskFollowUpHandle("session-queue-guide", "task-queue-guide", followUpHandle);
+
+    await user.type(screen.getByLabelText("对话输入"), "先等一下");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await user.click(screen.getByRole("button", { name: "展开排队对话" }));
+    const guideButton = screen.getByRole("button", { name: "引导第 1 条排队对话：先等一下" });
+    await user.click(guideButton);
+
+    expect(followUpHandle).toHaveBeenCalledWith(expect.objectContaining({ content: "先等一下" }));
+    expect(useAppStore.getState().followUpsBySessionId["session-queue-guide"]?.[0]).toMatchObject({ behavior: "guide" });
+    expect(guideButton).toBeEnabled();
+  });
+
+  it("引导对话不会继续显示在排队队列中", async () => {
+    const user = userEvent.setup();
+    const provider: ModelProvider = {
+      id: "provider-guide-hidden-from-queue",
+      name: "引导隐藏渠道",
+      endpointType: "openai_chat",
+      endpointUrl: "https://api.example.com/v1/chat/completions",
+      apiKey: "sk-running",
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const model: ProviderModel = {
+      id: "model-guide-hidden-from-queue",
+      providerId: "provider-guide-hidden-from-queue",
+      displayName: "引导隐藏模型",
+      modelId: "gpt-running",
+      temperature: 0.7,
+      maxTokens: 1024,
+      systemPrompt: "你是网页助手",
+      isTitleModel: false,
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await saveChatSession(createChatSession({
+      id: "session-guide-hidden-from-queue",
+      title: "运行中会话",
+      selectedModelId: "model-guide-hidden-from-queue",
+      messages: [],
+    }));
+
+    render(<App />);
+    await screen.findByDisplayValue("引导隐藏渠道 / 引导隐藏模型");
+    act(() => {
+      useAppStore.setState((state) => ({
+        sending: true,
+        activeSessionId: "session-guide-hidden-from-queue",
+        selectedModelId: "model-guide-hidden-from-queue",
+        chatTasksBySessionId: {
+          "session-guide-hidden-from-queue": {
+            id: "task-guide-hidden-from-queue",
+            sessionId: "session-guide-hidden-from-queue",
+            status: "running",
+            startedAt: 1,
+          },
+        },
+        followUpsBySessionId: {
+          ...state.followUpsBySessionId,
+          "session-guide-hidden-from-queue": [
+            {
+              id: "follow-up-hidden-from-queue",
+              sessionId: "session-guide-hidden-from-queue",
+              content: "这条已经改为引导",
+              behavior: "queue",
+              createdAt: 2,
+            },
+          ],
+        },
+      }));
+    });
+
+    await user.click(screen.getByRole("button", { name: "展开排队对话" }));
+    await user.click(screen.getByRole("button", { name: "引导第 1 条排队对话：这条已经改为引导" }));
+
+    expect(useAppStore.getState().followUpsBySessionId["session-guide-hidden-from-queue"]?.[0]).toMatchObject({
+      behavior: "guide",
+      userMessageId: expect.any(String),
+    });
+    expect(screen.getAllByText("这条已经改为引导").length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByText("排队对话（1）")).not.toBeInTheDocument();
+  });
+
+  it("没有可用引导句柄时引导操作仍立即展示用户气泡", async () => {
+    const user = userEvent.setup();
+    const provider: ModelProvider = {
+      id: "provider-guide-immediate",
+      name: "立即引导渠道",
+      endpointType: "openai_chat",
+      endpointUrl: "https://api.example.com/v1/chat/completions",
+      apiKey: "sk-running",
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const model: ProviderModel = {
+      id: "model-guide-immediate",
+      providerId: "provider-guide-immediate",
+      displayName: "立即引导模型",
+      modelId: "gpt-running",
+      temperature: 0.7,
+      maxTokens: 1024,
+      systemPrompt: "你是网页助手",
+      isTitleModel: false,
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await saveChatSession(createChatSession({
+      id: "session-guide-immediate",
+      title: "运行中会话",
+      selectedModelId: "model-guide-immediate",
+      messages: [],
+    }));
+
+    render(<App />);
+    await screen.findByDisplayValue("立即引导渠道 / 立即引导模型");
+    act(() => {
+      useAppStore.setState((state) => ({
+        sending: true,
+        activeSessionId: "session-guide-immediate",
+        selectedModelId: "model-guide-immediate",
+        chatPreferences: {
+          ...state.chatPreferences,
+          followUpBehavior: "queue",
+        },
+        chatTasksBySessionId: {
+          "session-guide-immediate": {
+            id: "task-guide-immediate",
+            sessionId: "session-guide-immediate",
+            status: "running",
+            startedAt: 1,
+          },
+        },
+        followUpsBySessionId: {
+          ...state.followUpsBySessionId,
+          "session-guide-immediate": [
+            {
+              id: "follow-up-immediate",
+              sessionId: "session-guide-immediate",
+              content: "马上显示这条引导",
+              behavior: "queue",
+              createdAt: 2,
+            },
+          ],
+        },
+      }));
+    });
+
+    await user.click(screen.getByRole("button", { name: "展开排队对话" }));
+    await user.click(screen.getByRole("button", { name: "引导第 1 条排队对话：马上显示这条引导" }));
+
+    expect(screen.getAllByText("马上显示这条引导").length).toBeGreaterThanOrEqual(1);
+    expect(useAppStore.getState().followUpsBySessionId["session-guide-immediate"]?.[0]).toMatchObject({
+      behavior: "guide",
+      userMessageId: expect.any(String),
+    });
+  });
+
+  it("排队对话折叠时显示下一条等待执行的内容", async () => {
+    const user = userEvent.setup();
+    const provider: ModelProvider = {
+      id: "provider-queue-preview",
+      name: "队列预览渠道",
+      endpointType: "openai_chat",
+      endpointUrl: "https://api.example.com/v1/chat/completions",
+      apiKey: "sk-running",
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const model: ProviderModel = {
+      id: "model-queue-preview",
+      providerId: "provider-queue-preview",
+      displayName: "队列预览模型",
+      modelId: "gpt-running",
+      temperature: 0.7,
+      maxTokens: 1024,
+      systemPrompt: "你是网页助手",
+      isTitleModel: false,
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await saveChatSession(createChatSession({
+      id: "session-queue-preview",
+      title: "运行中会话",
+      selectedModelId: "model-queue-preview",
+      messages: [],
+    }));
+
+    render(<App />);
+    await screen.findByDisplayValue("队列预览渠道 / 队列预览模型");
+    act(() => {
+      useAppStore.setState((state) => ({
+        activeSessionId: "session-queue-preview",
+        selectedModelId: "model-queue-preview",
+        followUpsBySessionId: {
+          ...state.followUpsBySessionId,
+          "session-queue-preview": [
+            {
+              id: "follow-up-oldest",
+              sessionId: "session-queue-preview",
+              content: "最旧的一条",
+              behavior: "queue",
+              createdAt: 2,
+            },
+            {
+              id: "follow-up-newer",
+              sessionId: "session-queue-preview",
+              content: "后面的一条",
+              behavior: "queue",
+              createdAt: 3,
+            },
+          ],
+        },
+      }));
+    });
+
+    const preview = screen.getByLabelText("下一条排队对话");
+    expect(screen.getByText("最旧的一条")).toBeInTheDocument();
+    expect(screen.queryByText("后面的一条")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "删除下一条排队对话：最旧的一条" })).toHaveClass("follow-up-queue-icon-button");
+    expect(screen.getByRole("button", { name: "删除下一条排队对话：最旧的一条" })).toHaveTextContent("");
+    expect(screen.getByRole("button", { name: "引导下一条排队对话：最旧的一条" })).toHaveClass("follow-up-queue-icon-button");
+    expect(screen.getByRole("button", { name: "引导下一条排队对话：最旧的一条" })).toHaveTextContent("");
+    expect(screen.queryByText("排队对话（2）")).not.toBeInTheDocument();
+    expect(within(preview).getAllByRole("button").map((button) => button.getAttribute("aria-label"))).toEqual([
+      "删除下一条排队对话：最旧的一条",
+      "引导下一条排队对话：最旧的一条",
+      "展开排队对话",
+    ]);
+
+    await user.click(within(preview).getByRole("button", { name: "展开排队对话" }));
+
+    const queue = screen.getByLabelText("排队对话");
+    const header = queue.querySelector(".follow-up-queue-header") as HTMLElement | null;
+    expect(header).not.toBeNull();
+    expect(within(header as HTMLElement).getByRole("button", { name: "折叠排队对话" })).toHaveClass("follow-up-queue-icon-button");
+    expect(queue).toHaveClass("follow-up-queue-expanded");
+    for (const item of queue.querySelectorAll(".follow-up-queue-item")) {
+      expect(within(item as HTMLElement).queryByRole("button", { name: "折叠排队对话" })).not.toBeInTheDocument();
+    }
+  });
+
+  it("排队对话展开时折叠按钮相对定位到队列内部右上角", () => {
+    const styles = readFileSync(resolve(process.cwd(), "src/side-panel/styles.css"), "utf8");
+    const queueStyle = styles.match(/\.follow-up-queue\s*{[^}]+}/)?.[0] ?? "";
+    const expandedHeaderStyle = styles.match(/\.follow-up-queue-expanded\s+\.follow-up-queue-header\s*{[^}]+}/)?.[0] ?? "";
+    const expandedListStyle = styles.match(/\.follow-up-queue-expanded\s+\.follow-up-queue-list\s*{[^}]+}/)?.[0] ?? "";
+
+    expect(queueStyle).toContain("position: relative");
+    expect(expandedHeaderStyle).toContain("position: absolute");
+    expect(expandedHeaderStyle).toContain("right: 4px");
+    expect(expandedHeaderStyle).toContain("top: 4px");
+    expect(expandedHeaderStyle).toContain("z-index: 1");
+    expect(expandedListStyle).toContain("padding-right: 1.5rem");
+  });
+
+  it("排队对话折叠时不依赖可选附件数量列定位操作按钮", () => {
+    const styles = readFileSync(resolve(process.cwd(), "src/side-panel/styles.css"), "utf8");
+    const previewStyle = styles.match(/\.follow-up-queue-preview\s*{[^}]+}/)?.[0] ?? "";
+    const itemStyle = styles.match(/\.follow-up-queue-item\s*{[^}]+}/)?.[0] ?? "";
+    const contentStyle = styles.match(/\.follow-up-queue-preview\s+\.follow-up-queue-content,\s*\.follow-up-queue-item\s+\.follow-up-queue-content\s*{[^}]+}/)?.[0] ?? "";
+    const iconFocusStyle = styles.match(/\.follow-up-queue-icon-button:focus-visible\s*{[^}]+}/)?.[0] ?? "";
+
+    expect(previewStyle).toContain("@apply flex");
+    expect(previewStyle).not.toContain("grid-cols-[1fr_auto_auto_auto_auto]");
+    expect(itemStyle).toContain("@apply flex");
+    expect(itemStyle).not.toContain("grid-cols-[1fr_auto_auto_auto]");
+    expect(contentStyle).toContain("flex: 1 1 auto");
+    expect(iconFocusStyle).toContain("outline:");
+  });
+
+  it("排队对话折叠时可以直接引导下一条对话", async () => {
+    const user = userEvent.setup();
+    const provider: ModelProvider = {
+      id: "provider-queue-preview-guide",
+      name: "折叠引导渠道",
+      endpointType: "openai_chat",
+      endpointUrl: "https://api.example.com/v1/chat/completions",
+      apiKey: "sk-running",
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const model: ProviderModel = {
+      id: "model-queue-preview-guide",
+      providerId: "provider-queue-preview-guide",
+      displayName: "折叠引导模型",
+      modelId: "gpt-running",
+      temperature: 0.7,
+      maxTokens: 1024,
+      systemPrompt: "你是网页助手",
+      isTitleModel: false,
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await saveChatSession(createChatSession({
+      id: "session-queue-preview-guide",
+      title: "运行中会话",
+      selectedModelId: "model-queue-preview-guide",
+      messages: [],
+    }));
+
+    render(<App />);
+    await screen.findByDisplayValue("折叠引导渠道 / 折叠引导模型");
+    act(() => {
+      useAppStore.setState((state) => ({
+        sending: true,
+        activeSessionId: "session-queue-preview-guide",
+        selectedModelId: "model-queue-preview-guide",
+        chatTasksBySessionId: {
+          "session-queue-preview-guide": {
+            id: "task-queue-preview-guide",
+            sessionId: "session-queue-preview-guide",
+            status: "running",
+            startedAt: 1,
+          },
+        },
+        followUpsBySessionId: {
+          ...state.followUpsBySessionId,
+          "session-queue-preview-guide": [
+            {
+              id: "follow-up-preview-guide-oldest",
+              sessionId: "session-queue-preview-guide",
+              content: "折叠态第一条",
+              behavior: "queue",
+              createdAt: 2,
+            },
+            {
+              id: "follow-up-preview-guide-next",
+              sessionId: "session-queue-preview-guide",
+              content: "折叠态第二条",
+              behavior: "queue",
+              createdAt: 3,
+            },
+          ],
+        },
+      }));
+    });
+
+    await user.click(screen.getByRole("button", { name: "引导下一条排队对话：折叠态第一条" }));
+
+    expect(useAppStore.getState().followUpsBySessionId["session-queue-preview-guide"]?.[0]).toMatchObject({
+      content: "折叠态第一条",
+      behavior: "guide",
+      userMessageId: expect.any(String),
+    });
+    expect(screen.getByText("折叠态第二条")).toBeInTheDocument();
+    expect(screen.getByLabelText("下一条排队对话")).not.toHaveTextContent("折叠态第一条");
+    expect(screen.queryByText("排队对话（1）")).not.toBeInTheDocument();
   });
 
   it("输入斜杠可以搜索并调用 Prompt，气泡只显示标题链接", async () => {
@@ -5798,6 +6449,56 @@ describe("App", () => {
     expect(article).not.toBeNull();
     expect(article!.compareDocumentPosition(toolButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(article!.contains(toolButton)).toBe(false);
+  });
+
+  it("已引导对话过程提示不受工具过程显示偏好影响", async () => {
+    await saveAppSetting({
+      key: "chatPreferences",
+      value: {
+        ...useAppStore.getState().chatPreferences,
+        toolCallDisplayMode: "assistant_grouped",
+        showToolCallProcessInAssistantMode: false,
+      },
+      updatedAt: 2,
+    });
+    await saveChatSession(
+      createChatSession({
+        id: "session-guidance-tool-turn-visible",
+        title: "引导过程提示",
+        messages: [
+          createChatMessage({
+            id: "message-guidance-user",
+            role: "user",
+            content: "补充检查表单",
+          }),
+          createChatMessage({
+            id: "message-guidance-tool-turn",
+            role: "assistant",
+            assistantMessageKind: "tool_call_turn",
+            content: "",
+            toolCallRecords: [
+              {
+                id: "guided-follow-up-visible",
+                toolId: "chat.follow_up_guidance",
+                name: "chat_follow_up_guidance",
+                displayName: "已引导对话",
+                arguments: {},
+                status: "success",
+                startedAt: 1,
+                completedAt: 1,
+                resultSummary: "补充检查表单",
+              },
+            ],
+          }),
+        ],
+      }),
+    );
+
+    render(<App />);
+
+    expect(await screen.findByText("补充检查表单")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "已引导对话" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "已调用 已引导对话" })).not.toBeInTheDocument();
   });
 
   it("开启偏好后工具轮调用过程显示在 assistant 消息下方并相对消息列表居中", async () => {

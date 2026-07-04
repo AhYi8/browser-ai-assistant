@@ -995,6 +995,9 @@ export function getJsSourceAttachmentDisplayCount(attachment: ChatToolAttachment
 
 function formatToolCallLine(record: ChatToolCallRecord): string {
   const query = typeof record.arguments.query === "string" && record.arguments.query.trim() ? `：${record.arguments.query.trim()}` : "";
+  if (record.toolId === "chat.follow_up_guidance") {
+    return `${record.displayName}${query}`;
+  }
   if (record.status === "running") {
     return `正在调用 ${record.displayName}${query}`;
   }
@@ -1086,5 +1089,9 @@ function shouldShowToolCallTimelineForMessage(
     return false;
   }
 
-  return displayMode === "compact" || showToolCallProcessInAssistantMode;
+  return displayMode === "compact" || showToolCallProcessInAssistantMode || isGuidanceToolTurnMessage(message);
+}
+
+function isGuidanceToolTurnMessage(message: ChatMessage): boolean {
+  return Boolean(message.toolCallRecords?.some((record) => record.toolId === "chat.follow_up_guidance"));
 }

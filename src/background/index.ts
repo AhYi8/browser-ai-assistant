@@ -12,7 +12,7 @@ import {
   type PageContextListTabsMessage,
 } from "./pageContextMessageHandler";
 import type { TabCaptureVisibleMessage } from "../shared/tabCapture";
-import type { ChatMessage, ChatToolAttachment, ChatToolCallRecord } from "../shared/types";
+import type { ChatImageAttachment, ChatMessage, ChatPromptInvocation, ChatToolAttachment, ChatToolCallRecord } from "../shared/types";
 import { handleSyncAlarm, handleSyncBackupMessage, restoreSyncAlarmFromSettings, type SyncBackupMessage } from "./syncBackupHandler";
 import { handleTabCaptureVisibleMessage } from "./tabCaptureMessageHandler";
 import {
@@ -91,6 +91,17 @@ type RuntimeMessage =
 interface ChatStreamStartMessage {
   type: "chat.stream.start";
   payload: ChatSendMessage;
+}
+
+interface ChatStreamFollowUpMessage {
+  type: "chat.stream.followUp";
+  payload: {
+    followUpId?: string;
+    content: string;
+    attachments?: ChatImageAttachment[];
+    promptInvocations?: ChatPromptInvocation[];
+    userMessageId?: string;
+  };
 }
 
 chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResponse) => {
@@ -204,13 +215,37 @@ chrome.runtime.onConnect.addListener((port) => {
   }
 
   const controller = new AbortController();
+  const guidanceQueue: Array<{
+    id: string;
+    content: string;
+    attachments?: ChatImageAttachment[];
+    promptInvocations?: ChatPromptInvocation[];
+    userMessageId?: string;
+  }> = [];
   let disconnected = false;
   const postToPort = (message: unknown) => {
     if (!disconnected) {
       port.postMessage(message);
     }
   };
-  const handlePortMessage = (message: ChatStreamStartMessage) => {
+  const handlePortMessage = (message: ChatStreamStartMessage | ChatStreamFollowUpMessage) => {
+    if (message.type === "chat.stream.followUp") {
+      const content = typeof message.payload?.content === "string" ? message.payload.content.trim() : "";
+      const id = typeof message.payload?.followUpId === "string" ? message.payload.followUpId : "";
+      const attachments = Array.isArray(message.payload?.attachments) ? message.payload.attachments : undefined;
+      const promptInvocations = Array.isArray(message.payload?.promptInvocations) ? message.payload.promptInvocations : undefined;
+      if (id && (content || attachments?.length || promptInvocations?.length)) {
+        guidanceQueue.push({
+          id,
+          content,
+          attachments,
+          promptInvocations,
+          userMessageId: typeof message.payload?.userMessageId === "string" ? message.payload.userMessageId : undefined,
+        });
+      }
+      return;
+    }
+
     if (message.type !== "chat.stream.start") {
       return;
     }
@@ -224,6 +259,8 @@ chrome.runtime.onConnect.addListener((port) => {
       onToolTurnMessage: (assistantMessage: ChatMessage) => postToPort({ type: "assistant:tool-turn", message: assistantMessage }),
       onToolCallStart: (record: ChatToolCallRecord) => postToPort({ type: "tool:start", record }),
       onToolCallComplete: (record: ChatToolCallRecord, attachments: ChatToolAttachment[]) => postToPort({ type: "tool:complete", record, attachments }),
+      consumeGuidance: () => guidanceQueue.splice(0),
+      onGuidanceConsumed: (followUpId: string) => postToPort({ type: "follow-up:consumed", followUpId }),
     })
       .then((response) => {
         if (disconnected) {

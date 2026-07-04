@@ -4,7 +4,8 @@ export type EndpointType = "openai_chat" | "anthropic_messages";
 export type ChatRole = "system" | "user" | "assistant";
 export type PageContextExtractMode = "text" | "all";
 export type ExtractionSelectorType = "css" | "xpath";
-export type SendShortcut = "enter" | "shift_enter" | "ctrl_enter" | "ctrl_shift_enter" | "alt_enter";
+export type SendShortcut = "enter" | "shift_enter" | "ctrl_enter" | "alt_enter";
+export type FollowUpBehavior = "queue" | "guide";
 export type ToolCallDisplayMode = "assistant_grouped" | "compact";
 export type WebSearchProviderType = "tavily";
 export type WebSearchApiKeyStrategy = "round_robin" | "random";
@@ -103,6 +104,7 @@ export interface ChatPreferenceValues {
   maxTokens: number;
   topK?: number;
   sendShortcut: SendShortcut;
+  followUpBehavior: FollowUpBehavior;
   historyDrawerDefaultOpen: boolean;
   injectPageContextByDefault: boolean;
   extractHtmlByDefault: boolean;

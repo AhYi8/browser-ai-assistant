@@ -1,3 +1,5 @@
+import type { ChatImageAttachment, ChatPromptInvocation } from "../../shared/types";
+
 export type ChatTaskStatus = "running" | "completed" | "failed" | "canceled";
 
 export interface ChatTaskState {
@@ -11,9 +13,17 @@ export interface ChatTaskState {
 export type ChatTaskMap = Record<string, ChatTaskState>;
 
 export type ChatTaskAbortHandle = () => void;
+export type ChatTaskFollowUpHandle = (followUp: {
+  id: string;
+  content: string;
+  attachments?: ChatImageAttachment[];
+  promptInvocations?: ChatPromptInvocation[];
+  userMessageId?: string;
+}) => void;
 
 // 取消句柄来自流式 port 生命周期，不能安全放入可序列化的 Zustand 状态；这里作为跨 action 的运行时桥接表。
 const abortHandles = new Map<string, { taskId: string; handle: ChatTaskAbortHandle }>();
+const followUpHandles = new Map<string, { taskId: string; handle: ChatTaskFollowUpHandle }>();
 const pendingAbortSessionIds = new Set<string>();
 const consumedAbortSessionIds = new Set<string>();
 
@@ -93,6 +103,27 @@ export function unregisterChatTaskAbortHandle(sessionId: string, taskId?: string
   }
 }
 
+export function registerChatTaskFollowUpHandle(sessionId: string, taskId: string, handle: ChatTaskFollowUpHandle): void {
+  followUpHandles.set(sessionId, { taskId, handle });
+}
+
+export function unregisterChatTaskFollowUpHandle(sessionId: string, taskId?: string): void {
+  const current = followUpHandles.get(sessionId);
+  if (!taskId || current?.taskId === taskId) {
+    followUpHandles.delete(sessionId);
+  }
+}
+
+export function sendChatTaskFollowUp(sessionId: string, followUp: Parameters<ChatTaskFollowUpHandle>[0]): boolean {
+  const current = followUpHandles.get(sessionId);
+  if (!current) {
+    return false;
+  }
+
+  current.handle(followUp);
+  return true;
+}
+
 export function abortChatTaskHandle(sessionId: string): boolean {
   const current = abortHandles.get(sessionId);
   if (!current) {
@@ -110,6 +141,7 @@ export function abortChatTaskHandle(sessionId: string): boolean {
 
 export function clearChatTaskAbortHandles(): void {
   abortHandles.clear();
+  followUpHandles.clear();
   pendingAbortSessionIds.clear();
   consumedAbortSessionIds.clear();
 }

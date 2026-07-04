@@ -5,7 +5,18 @@ import { shouldPassDeepSeekReasoningContent } from "../shared/models/openaiChatA
 import { normalizeModelRequestRetryCount, shouldRetryModelResponse, withModelRequestRetry, type ModelRequestRetryProgress } from "../shared/models/modelRequestRetry";
 import { getRegisteredModelTools, isBrowserAutomationToolId, resolveEnabledModelTools } from "../shared/models/toolRegistry";
 import type { ModelRequestMessage, ModelToolCall, ModelToolChoice, ModelToolDefinition, ModelToolExecutor, OpenAIStructuredOutputFormat } from "../shared/models/types";
-import type { AutomationPlaybookSettings, ChatMessage, ChatTokenUsageEntry, ChatTokenUsageSource, ChatToolAttachment, ChatToolCallRecord, ExtractionRule, ModelConfig } from "../shared/types";
+import type {
+  AutomationPlaybookSettings,
+  ChatImageAttachment,
+  ChatMessage,
+  ChatPromptInvocation,
+  ChatTokenUsageEntry,
+  ChatTokenUsageSource,
+  ChatToolAttachment,
+  ChatToolCallRecord,
+  ExtractionRule,
+  ModelConfig,
+} from "../shared/types";
 import type { TavilySearchOptions } from "../shared/webSearch/tavily";
 import { getEnabledAutomationPlaybooks, normalizeAutomationPlaybookSettings, shouldRunAutomationPlaybookSelection } from "../shared/automationPlaybooks";
 import { appendBrowserControlPromptIfNeeded, createBackgroundToolExecutor, createModelToolDefinition, normalizeBrowserAutomationMaxToolIterations, shouldExposeTool } from "./backgroundToolRuntime";
@@ -69,6 +80,14 @@ interface ChatStreamCallbacks {
   onToolTurnMessage?: (message: ChatMessage) => void;
   onToolCallStart?: (record: ChatToolCallRecord) => void;
   onToolCallComplete?: (record: ChatToolCallRecord, attachments: ChatToolAttachment[]) => void;
+  consumeGuidance?: () => Array<{
+    id: string;
+    content: string;
+    attachments?: ChatImageAttachment[];
+    promptInvocations?: ChatPromptInvocation[];
+    userMessageId?: string;
+  }>;
+  onGuidanceConsumed?: (followUpId: string) => void;
 }
 
 export async function handleChatSendMessage(
@@ -108,6 +127,8 @@ export async function handleChatSendMessage(
       onToolTurnMessage: callbacks.onToolTurnMessage,
       onToolCallStart: callbacks.onToolCallStart,
       onToolCallComplete: callbacks.onToolCallComplete,
+      consumeGuidance: callbacks.consumeGuidance,
+      onGuidanceConsumed: callbacks.onGuidanceConsumed,
       ...(exposedTools.some((tool) => isBrowserAutomationToolId(tool.id))
         ? { maxIterations: normalizeBrowserAutomationMaxToolIterations(message.browserAutomationMaxToolIterations) }
         : {}),

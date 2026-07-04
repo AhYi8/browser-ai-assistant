@@ -1547,9 +1547,29 @@ describe("appStore", () => {
     expect(useAppStore.getState().chatPreferences.enabledToolIds).toEqual(getRegisteredModelTools().map((tool) => tool.id));
     expect(useAppStore.getState().chatPreferences.toolCallDisplayMode).toBe("assistant_grouped");
     expect(useAppStore.getState().chatPreferences.showToolCallProcessInAssistantMode).toBe(false);
+    expect(useAppStore.getState().chatPreferences.followUpBehavior).toBe("queue");
     expect(useAppStore.getState().browserControlEnabled).toBe(false);
     expect(useAppStore.getState().appendPageContextToSystemPrompt).toBe(true);
     expect(useAppStore.getState().contextMode).toBe("text");
+  });
+
+  it("聊天偏好旧数据会迁移 Ctrl+Shift+Enter 并归一化运行中跟进行为", async () => {
+    await saveAppSetting({
+      key: "chatPreferences",
+      value: {
+        systemPrompt: "全局系统提示",
+        temperature: 0.4,
+        maxTokens: 2048,
+        sendShortcut: "ctrl_shift_enter",
+        followUpBehavior: "invalid",
+      },
+      updatedAt: 2,
+    });
+
+    await useAppStore.getState().loadChannelConfig();
+
+    expect(useAppStore.getState().chatPreferences.sendShortcut).toBe("enter");
+    expect(useAppStore.getState().chatPreferences.followUpBehavior).toBe("queue");
   });
 
   it("工具调用偏好旧数据缺失或脏数据时默认开启并过滤非法工具 ID", async () => {
@@ -2531,6 +2551,392 @@ describe("appStore", () => {
     expect(ports[1].disconnect).toHaveBeenCalled();
   });
 
+  it("运行中排队的跟进消息会在当前任务完成后按顺序自动发送", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const listeners: Array<(message: unknown) => void> = [];
+    const ports: Array<{ postMessage: ReturnType<typeof vi.fn>; disconnect: ReturnType<typeof vi.fn> }> = [];
+    const connect = vi.fn(() => {
+      const port = {
+        postMessage: vi.fn(),
+        disconnect: vi.fn(),
+        onMessage: {
+          addListener: vi.fn((listener: (message: unknown) => void) => listeners.push(listener)),
+        },
+        onDisconnect: {
+          addListener: vi.fn(),
+        },
+      };
+      ports.push(port);
+      return port;
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        connect,
+        sendMessage: vi.fn((_message: unknown, callback: (response: unknown) => void) => {
+          callback({ ok: true });
+          return undefined;
+        }),
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    useAppStore.setState((state) => ({
+      chatPreferences: {
+        ...state.chatPreferences,
+        toolCallingEnabled: true,
+        enabledToolIds: ["web_search.tavily"],
+      },
+    }));
+
+    const firstSend = useAppStore.getState().sendChatMessage("第一问");
+    await vi.waitFor(() => expect(connect).toHaveBeenCalledTimes(1));
+    const sessionId = useAppStore.getState().activeSessionId;
+    await useAppStore.getState().submitChatFollowUp("第二问", [], [], { behavior: "queue" });
+
+    expect(connect).toHaveBeenCalledTimes(1);
+    expect(useAppStore.getState().followUpsBySessionId[sessionId]).toHaveLength(1);
+
+    listeners[0]?.({ type: "complete", content: "第一答" });
+    await firstSend;
+
+    await vi.waitFor(() => expect(connect).toHaveBeenCalledTimes(2));
+    listeners[1]?.({ type: "complete", content: "第二答" });
+    await vi.waitFor(() => {
+      const session = useAppStore.getState().chatSessions.find((item) => item.id === sessionId);
+      expect(session?.messages.map((message) => message.content)).toEqual(["第一问", "第一答", "第二问", "第二答"]);
+    });
+    expect(useAppStore.getState().followUpsBySessionId[sessionId]).toEqual([]);
+    expect(ports[0].disconnect).toHaveBeenCalled();
+    expect(ports[1].disconnect).toHaveBeenCalled();
+  });
+
+  it("排队跟进自动消费前置校验失败时会保留队列项", async () => {
+    const provider = createProvider();
+    const model = { ...createModel(), supportsVision: false };
+    const listeners: Array<(message: unknown) => void> = [];
+    const connect = vi.fn(() => ({
+      postMessage: vi.fn(),
+      disconnect: vi.fn(),
+      onMessage: {
+        addListener: vi.fn((listener: (message: unknown) => void) => listeners.push(listener)),
+      },
+      onDisconnect: {
+        addListener: vi.fn(),
+      },
+    }));
+    vi.stubGlobal("chrome", {
+      runtime: {
+        connect,
+        sendMessage: vi.fn((_message: unknown, callback: (response: unknown) => void) => {
+          callback({ ok: true });
+          return undefined;
+        }),
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    useAppStore.setState((state) => ({
+      chatPreferences: {
+        ...state.chatPreferences,
+        toolCallingEnabled: true,
+        enabledToolIds: ["web_search.tavily"],
+      },
+    }));
+
+    const firstSend = useAppStore.getState().sendChatMessage("第一问");
+    await vi.waitFor(() => expect(connect).toHaveBeenCalledTimes(1));
+    const sessionId = useAppStore.getState().activeSessionId;
+    const imageAttachment = {
+      id: "queued-image",
+      name: "排队图片.png",
+      mediaType: "image/png",
+      dataUrl: "data:image/png;base64,aW1hZ2U=",
+    };
+    await useAppStore.getState().submitChatFollowUp("", [imageAttachment], [], { behavior: "queue" });
+
+    listeners[0]?.({ type: "complete", content: "第一答" });
+    await firstSend;
+
+    expect(connect).toHaveBeenCalledTimes(1);
+    expect(useAppStore.getState().failure?.message).toBe("当前模型不支持视觉理解，无法添加图片");
+    expect(useAppStore.getState().followUpsBySessionId[sessionId]).toEqual([
+      expect.objectContaining({
+        behavior: "queue",
+        attachments: [imageAttachment],
+      }),
+    ]);
+  });
+
+  it("后台会话的排队跟进完成后仍写回原会话", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const listeners: Array<(message: unknown) => void> = [];
+    const connect = vi.fn(() => ({
+      postMessage: vi.fn(),
+      disconnect: vi.fn(),
+      onMessage: {
+        addListener: vi.fn((listener: (message: unknown) => void) => listeners.push(listener)),
+      },
+      onDisconnect: {
+        addListener: vi.fn(),
+      },
+    }));
+    vi.stubGlobal("chrome", {
+      runtime: {
+        connect,
+        sendMessage: vi.fn((_message: unknown, callback: (response: unknown) => void) => {
+          callback({ ok: true });
+          return undefined;
+        }),
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    useAppStore.setState((state) => ({
+      chatPreferences: {
+        ...state.chatPreferences,
+        toolCallingEnabled: true,
+        enabledToolIds: ["web_search.tavily"],
+      },
+    }));
+
+    const firstSend = useAppStore.getState().sendChatMessage("第一问");
+    await vi.waitFor(() => expect(connect).toHaveBeenCalledTimes(1));
+    const firstSessionId = useAppStore.getState().activeSessionId;
+    await useAppStore.getState().submitChatFollowUp("后台跟进", [], [], { behavior: "queue" });
+
+    const secondSession = await useAppStore.getState().createChatSession();
+    expect(useAppStore.getState().activeSessionId).toBe(secondSession.id);
+
+    listeners[0]?.({ type: "complete", content: "第一答" });
+    await firstSend;
+
+    await vi.waitFor(() => expect(connect).toHaveBeenCalledTimes(2));
+    listeners[1]?.({ type: "complete", content: "后台跟进答" });
+
+    await vi.waitFor(() => {
+      const state = useAppStore.getState();
+      const firstSession = state.chatSessions.find((item) => item.id === firstSessionId);
+      const secondStoredSession = state.chatSessions.find((item) => item.id === secondSession.id);
+      expect(firstSession?.messages.map((message) => message.content)).toEqual(["第一问", "第一答", "后台跟进", "后台跟进答"]);
+      expect(secondStoredSession?.messages).toEqual([]);
+      expect(state.activeSessionId).toBe(secondSession.id);
+    });
+  });
+
+  it("后台普通会话消费排队跟进时不会写入当前隐私会话", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const listeners: Array<(message: unknown) => void> = [];
+    const connect = vi.fn(() => ({
+      postMessage: vi.fn(),
+      disconnect: vi.fn(),
+      onMessage: {
+        addListener: vi.fn((listener: (message: unknown) => void) => listeners.push(listener)),
+      },
+      onDisconnect: {
+        addListener: vi.fn(),
+      },
+    }));
+    vi.stubGlobal("chrome", {
+      runtime: {
+        connect,
+        sendMessage: vi.fn((_message: unknown, callback: (response: unknown) => void) => {
+          callback({ ok: true });
+          return undefined;
+        }),
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    useAppStore.setState((state) => ({
+      chatPreferences: {
+        ...state.chatPreferences,
+        toolCallingEnabled: true,
+        enabledToolIds: ["web_search.tavily"],
+      },
+    }));
+
+    const firstSend = useAppStore.getState().sendChatMessage("普通会话第一问");
+    await vi.waitFor(() => expect(connect).toHaveBeenCalledTimes(1));
+    const normalSessionId = useAppStore.getState().activeSessionId;
+    await useAppStore.getState().submitChatFollowUp("普通会话后台跟进", [], [], { behavior: "queue" });
+    await useAppStore.getState().createChatSession();
+    await useAppStore.getState().enterPrivateMode();
+
+    listeners[0]?.({ type: "complete", content: "普通会话第一答" });
+    await firstSend;
+
+    await vi.waitFor(() => expect(connect).toHaveBeenCalledTimes(2));
+    listeners[1]?.({ type: "complete", content: "普通会话后台跟进答" });
+
+    await vi.waitFor(() => {
+      const state = useAppStore.getState();
+      const normalSession = state.chatSessions.find((item) => item.id === normalSessionId);
+      expect(state.privateModeActive).toBe(true);
+      expect(state.privateChatSession?.messages).toEqual([]);
+      expect(normalSession?.messages.map((message) => message.content)).toEqual([
+        "普通会话第一问",
+        "普通会话第一答",
+        "普通会话后台跟进",
+        "普通会话后台跟进答",
+      ]);
+    });
+  });
+
+  it("运行中引导消息会发送到当前长连接而不是立即新建请求", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const listeners: Array<(message: unknown) => void> = [];
+    const ports: Array<{ postMessage: ReturnType<typeof vi.fn>; disconnect: ReturnType<typeof vi.fn> }> = [];
+    const connect = vi.fn(() => {
+      const port = {
+        postMessage: vi.fn(),
+        disconnect: vi.fn(),
+        onMessage: {
+          addListener: vi.fn((listener: (message: unknown) => void) => listeners.push(listener)),
+        },
+        onDisconnect: {
+          addListener: vi.fn(),
+        },
+      };
+      ports.push(port);
+      return port;
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        connect,
+        sendMessage: vi.fn((_message: unknown, callback: (response: unknown) => void) => {
+          callback({ ok: true });
+          return undefined;
+        }),
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    disableDefaultToolCalling();
+
+    const firstSend = useAppStore.getState().sendChatMessage("第一问");
+    await vi.waitFor(() => expect(connect).toHaveBeenCalledTimes(1));
+    await useAppStore.getState().submitChatFollowUp("请优先检查表单", [], [], { behavior: "guide" });
+
+    expect(connect).toHaveBeenCalledTimes(1);
+    expect(ports[0].postMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: "chat.stream.followUp",
+      payload: expect.objectContaining({
+        followUpId: expect.any(String),
+        content: "请优先检查表单",
+      }),
+    }));
+
+    const followUpMessage = ports[0].postMessage.mock.calls.find(([message]) => (message as { type?: string }).type === "chat.stream.followUp")?.[0] as
+      | { payload?: { followUpId?: string } }
+      | undefined;
+    listeners[0]?.({ type: "follow-up:consumed", followUpId: followUpMessage?.payload?.followUpId });
+    expect(useAppStore.getState().followUpsBySessionId[useAppStore.getState().activeSessionId]).toEqual([]);
+    listeners[0]?.({ type: "complete", content: "第一答" });
+    await firstSend;
+  });
+
+  it("运行中引导会立即保存用户气泡，实际消费时只追加已引导提示", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const listeners: Array<(message: unknown) => void> = [];
+    const ports: Array<{ postMessage: ReturnType<typeof vi.fn>; disconnect: ReturnType<typeof vi.fn> }> = [];
+    const connect = vi.fn(() => {
+      const port = {
+        postMessage: vi.fn(),
+        disconnect: vi.fn(),
+        onMessage: {
+          addListener: vi.fn((listener: (message: unknown) => void) => listeners.push(listener)),
+        },
+        onDisconnect: {
+          addListener: vi.fn(),
+        },
+      };
+      ports.push(port);
+      return port;
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        connect,
+        sendMessage: vi.fn((_message: unknown, callback: (response: unknown) => void) => {
+          callback({ ok: true });
+          return undefined;
+        }),
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    disableDefaultToolCalling();
+
+    const firstSend = useAppStore.getState().sendChatMessage("第一问");
+    await vi.waitFor(() => expect(connect).toHaveBeenCalledTimes(1));
+    await useAppStore.getState().submitChatFollowUp("马上显示引导", [], [], { behavior: "guide" });
+
+    await vi.waitFor(() => {
+      expect(useAppStore.getState().chatSessions[0]?.messages.map((message) => message.content)).toEqual(["第一问", "", "马上显示引导"]);
+    });
+
+    listeners[0]?.({
+      type: "assistant:tool-turn",
+      message: {
+        id: "follow-up-guided-record",
+        role: "assistant",
+        assistantMessageKind: "tool_call_turn",
+        content: "",
+        createdAt: 3,
+        modelId: model.id,
+        endpointType: "openai_chat",
+        streamMode: false,
+        systemPrompt: "你是网页助手",
+        contextPrompt: "",
+        contextMode: "text",
+        toolCallRecords: [
+          {
+            id: "guided-follow-up-record",
+            toolId: "chat.follow_up_guidance",
+            name: "chat_follow_up_guidance",
+            displayName: "已引导对话",
+            arguments: {},
+            status: "success",
+            startedAt: 3,
+            completedAt: 3,
+            resultSummary: "马上显示引导",
+          },
+        ],
+      },
+    });
+    listeners[0]?.({ type: "complete", content: "第一答" });
+    await firstSend;
+
+    expect(useAppStore.getState().chatSessions[0]?.messages.map((message) => message.content)).toEqual([
+      "第一问",
+      "第一答",
+      "马上显示引导",
+      "",
+    ]);
+  });
+
   it("后台会话完成后用户切回该会话会清除完成态已读提示", async () => {
     const provider = createProvider();
     const model = createModel();
@@ -2877,6 +3283,81 @@ describe("appStore", () => {
       content: "最终回答",
     });
     expect(messages[2]?.assistantMessageKind).toBeUndefined();
+  });
+
+  it("流式引导消费后会保存已引导过程提示", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    let portMessageListener: ((message: unknown) => void) | undefined;
+    const port = {
+      postMessage: vi.fn(),
+      disconnect: vi.fn(),
+      onMessage: {
+        addListener: vi.fn((listener: (message: unknown) => void) => {
+          portMessageListener = listener;
+        }),
+      },
+      onDisconnect: {
+        addListener: vi.fn(),
+      },
+    };
+    vi.stubGlobal("chrome", { runtime: { connect: vi.fn(() => port), sendMessage: vi.fn() } });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    useAppStore.setState((state) => ({
+      chatPreferences: {
+        ...state.chatPreferences,
+        toolCallingEnabled: true,
+        enabledToolIds: ["web_search.tavily"],
+      },
+    }));
+
+    const sendPromise = useAppStore.getState().sendChatMessage("第一问");
+    await vi.waitFor(() => expect(portMessageListener).toBeTypeOf("function"));
+    await useAppStore.getState().submitChatFollowUp("请优先检查登录表单", [], [], { behavior: "guide" });
+    portMessageListener?.({
+      type: "assistant:tool-turn",
+      message: {
+        id: "follow-up-visible-guided",
+        role: "assistant",
+        assistantMessageKind: "tool_call_turn",
+        content: "",
+        createdAt: 3,
+        modelId: model.id,
+        endpointType: "openai_chat",
+        streamMode: false,
+        systemPrompt: "你是网页助手",
+        contextPrompt: "",
+        contextMode: "text",
+        toolCallRecords: [
+          {
+            id: "follow-up-visible-guided-record",
+            toolId: "chat.follow_up_guidance",
+            name: "chat_follow_up_guidance",
+            displayName: "已引导对话",
+            arguments: {},
+            status: "success",
+            startedAt: 3,
+            completedAt: 3,
+            resultSummary: "请优先检查登录表单",
+          },
+        ],
+      },
+    });
+    portMessageListener?.({ type: "complete", content: "第一答" });
+    await sendPromise;
+
+    const messages = useAppStore.getState().chatSessions[0]?.messages ?? [];
+    expect(messages.map((message) => message.content)).toEqual(["第一问", "请优先检查登录表单", "", "第一答"]);
+    expect(messages[1]).toMatchObject({ role: "user", content: "请优先检查登录表单" });
+    expect(messages[2]).toMatchObject({
+      role: "assistant",
+      assistantMessageKind: "tool_call_turn",
+      toolCallRecords: [expect.objectContaining({ displayName: "已引导对话" })],
+    });
   });
 
   it("后台会话流式失败不会污染当前会话错误提示", async () => {
@@ -4622,6 +5103,20 @@ describe("appStore", () => {
     await useAppStore.getState().sendChatMessage("需要保留");
     const privateSessionId = useAppStore.getState().privateChatSession?.id ?? "";
     const savedSessionId = privateSessionId.replace(/^private-session-/, "session-");
+    useAppStore.setState((state) => ({
+      followUpsBySessionId: {
+        ...state.followUpsBySessionId,
+        [privateSessionId]: [
+          {
+            id: "follow-up-private",
+            sessionId: privateSessionId,
+            content: "保存后的跟进",
+            behavior: "queue",
+            createdAt: 2,
+          },
+        ],
+      },
+    }));
 
     await useAppStore.getState().savePrivateChatSession();
 
@@ -4633,6 +5128,14 @@ describe("appStore", () => {
     expect(state.chatSessions[0].id).toBe(savedSessionId);
     expect(state.chatSessions[0].id).not.toMatch(/^private-session-/);
     expect(state.chatSessions[0].messages.map((message) => message.content)).toEqual(["需要保留", "隐私回复"]);
+    expect(state.followUpsBySessionId[privateSessionId]).toBeUndefined();
+    expect(state.followUpsBySessionId[savedSessionId]).toEqual([
+      expect.objectContaining({
+        id: "follow-up-private",
+        sessionId: savedSessionId,
+        content: "保存后的跟进",
+      }),
+    ]);
     await expect(getChatSession(privateSessionId)).resolves.toBeUndefined();
     await expect(getChatSession(savedSessionId)).resolves.toMatchObject({
       id: savedSessionId,
@@ -4670,12 +5173,36 @@ describe("appStore", () => {
       expect(portMessageListener).toBeTypeOf("function");
       expect(useAppStore.getState().privateChatSession?.messages.map((message) => message.content)).toEqual(["隐私生成中", ""]);
     });
+    const privateSessionId = useAppStore.getState().privateChatSession?.id ?? "";
+    useAppStore.setState((state) => ({
+      followUpsBySessionId: {
+        ...state.followUpsBySessionId,
+        [privateSessionId]: [
+          {
+            id: "follow-up-private-running",
+            sessionId: privateSessionId,
+            content: "运行中暂存的跟进",
+            behavior: "queue",
+            createdAt: 2,
+          },
+        ],
+      },
+    }));
 
     await useAppStore.getState().savePrivateChatSession();
 
+    const savedSessionId = privateSessionId.replace(/^private-session-/, "session-");
     expect(useAppStore.getState().privateModeActive).toBe(true);
     expect(useAppStore.getState().privateChatSession?.messages.map((message) => message.content)).toEqual(["隐私生成中", ""]);
     expect(useAppStore.getState().failure?.message).toBe("隐私对话仍在生成中，请先终止或等待完成后再保存。");
+    expect(useAppStore.getState().followUpsBySessionId[privateSessionId]).toEqual([
+      expect.objectContaining({
+        id: "follow-up-private-running",
+        sessionId: privateSessionId,
+        content: "运行中暂存的跟进",
+      }),
+    ]);
+    expect(useAppStore.getState().followUpsBySessionId[savedSessionId]).toBeUndefined();
 
     portMessageListener?.({ type: "complete", content: "隐私生成完成" });
     await sendPromise;
@@ -4833,12 +5360,28 @@ describe("appStore", () => {
     await useAppStore.getState().loadChannelConfig();
 
     await useAppStore.getState().enterPrivateMode();
+    const privateSessionId = useAppStore.getState().privateChatSession?.id ?? "";
+    useAppStore.setState((state) => ({
+      followUpsBySessionId: {
+        ...state.followUpsBySessionId,
+        [privateSessionId]: [
+          {
+            id: "follow-up-discard-private",
+            sessionId: privateSessionId,
+            content: "丢弃的跟进",
+            behavior: "queue",
+            createdAt: 2,
+          },
+        ],
+      },
+    }));
     const session = await useAppStore.getState().createChatSession();
 
     const state = useAppStore.getState();
     expect(state.privateModeActive).toBe(false);
     expect(state.privateChatSession).toBeUndefined();
     expect(state.chatSessions).toEqual([session]);
+    expect(state.followUpsBySessionId[privateSessionId]).toBeUndefined();
     await expect(getChatSession(session.id)).resolves.toBeDefined();
   });
 

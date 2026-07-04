@@ -2,7 +2,9 @@ import { updateChatSession } from "../../shared/storage/repositories";
 import { mergeTokenUsageEntries } from "../../shared/chat/tokenUsage";
 import type {
   ChatMessage,
+  ChatImageAttachment,
   ChatNetworkContextAttachment,
+  ChatPromptInvocation,
   ChatTokenUsageEntry,
   ChatToolAttachment,
   ChatToolCallRecord,
@@ -18,6 +20,7 @@ const STREAM_CANCELED_MESSAGE = "已终止本次生成。";
 type ChatStreamPortMessage =
   | { type: "chunk"; content: string }
   | { type: "thinking"; content: string }
+  | { type: "follow-up:consumed"; followUpId: string }
   | { type: "retry:progress"; currentRetry: number; maxRetries: number }
   | { type: "assistant:final-start" }
   | { type: "token_usage"; tokenUsageEntries?: ChatTokenUsageEntry[] }
@@ -41,6 +44,7 @@ interface StreamingChatResult {
   assistantContent?: string;
   canceled?: boolean;
   failed?: boolean;
+  unconsumedFollowUpIds?: string[];
 }
 
 interface StreamingChatInput {
@@ -58,14 +62,22 @@ interface StreamingChatInput {
   toolAttachments?: ChatToolAttachment[];
   request: AppChatSendMessage;
   onAbortHandle?: (handle: () => void) => void;
+  onFollowUpHandle?: (handle: (followUp: {
+    id: string;
+    content: string;
+    attachments?: ChatImageAttachment[];
+    promptInvocations?: ChatPromptInvocation[];
+    userMessageId?: string;
+  }) => void) => void;
+  onFollowUpConsumed?: (followUpId: string) => void;
   shouldShowFailure?: () => boolean;
 }
 
 type AssistantPlaceholderInput = Omit<StreamingChatInput, "request">;
 
-async function appendAssistantMessageToSession(
+async function appendChatMessageToSession(
   sessionId: string,
-  assistantMessage: ChatMessage,
+  chatMessage: ChatMessage,
   set: StoreSetter,
   privateMode = false,
 ): Promise<ChatMessage | undefined> {
@@ -79,18 +91,18 @@ async function appendAssistantMessageToSession(
       return {
         privateChatSession: {
           ...currentSession,
-          updatedAt: assistantMessage.createdAt,
-          messages: [...currentSession.messages, assistantMessage],
+          updatedAt: chatMessage.createdAt,
+          messages: [...currentSession.messages, chatMessage],
         },
       };
     });
-    return assistantMessage;
+    return chatMessage;
   }
 
   const initializedSession = await updateChatSession(sessionId, (latestSession) => ({
     ...latestSession,
-    updatedAt: assistantMessage.createdAt,
-    messages: [...latestSession.messages, assistantMessage],
+    updatedAt: chatMessage.createdAt,
+    messages: [...latestSession.messages, chatMessage],
   }));
   if (!initializedSession) {
     return undefined;
@@ -105,13 +117,22 @@ async function appendAssistantMessageToSession(
     return {
       chatSessions: upsertSession(current.chatSessions, {
         ...currentSession,
-        updatedAt: assistantMessage.createdAt,
-        messages: [...currentSession.messages, assistantMessage],
+        updatedAt: chatMessage.createdAt,
+        messages: [...currentSession.messages, chatMessage],
       }),
     };
   });
 
-  return assistantMessage;
+  return chatMessage;
+}
+
+async function appendAssistantMessageToSession(
+  sessionId: string,
+  assistantMessage: ChatMessage,
+  set: StoreSetter,
+  privateMode = false,
+): Promise<ChatMessage | undefined> {
+  return appendChatMessageToSession(sessionId, assistantMessage, set, privateMode);
 }
 
 async function createAssistantPlaceholder(input: AssistantPlaceholderInput): Promise<ChatMessage | undefined> {
@@ -155,6 +176,7 @@ export async function sendStreamingChatMessage(input: StreamingChatInput): Promi
     let receivedFinalComplete = false;
     let canceledByUser = false;
     let pendingTokenUsageEntries: ChatTokenUsageEntry[] | undefined;
+    const pendingFollowUpIds = new Set<string>();
     let writeQueue = Promise.resolve();
 
     const finish = (result: StreamingChatResult, options: { disconnect: boolean } = { disconnect: true }) => {
@@ -178,6 +200,23 @@ export async function sendStreamingChatMessage(input: StreamingChatInput): Promi
 
       canceledByUser = true;
       port.disconnect();
+    });
+    input.onFollowUpHandle?.((followUp) => {
+      if (settled || receivedFinalComplete) {
+        return;
+      }
+
+      pendingFollowUpIds.add(followUp.id);
+      port.postMessage({
+        type: "chat.stream.followUp",
+        payload: {
+          followUpId: followUp.id,
+          content: followUp.content,
+          attachments: followUp.attachments,
+          promptInvocations: followUp.promptInvocations,
+          userMessageId: followUp.userMessageId,
+        },
+      });
     });
     const enqueueWrite = (operation: () => Promise<void>) => {
       writeQueue = writeQueue.then(operation).catch(() => {
@@ -219,6 +258,14 @@ export async function sendStreamingChatMessage(input: StreamingChatInput): Promi
             await appendAssistantThinkingChunk(input.sessionId, finalAssistantMessage.id, message.content, input.set, input.privateMode);
           }
         });
+        return;
+      }
+
+      if (message.type === "follow-up:consumed") {
+        if (typeof message.followUpId === "string") {
+          pendingFollowUpIds.delete(message.followUpId);
+          input.onFollowUpConsumed?.(message.followUpId);
+        }
         return;
       }
 
@@ -293,7 +340,7 @@ export async function sendStreamingChatMessage(input: StreamingChatInput): Promi
             toolAttachments: mergeToolAttachments(input.toolAttachments, message.toolAttachments),
             tokenUsageEntries: mergeTokenUsageEntries(pendingTokenUsageEntries, message.tokenUsageEntries),
           });
-        }).then(() => finish({ completed: true, assistantContent: message.content }));
+        }).then(() => finish({ completed: true, assistantContent: message.content, unconsumedFollowUpIds: Array.from(pendingFollowUpIds) }));
         return;
       }
 
@@ -308,7 +355,7 @@ export async function sendStreamingChatMessage(input: StreamingChatInput): Promi
             clearAssistantRetryProgress(finalAssistantMessage.id, input.set);
             await failAssistantMessage(input.sessionId, finalAssistantMessage.id, failureMessage, input.set, input.privateMode, pendingTokenUsageEntries);
           }
-        }).then(() => finish({ completed: true, failed: true }));
+        }).then(() => finish({ completed: true, failed: true, unconsumedFollowUpIds: Array.from(pendingFollowUpIds) }));
     });
 
     port.onDisconnect.addListener(() => {
@@ -328,7 +375,7 @@ export async function sendStreamingChatMessage(input: StreamingChatInput): Promi
             clearAssistantRetryProgress(finalAssistantMessage.id, input.set);
             await failAssistantMessage(input.sessionId, finalAssistantMessage.id, STREAM_CANCELED_MESSAGE, input.set, input.privateMode, pendingTokenUsageEntries);
           }
-        }).then(() => finish({ completed: true, canceled: true }, { disconnect: false }));
+        }).then(() => finish({ completed: true, canceled: true, unconsumedFollowUpIds: Array.from(pendingFollowUpIds) }, { disconnect: false }));
         return;
       }
 
@@ -342,7 +389,7 @@ export async function sendStreamingChatMessage(input: StreamingChatInput): Promi
           clearAssistantRetryProgress(finalAssistantMessage.id, input.set);
           await failAssistantMessage(input.sessionId, finalAssistantMessage.id, STREAM_FAILURE_MESSAGE, input.set, input.privateMode, pendingTokenUsageEntries);
         }
-      }).then(() => finish({ completed: true, failed: true }, { disconnect: false }));
+      }).then(() => finish({ completed: true, failed: true, unconsumedFollowUpIds: Array.from(pendingFollowUpIds) }, { disconnect: false }));
     });
 
     port.postMessage({

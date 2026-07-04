@@ -1332,6 +1332,88 @@ body {
     border-top: 1px solid var(--color-hairline);
   }
 
+  .follow-up-queue {
+    @apply grid gap-1 rounded-md border px-1.5 py-1 text-sm;
+    position: relative;
+    border-color: var(--color-hairline);
+    background: var(--color-surface);
+  }
+
+  .follow-up-queue-collapsed {
+    @apply gap-0.5 px-1.5 py-0.5;
+  }
+
+  .follow-up-queue-header {
+    @apply flex justify-end;
+  }
+
+  .follow-up-queue-expanded .follow-up-queue-header {
+    position: absolute;
+    right: 4px;
+    top: 4px;
+    z-index: 1;
+  }
+
+  .follow-up-queue-list {
+    @apply grid gap-1;
+  }
+
+  .follow-up-queue-expanded .follow-up-queue-list {
+    padding-right: 1.5rem;
+  }
+
+  .follow-up-queue-preview {
+    @apply flex min-w-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-xs;
+    background: var(--color-surface-soft);
+  }
+
+  .follow-up-queue-collapsed .follow-up-queue-preview {
+    @apply px-1 py-0;
+  }
+
+  .follow-up-queue-item {
+    @apply flex min-w-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-xs;
+    background: var(--color-surface-soft);
+  }
+
+  .follow-up-queue-icon-button {
+    @apply inline-grid h-5 w-5 shrink-0 place-items-center rounded p-0 transition;
+    color: var(--color-muted);
+  }
+
+  .follow-up-queue-icon-button:hover {
+    background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+    color: var(--color-primary);
+  }
+
+  .follow-up-queue-icon-button:focus-visible {
+    outline: 3px solid color-mix(in srgb, var(--color-primary) 15%, transparent);
+    outline-offset: 2px;
+  }
+
+  .follow-up-queue-icon-button svg {
+    @apply h-3.5 w-3.5;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .follow-up-queue-content {
+    @apply min-w-0 truncate;
+  }
+
+  .follow-up-queue-preview .follow-up-queue-content,
+  .follow-up-queue-item .follow-up-queue-content {
+    flex: 1 1 auto;
+  }
+
+  .follow-up-queue-meta {
+    @apply whitespace-nowrap;
+    color: var(--color-muted);
+  }
+
   .context-strip {
     @apply flex flex-wrap items-center gap-2 text-sm;
     color: var(--color-body);

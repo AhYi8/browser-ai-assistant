@@ -139,7 +139,10 @@ import {
   type ChatTaskMap,
   isSessionTaskRunning,
   registerChatTaskAbortHandle,
+  registerChatTaskFollowUpHandle,
+  sendChatTaskFollowUp,
   unregisterChatTaskAbortHandle,
+  unregisterChatTaskFollowUpHandle,
   upsertChatTask,
 } from "./appStoreChatTasks";
 import { sendStreamingChatMessage } from "./appStoreStreaming";
@@ -218,6 +221,17 @@ export interface ChatRetryProgress {
   maxRetries: number;
 }
 
+export interface ChatFollowUpItem {
+  id: string;
+  sessionId: string;
+  content: string;
+  attachments?: ChatImageAttachment[];
+  promptInvocations?: ChatPromptInvocation[];
+  behavior: ChatPreferenceValues["followUpBehavior"];
+  createdAt: number;
+  userMessageId?: string;
+}
+
 export interface AppState {
   providers: ModelProvider[];
   models: ProviderModel[];
@@ -247,6 +261,7 @@ export interface AppState {
   composerHasDraft: boolean;
   chatTasksBySessionId: ChatTaskMap;
   dismissedChatTaskIdsBySessionId: Record<string, string>;
+  followUpsBySessionId: Record<string, ChatFollowUpItem[]>;
   chatRetryProgressByMessageId: Record<string, ChatRetryProgress>;
   appendPageContextToSystemPrompt: boolean;
   streamMode: boolean;
@@ -333,6 +348,14 @@ export interface AppState {
   backupNow: () => Promise<void>;
   restoreNow: (backupId: string) => Promise<void>;
   sendChatMessage: (content: string, attachments?: ChatImageAttachment[], promptInvocations?: ChatPromptInvocation[]) => Promise<void>;
+  submitChatFollowUp: (
+    content: string,
+    attachments?: ChatImageAttachment[],
+    promptInvocations?: ChatPromptInvocation[],
+    options?: { behavior?: ChatPreferenceValues["followUpBehavior"] },
+  ) => Promise<void>;
+  removeChatFollowUp: (sessionId: string, followUpId: string) => void;
+  guideChatFollowUp: (sessionId: string, followUpId: string) => void;
   regenerateMessage: (messageId: string) => Promise<void>;
   editAndRegenerateUserMessage: (messageId: string, content: string, promptInvocations?: ChatPromptInvocation[]) => Promise<void>;
   abortChatTask: (sessionId: string) => void;
@@ -401,6 +424,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   composerHasDraft: false,
   chatTasksBySessionId: {},
   dismissedChatTaskIdsBySessionId: {},
+  followUpsBySessionId: {},
   chatRetryProgressByMessageId: {},
   appendPageContextToSystemPrompt: true,
   streamMode: true,
@@ -887,6 +911,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
     await saveChatSession(session);
     const defaultContextMode = resolveDefaultContextMode(currentState.chatPreferences);
     set((state) => ({
+      followUpsBySessionId: removeSessionFollowUps(state.followUpsBySessionId, currentState.privateChatSession?.id),
       chatSessions: [session, ...state.chatSessions],
       activeSessionId: session.id,
       selectedModelId,
@@ -990,6 +1015,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       selectedModelId: resolveSessionModelId(sessionToSave, current),
       sending: isSessionTaskRunning(current.chatTasksBySessionId, sessionToSave.id),
       chatSessions: upsertSession(current.chatSessions, sessionToSave),
+      followUpsBySessionId: migrateSessionFollowUps(current.followUpsBySessionId, privateChatSession.id, sessionToSave.id),
     }));
     await generateTitleFromSavedPrivateSession({
       session: sessionToSave,
@@ -1022,6 +1048,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
         privateModeActive: false,
         privateChatSession: undefined,
         pendingDeleteSessionId: undefined,
+        followUpsBySessionId: removeSessionFollowUps(state.followUpsBySessionId, state.privateChatSession?.id),
         dismissedChatTaskIdsBySessionId,
         sending: isSessionTaskRunning(state.chatTasksBySessionId, sessionId),
         selectedModelId: resolveSessionModelId(session, state),
@@ -1044,10 +1071,13 @@ export const useAppStore = create<AppState>()((set, get) => ({
     set((state) => {
       const chatTasksBySessionId = clearChatTask(state.chatTasksBySessionId, sessionId);
       const dismissedChatTaskIdsBySessionId = { ...state.dismissedChatTaskIdsBySessionId };
+      const followUpsBySessionId = { ...state.followUpsBySessionId };
       delete dismissedChatTaskIdsBySessionId[sessionId];
+      delete followUpsBySessionId[sessionId];
       return {
         chatTasksBySessionId,
         dismissedChatTaskIdsBySessionId,
+        followUpsBySessionId,
         sending: isSessionTaskRunning(chatTasksBySessionId, state.activeSessionId),
       };
     });
@@ -1172,7 +1202,47 @@ export const useAppStore = create<AppState>()((set, get) => ({
   backupNow: () => backupNowAction({ set }),
   loadRemoteBackups: () => loadRemoteBackupsAction({ set }),
   restoreNow: (backupId) => restoreNowAction({ backupId, get, set }),
-  sendChatMessage: (content, attachments = [], promptInvocations = []) => sendChatMessageWithState({ content, attachments, promptInvocations, get, set }),
+  sendChatMessage: async (content, attachments = [], promptInvocations = []) => {
+    await sendChatMessageWithState({ content, attachments, promptInvocations, get, set });
+  },
+  submitChatFollowUp: (content, attachments = [], promptInvocations = [], options = {}) =>
+    submitChatFollowUpWithState({ content, attachments, promptInvocations, behavior: options.behavior, get, set }),
+  removeChatFollowUp: (sessionId, followUpId) =>
+    set((state) => ({
+      followUpsBySessionId: {
+        ...state.followUpsBySessionId,
+        [sessionId]: (state.followUpsBySessionId[sessionId] ?? []).filter((item) => item.id !== followUpId),
+      },
+    })),
+  guideChatFollowUp: (sessionId, followUpId) => {
+    const state = get();
+    const followUp = state.followUpsBySessionId[sessionId]?.find((item) => item.id === followUpId);
+    if (!followUp) {
+      return;
+    }
+    const userMessageId = followUp.userMessageId ?? appendFollowUpUserMessage({
+      sessionId,
+      followUp,
+      state,
+      set,
+    });
+    sendChatTaskFollowUp(sessionId, {
+      id: followUp.id,
+      content: followUp.content,
+      attachments: followUp.attachments,
+      promptInvocations: followUp.promptInvocations,
+      userMessageId,
+    });
+
+    set((current) => ({
+      followUpsBySessionId: {
+        ...current.followUpsBySessionId,
+        [sessionId]: (current.followUpsBySessionId[sessionId] ?? []).map((item) =>
+          item.id === followUpId ? { ...item, behavior: "guide", userMessageId } : item,
+        ),
+      },
+    }));
+  },
   regenerateMessage: (messageId) => regenerateChatMessage({ messageId, get, set }),
   editAndRegenerateUserMessage: (messageId, content, promptInvocations) => editAndRegenerateUserMessage({ messageId, content, promptInvocations, get, set }),
   abortChatTask: (sessionId) => {
@@ -1231,6 +1301,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       composerHasDraft: false,
       chatTasksBySessionId: {},
       dismissedChatTaskIdsBySessionId: {},
+      followUpsBySessionId: {},
       chatRetryProgressByMessageId: {},
       appendPageContextToSystemPrompt: true,
       streamMode: true,
@@ -1300,6 +1371,16 @@ interface SendChatMessageWithStateInput {
   content: string;
   attachments?: ChatImageAttachment[];
   promptInvocations?: ChatPromptInvocation[];
+  targetSessionId?: string;
+  get: StoreGetter;
+  set: StoreSetter;
+}
+
+interface SubmitChatFollowUpInput {
+  content: string;
+  attachments?: ChatImageAttachment[];
+  promptInvocations?: ChatPromptInvocation[];
+  behavior?: ChatPreferenceValues["followUpBehavior"];
   get: StoreGetter;
   set: StoreSetter;
 }
@@ -1335,32 +1416,38 @@ interface RunChatRequestInput {
   set: StoreSetter;
 }
 
-async function sendChatMessageWithState(input: SendChatMessageWithStateInput): Promise<void> {
+async function sendChatMessageWithState(input: SendChatMessageWithStateInput): Promise<boolean> {
   const trimmedContent = input.content.trim();
   const imageAttachments = (input.attachments ?? []).filter((attachment) => attachment.mediaType.startsWith("image/"));
   const promptInvocations = input.promptInvocations ?? [];
   if (!trimmedContent && imageAttachments.length === 0 && promptInvocations.length === 0) {
-    return;
+    return false;
   }
 
   const state = input.get();
-  const model = state.models.find((item) => item.id === state.selectedModelId);
+  const targetSessionId = input.targetSessionId ?? (state.privateModeActive ? state.privateChatSession?.id : state.activeSessionId);
+  const baseSession = input.targetSessionId
+    ? state.privateChatSession?.id === input.targetSessionId
+      ? state.privateChatSession
+      : state.chatSessions.find((session) => session.id === input.targetSessionId)
+    : state.privateModeActive
+      ? state.privateChatSession
+      : state.chatSessions.find((session) => session.id === targetSessionId);
+  const selectedModelId = baseSession?.selectedModelId || state.selectedModelId;
+  const model = state.models.find((item) => item.id === selectedModelId);
   const provider = model ? state.providers.find((item) => item.id === model.providerId) : undefined;
   if (!model || !provider || !model.enabled || !provider.enabled) {
     input.set({ failure: { message: "请先配置可用模型后再发送" } });
-    return;
+    return false;
   }
   if (imageAttachments.length > 0 && !model.supportsVision) {
     input.set({ failure: { message: "当前模型不支持视觉理解，无法添加图片" } });
-    return;
+    return false;
   }
 
   const now = Date.now();
-  const baseSession = state.privateModeActive
-    ? state.privateChatSession
-    : state.chatSessions.find((session) => session.id === state.activeSessionId);
   if (!baseSession && Object.values(state.chatTasksBySessionId).some((task) => task.status === "running")) {
-    return;
+    return false;
   }
   const effectiveChatPreferences = resolveEffectiveChatPreferences(state.chatPreferences, baseSession?.chatPreferenceOverrides);
   const session =
@@ -1376,7 +1463,7 @@ async function sendChatMessageWithState(input: SendChatMessageWithStateInput): P
       messages: [],
     };
   if (isSessionTaskRunning(state.chatTasksBySessionId, session.id)) {
-    return;
+    return false;
   }
   const shouldInjectPageContext = session.messages.length === 0 && state.appendPageContextToSystemPrompt;
   const requestPageContextPrompt = shouldInjectPageContext
@@ -1402,7 +1489,7 @@ async function sendChatMessageWithState(input: SendChatMessageWithStateInput): P
 
   await runChatRequest({
     state,
-    privateMode: state.privateModeActive,
+    privateMode: state.privateChatSession?.id === session.id,
     pageContextPrompt: requestPageContextPrompt,
     session,
     userMessage,
@@ -1416,6 +1503,7 @@ async function sendChatMessageWithState(input: SendChatMessageWithStateInput): P
     get: input.get,
     set: input.set,
   });
+  return true;
 }
 
 async function regenerateChatMessage(input: RegenerateChatMessageInput): Promise<void> {
@@ -1536,6 +1624,57 @@ async function editAndRegenerateUserMessage(input: EditAndRegenerateUserMessageI
   });
 }
 
+async function sendExistingFollowUpMessageWithState(input: {
+  sessionId: string;
+  messageId: string;
+  get: StoreGetter;
+  set: StoreSetter;
+}): Promise<boolean> {
+  const state = input.get();
+  const session = state.privateModeActive && state.privateChatSession?.id === input.sessionId
+    ? state.privateChatSession
+    : state.chatSessions.find((item) => item.id === input.sessionId);
+  if (!session || isSessionTaskRunning(state.chatTasksBySessionId, session.id)) {
+    return false;
+  }
+
+  const userMessageIndex = session.messages.findIndex((message) => message.id === input.messageId);
+  const userMessage = session.messages[userMessageIndex];
+  if (!userMessage || userMessage.role !== "user") {
+    return false;
+  }
+
+  const selectedModelId = session.selectedModelId || state.selectedModelId;
+  const model = state.models.find((item) => item.id === selectedModelId);
+  const provider = model ? state.providers.find((item) => item.id === model.providerId) : undefined;
+  if (!model || !provider || !model.enabled || !provider.enabled) {
+    input.set({ failure: { message: "请先配置可用模型后再发送" } });
+    return false;
+  }
+  if ((userMessage.attachments?.length ?? 0) > 0 && !model.supportsVision) {
+    input.set({ failure: { message: "当前模型不支持视觉理解，无法添加图片" } });
+    return false;
+  }
+
+  await runChatRequest({
+    state,
+    privateMode: state.privateModeActive && state.privateChatSession?.id === session.id,
+    pageContextPrompt: "",
+    session,
+    userMessage,
+    existingMessages: session.messages.slice(0, userMessageIndex),
+    nextMessages: session.messages,
+    shouldGenerateTitle: false,
+    nextTitle: session.title,
+    fallbackTitle: session.title,
+    model,
+    provider,
+    get: input.get,
+    set: input.set,
+  });
+  return true;
+}
+
 function findPreviousUserMessage(messages: ChatMessage[], startIndex: number): ChatMessage | undefined {
   for (let index = startIndex - 1; index >= 0; index -= 1) {
     if (messages[index]?.role === "user") {
@@ -1652,9 +1791,12 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
         streamMode: requestStreamMode,
         request,
         onAbortHandle: (handle) => registerChatTaskAbortHandle(nextSession.id, chatTask.id, handle),
+        onFollowUpHandle: (handle) => registerChatTaskFollowUpHandle(nextSession.id, chatTask.id, handle),
+        onFollowUpConsumed: (followUpId) => markChatFollowUpConsumed(input.set, nextSession.id, followUpId),
         shouldShowFailure: () => shouldShowFailureForSession(input.get(), nextSession.id),
       });
       unregisterChatTaskAbortHandle(nextSession.id, chatTask.id);
+      unregisterChatTaskFollowUpHandle(nextSession.id, chatTask.id);
       if (streamResult.canceled) {
         taskStatus = "canceled";
       } else if (streamResult.failed) {
@@ -1769,6 +1911,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
     );
   } finally {
     unregisterChatTaskAbortHandle(nextSession.id, chatTask.id);
+    unregisterChatTaskFollowUpHandle(nextSession.id, chatTask.id);
     input.set((current) => {
       const chatTasksBySessionId = finishChatTask(current.chatTasksBySessionId, nextSession.id, taskStatus, Date.now(), chatTask.id);
       return {
@@ -1777,7 +1920,174 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
         sending: isSessionTaskRunning(chatTasksBySessionId, current.activeSessionId),
       };
     });
+    void consumeNextQueuedFollowUp(nextSession.id, input.get, input.set);
   }
+}
+
+function markChatFollowUpConsumed(set: StoreSetter, sessionId: string, followUpId: string): void {
+  set((current) => ({
+    followUpsBySessionId: {
+      ...current.followUpsBySessionId,
+      [sessionId]: (current.followUpsBySessionId[sessionId] ?? []).filter((item) => item.id !== followUpId),
+    },
+  }));
+}
+
+function removeSessionFollowUps(
+  followUpsBySessionId: Record<string, ChatFollowUpItem[]>,
+  sessionId: string | undefined,
+): Record<string, ChatFollowUpItem[]> {
+  if (!sessionId || !followUpsBySessionId[sessionId]) {
+    return followUpsBySessionId;
+  }
+
+  const next = { ...followUpsBySessionId };
+  delete next[sessionId];
+  return next;
+}
+
+function migrateSessionFollowUps(
+  followUpsBySessionId: Record<string, ChatFollowUpItem[]>,
+  fromSessionId: string,
+  toSessionId: string,
+): Record<string, ChatFollowUpItem[]> {
+  const movingItems = followUpsBySessionId[fromSessionId];
+  if (!movingItems?.length || fromSessionId === toSessionId) {
+    return followUpsBySessionId;
+  }
+
+  const next = { ...followUpsBySessionId };
+  delete next[fromSessionId];
+  next[toSessionId] = [...(next[toSessionId] ?? []), ...movingItems.map((item) => ({ ...item, sessionId: toSessionId }))];
+  return next;
+}
+
+async function consumeNextQueuedFollowUp(sessionId: string, get: StoreGetter, set: StoreSetter): Promise<void> {
+  const nextFollowUp = get().followUpsBySessionId[sessionId]?.find((item) => item.behavior === "queue" || item.userMessageId);
+  if (!nextFollowUp || isSessionTaskRunning(get().chatTasksBySessionId, sessionId)) {
+    return;
+  }
+
+  // 跟进队列必须等当前任务完成后再消费；先临时移除可避免 runChatRequest 收尾时重复看到同一条。
+  removeQueuedFollowUp(set, sessionId, nextFollowUp.id);
+  let sent = false;
+  if (nextFollowUp.userMessageId) {
+    sent = await sendExistingFollowUpMessageWithState({
+      sessionId,
+      messageId: nextFollowUp.userMessageId,
+      get,
+      set,
+    });
+  } else {
+    sent = await sendChatMessageWithState({
+      content: nextFollowUp.content,
+      attachments: nextFollowUp.attachments ?? [],
+      promptInvocations: nextFollowUp.promptInvocations ?? [],
+      targetSessionId: sessionId,
+      get,
+      set,
+    });
+  }
+
+  if (!sent) {
+    restoreQueuedFollowUp(set, sessionId, nextFollowUp);
+  }
+}
+
+function removeQueuedFollowUp(set: StoreSetter, sessionId: string, followUpId: string): void {
+  set((current) => ({
+    followUpsBySessionId: {
+      ...current.followUpsBySessionId,
+      [sessionId]: (current.followUpsBySessionId[sessionId] ?? []).filter((item) => item.id !== followUpId),
+    },
+  }));
+}
+
+function restoreQueuedFollowUp(set: StoreSetter, sessionId: string, followUp: ChatFollowUpItem): void {
+  set((current) => {
+    const currentItems = current.followUpsBySessionId[sessionId] ?? [];
+    if (currentItems.some((item) => item.id === followUp.id)) {
+      return current;
+    }
+    return {
+      followUpsBySessionId: {
+        ...current.followUpsBySessionId,
+        [sessionId]: [followUp, ...currentItems],
+      },
+    };
+  });
+}
+
+function appendFollowUpUserMessage(input: {
+  sessionId: string;
+  followUp: Pick<ChatFollowUpItem, "content" | "attachments" | "promptInvocations">;
+  state: AppState;
+  set: StoreSetter;
+}): string {
+  const now = Date.now();
+  const session = input.state.privateModeActive && input.state.privateChatSession?.id === input.sessionId
+    ? input.state.privateChatSession
+    : input.state.chatSessions.find((item) => item.id === input.sessionId);
+  const modelId = session?.selectedModelId || input.state.selectedModelId;
+  const userMessageId = `message-${now}-follow-up-user`;
+  const userMessage: ChatMessage = {
+    id: userMessageId,
+    role: "user",
+    content: input.followUp.content,
+    createdAt: now,
+    modelId,
+    endpointType: resolveEndpointTypeForModel(input.state, modelId),
+    streamMode: input.state.streamMode,
+    systemPrompt: input.state.chatPreferences.systemPrompt,
+    contextPrompt: "",
+    contextMode: input.state.contextMode,
+    attachments: input.followUp.attachments,
+    promptInvocations: input.followUp.promptInvocations,
+  };
+
+  if (input.state.privateModeActive && input.state.privateChatSession?.id === input.sessionId) {
+    input.set((current) => {
+      if (!current.privateChatSession || current.privateChatSession.id !== input.sessionId) {
+        return {};
+      }
+
+      return {
+        privateChatSession: {
+          ...current.privateChatSession,
+          updatedAt: now,
+          messages: [...current.privateChatSession.messages, userMessage],
+        },
+      };
+    });
+    return userMessageId;
+  }
+
+  void updateChatSession(input.sessionId, (latestSession) => ({
+    ...latestSession,
+    updatedAt: now,
+    messages: [...latestSession.messages, userMessage],
+  }));
+  input.set((current) => {
+    const currentSession = current.chatSessions.find((item) => item.id === input.sessionId);
+    if (!currentSession) {
+      return {};
+    }
+
+    return {
+      chatSessions: upsertSession(current.chatSessions, {
+        ...currentSession,
+        updatedAt: now,
+        messages: [...currentSession.messages, userMessage],
+      }),
+    };
+  });
+
+  return userMessageId;
+}
+
+function resolveEndpointTypeForModel(state: AppState, modelId: string): EndpointType {
+  const model = state.models.find((item) => item.id === modelId);
+  return state.providers.find((provider) => provider.id === model?.providerId)?.endpointType ?? "openai_chat";
 }
 
 function clearChatRetryProgressForSession(state: AppState, sessionId: string): Record<string, ChatRetryProgress> {
@@ -1794,6 +2104,71 @@ function clearChatRetryProgressForSession(state: AppState, sessionId: string): R
     delete nextProgress[messageId];
   }
   return nextProgress;
+}
+
+async function submitChatFollowUpWithState(input: SubmitChatFollowUpInput): Promise<void> {
+  const trimmedContent = input.content.trim();
+  const imageAttachments = (input.attachments ?? []).filter((attachment) => attachment.mediaType.startsWith("image/"));
+  const promptInvocations = input.promptInvocations ?? [];
+  if (!trimmedContent && imageAttachments.length === 0 && promptInvocations.length === 0) {
+    return;
+  }
+
+  const state = input.get();
+  const sessionId = state.privateModeActive ? state.privateChatSession?.id : state.activeSessionId;
+  if (!sessionId || !isSessionTaskRunning(state.chatTasksBySessionId, sessionId)) {
+    await sendChatMessageWithState({
+      content: trimmedContent,
+      attachments: imageAttachments,
+      promptInvocations,
+      get: input.get,
+      set: input.set,
+    });
+    return;
+  }
+
+  const behavior = input.behavior ?? state.chatPreferences.followUpBehavior;
+  const now = Date.now();
+  const followUp: ChatFollowUpItem = {
+    id: `follow-up-${now}-${Math.random().toString(36).slice(2, 8)}`,
+    sessionId,
+    content: trimmedContent,
+    attachments: imageAttachments.length ? imageAttachments : undefined,
+    promptInvocations: promptInvocations.length ? promptInvocations : undefined,
+    behavior,
+    createdAt: now,
+  };
+
+  if (behavior === "guide") {
+    const userMessageId = appendFollowUpUserMessage({
+      sessionId,
+      followUp,
+      state,
+      set: input.set,
+    });
+    const guidedFollowUp = { ...followUp, userMessageId };
+    sendChatTaskFollowUp(sessionId, {
+      id: guidedFollowUp.id,
+      content: guidedFollowUp.content,
+      attachments: guidedFollowUp.attachments,
+      promptInvocations: guidedFollowUp.promptInvocations,
+      userMessageId,
+    });
+    input.set((current) => ({
+      followUpsBySessionId: {
+        ...current.followUpsBySessionId,
+        [sessionId]: [...(current.followUpsBySessionId[sessionId] ?? []), guidedFollowUp],
+      },
+    }));
+    return;
+  }
+
+  input.set((current) => ({
+    followUpsBySessionId: {
+      ...current.followUpsBySessionId,
+      [sessionId]: [...(current.followUpsBySessionId[sessionId] ?? []), { ...followUp, behavior: "queue" }],
+    },
+  }));
 }
 
 async function readMcpBearerTokens(settings: McpSettings): Promise<McpServerSecretMap> {

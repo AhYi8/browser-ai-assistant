@@ -4,6 +4,7 @@ import type { BrowserAutomationMode } from "../../shared/toolAuthorization";
 import type {
   ChatPreferenceValues,
   ChatSessionPreferenceOverrides,
+  FollowUpBehavior,
   PageContextExtractMode,
   SendShortcut,
 } from "../../shared/types";
@@ -22,6 +23,7 @@ export function createDefaultChatPreferences(): ChatPreferenceValues {
     maxTokens: 1024,
     topK: undefined,
     sendShortcut: "enter",
+    followUpBehavior: "queue",
     historyDrawerDefaultOpen: true,
     injectPageContextByDefault: true,
     extractHtmlByDefault: false,
@@ -69,6 +71,7 @@ export function normalizeChatPreferences(value?: Partial<ChatPreferenceValues>):
     maxTokens: Math.round(normalizeNumber(value?.maxTokens, defaults.maxTokens, 1, 200_000)),
     topK: normalizeOptionalInteger(value?.topK, 1, 1_000),
     sendShortcut: normalizeSendShortcut(value?.sendShortcut),
+    followUpBehavior: normalizeFollowUpBehavior(value?.followUpBehavior),
     historyDrawerDefaultOpen: normalizeBoolean(value?.historyDrawerDefaultOpen, defaults.historyDrawerDefaultOpen),
     injectPageContextByDefault: normalizeBoolean(value?.injectPageContextByDefault, defaults.injectPageContextByDefault),
     extractHtmlByDefault: normalizeBoolean(value?.extractHtmlByDefault, defaults.extractHtmlByDefault),
@@ -83,6 +86,10 @@ function normalizeSendShortcut(value: unknown): SendShortcut {
   return isSendShortcutValue(value) ? value : "enter";
 }
 
+function normalizeFollowUpBehavior(value: unknown): FollowUpBehavior {
+  return value === "guide" ? "guide" : "queue";
+}
+
 function normalizeToolCallDisplayMode(value: unknown): ChatPreferenceValues["toolCallDisplayMode"] {
   return value === "compact" || value === "assistant_grouped" ? value : "assistant_grouped";
 }
@@ -92,7 +99,7 @@ export function normalizeBrowserAutomationMode(value: unknown): BrowserAutomatio
 }
 
 function isSendShortcutValue(value: unknown): value is SendShortcut {
-  return typeof value === "string" && ["enter", "shift_enter", "ctrl_enter", "ctrl_shift_enter", "alt_enter"].includes(value);
+  return typeof value === "string" && ["enter", "shift_enter", "ctrl_enter", "alt_enter"].includes(value);
 }
 
 export function normalizeChatPreferenceOverrides(value?: ChatSessionPreferenceOverrides): ChatSessionPreferenceOverrides {

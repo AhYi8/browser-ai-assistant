@@ -122,6 +122,8 @@ describe("通用模型工具循环", () => {
       content: "工具结果",
     }));
 
+    const guidanceItems = [{ id: "follow-up-visible", content: "请优先检查登录表单" }];
+
     await runModelToolLoop({
       initialMessages: baseMessages,
       tools: [tool],
@@ -222,6 +224,182 @@ describe("通用模型工具循环", () => {
         expect.objectContaining({ role: "tool", toolCallId: "call-1", content: "页面标题：示例" }),
       ]),
     );
+  });
+
+  it("运行中引导会在下一轮模型决策前作为用户补充注入", async () => {
+    const requestModel = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        content: "先读取页面。",
+        toolCalls: [{ id: "call-guide", name: "read_page_context", arguments: { mode: "text" } }],
+      })
+      .mockResolvedValueOnce({ ok: true, content: "已按引导调整" });
+    const executeTool: ModelToolExecutor = vi.fn(async (call) => ({
+      toolCallId: call.id,
+      name: call.name,
+      content: "页面内容",
+    }));
+    const consumeGuidance = vi.fn(() => [
+      {
+        id: "follow-up-1",
+        content: "请优先检查登录表单",
+      },
+    ]);
+
+    await runModelToolLoop({
+      initialMessages: baseMessages,
+      tools: [tool],
+      enabledToolIds: [tool.id],
+      requestModel,
+      executeTool,
+      consumeGuidance,
+    });
+
+    expect(requestModel).toHaveBeenLastCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "user",
+          content: expect.stringContaining("用户在当前任务运行中补充了以下引导：\n请优先检查登录表单"),
+        }),
+      ]),
+    );
+    expect(consumeGuidance).toHaveBeenCalled();
+  });
+
+  it("运行中引导会携带 Prompt 调用快照注入模型请求", async () => {
+    const requestModel = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        content: "先读取页面。",
+        toolCalls: [{ id: "call-guide-prompt", name: "read_page_context", arguments: { mode: "text" } }],
+      })
+      .mockResolvedValueOnce({ ok: true, content: "已按 Prompt 引导调整" });
+    const executeTool: ModelToolExecutor = vi.fn(async (call) => ({
+      toolCallId: call.id,
+      name: call.name,
+      content: "页面内容",
+    }));
+    const guidanceItems = [
+      {
+        id: "follow-up-prompt",
+        content: "补充关注异常态",
+        promptInvocations: [
+          {
+            promptId: "prompt-1",
+            title: "检查清单",
+            contentSnapshot: "先核对按钮状态，再核对错误提示。",
+          },
+        ],
+      },
+    ];
+
+    await runModelToolLoop({
+      initialMessages: baseMessages,
+      tools: [tool],
+      enabledToolIds: [tool.id],
+      requestModel,
+      executeTool,
+      consumeGuidance: vi.fn(() => guidanceItems.splice(0)),
+    });
+
+    expect(requestModel).toHaveBeenLastCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "user",
+          content: expect.stringContaining("已调用提示词：\n1. 检查清单\n先核对按钮状态，再核对错误提示。"),
+        }),
+        expect.objectContaining({
+          role: "user",
+          content: expect.stringContaining("用户输入：\n补充关注异常态"),
+        }),
+      ]),
+    );
+  });
+
+  it("运行中纯图片引导会携带图片附件注入模型请求", async () => {
+    const imageAttachment = {
+      id: "image-1",
+      name: "截图.png",
+      mediaType: "image/png",
+      dataUrl: "data:image/png;base64,aW1hZ2U=",
+    };
+    const requestModel = vi.fn().mockResolvedValue({ ok: true, content: "已查看图片引导" });
+    const executeTool = vi.fn<ModelToolExecutor>();
+    const guidanceItems = [
+      {
+        id: "follow-up-image",
+        content: "",
+        attachments: [imageAttachment],
+      },
+    ];
+
+    await runModelToolLoop({
+      initialMessages: baseMessages,
+      tools: [tool],
+      enabledToolIds: [tool.id],
+      requestModel,
+      executeTool,
+      consumeGuidance: vi.fn(() => guidanceItems.splice(0)),
+    });
+
+    expect(requestModel).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "user",
+          content: expect.stringContaining("用户补充了图片附件。"),
+          attachments: [imageAttachment],
+        }),
+      ]),
+    );
+  });
+
+  it("运行中引导被消费时会输出已引导过程提示", async () => {
+    const displayedMessages: Array<{ role: string; content: string; assistantMessageKind?: string; toolCallRecords?: Array<{ displayName: string; status: string }> }> = [];
+    const requestModel = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        content: "先读取页面。",
+        toolCalls: [{ id: "call-guide-visible", name: "read_page_context", arguments: { mode: "text" } }],
+      })
+      .mockResolvedValueOnce({ ok: true, content: "已按引导调整" });
+    const executeTool: ModelToolExecutor = vi.fn(async (call) => ({
+      toolCallId: call.id,
+      name: call.name,
+      content: "页面内容",
+    }));
+    const guidanceItems = [{ id: "follow-up-visible", content: "请优先检查登录表单" }];
+
+    await runModelToolLoop({
+      initialMessages: baseMessages,
+      tools: [tool],
+      enabledToolIds: [tool.id],
+      requestModel,
+      executeTool,
+      consumeGuidance: vi.fn(() => guidanceItems.splice(0)),
+      onToolTurnMessage: (message) => displayedMessages.push(message),
+    });
+
+    expect(displayedMessages).toEqual([
+      expect.objectContaining({
+        role: "assistant",
+        assistantMessageKind: "tool_call_turn",
+        content: "",
+        toolCallRecords: [
+          expect.objectContaining({
+            displayName: "已引导对话",
+            status: "success",
+          }),
+        ],
+      }),
+      expect.objectContaining({
+        role: "assistant",
+        assistantMessageKind: "tool_call_turn",
+        content: "先读取页面。",
+      }),
+    ]);
   });
 
   it("同轮存在浏览器自动化工具时串行执行，避免一次性授权并发覆盖", async () => {

@@ -1,4 +1,5 @@
-import type { AutomationPlaybookSelection, ChatMessage, ChatTokenUsageEntry, ChatToolAttachment, ChatToolCallRecord } from "../../shared/types";
+import { buildPromptExpandedUserContent } from "../../shared/chat/buildChatRequestMessages";
+import type { AutomationPlaybookSelection, ChatImageAttachment, ChatMessage, ChatPromptInvocation, ChatTokenUsageEntry, ChatToolAttachment, ChatToolCallRecord } from "../../shared/types";
 import type { ModelRequestMessage, ModelResponseData, ModelToolCall, ModelToolExecutor, ModelToolRegistryEntry, ModelToolResultMessage } from "../../shared/models/types";
 import { isBrowserAutomationToolId } from "../../shared/models/toolRegistry";
 import { createAutomationReportToolAttachment } from "../../shared/toolArtifacts";
@@ -13,6 +14,17 @@ const FINAL_RESPONSE_INSTRUCTION = [
   "不要再声称将继续调用、测试或等待工具；如果信息不足，请明确说明已完成的部分和无法继续验证的原因。",
 ].join("\n");
 
+const GUIDANCE_PREFIX = "用户在当前任务运行中补充了以下引导：";
+const GUIDANCE_SUFFIX = "请在不丢弃已完成结果的前提下，优先依据该引导调整后续工具调用和最终回答。若引导与原目标冲突，说明采用了新的用户引导。";
+
+interface GuidanceItem {
+  id: string;
+  content: string;
+  attachments?: ChatImageAttachment[];
+  promptInvocations?: ChatPromptInvocation[];
+  userMessageId?: string;
+}
+
 export interface RunModelToolLoopInput {
   initialMessages: ModelRequestMessage[];
   tools: ModelToolRegistryEntry[];
@@ -24,6 +36,8 @@ export interface RunModelToolLoopInput {
   onToolTurnMessage?: (message: ChatMessage) => void;
   onToolCallStart?: (record: ChatToolCallRecord) => void;
   onToolCallComplete?: (record: ChatToolCallRecord, attachments: ChatToolAttachment[]) => void;
+  consumeGuidance?: () => GuidanceItem[];
+  onGuidanceConsumed?: (followUpId: string) => void;
   maxIterations?: number;
   signal?: AbortSignal;
 }
@@ -49,6 +63,7 @@ export async function runModelToolLoop(input: RunModelToolLoopInput): Promise<Mo
     if (input.signal?.aborted) {
       return createAbortResponse();
     }
+    messages = appendGuidanceMessages(messages, input);
     const response = await input.requestModel(messages);
     if (input.signal?.aborted) {
       return createAbortResponse();
@@ -167,6 +182,7 @@ export async function runModelToolLoop(input: RunModelToolLoopInput): Promise<Mo
     if (input.signal?.aborted) {
       return createAbortResponse();
     }
+    messages = appendGuidanceMessages(messages, input);
     const finalResponse = await input.requestFinalModel(createFinalRequestMessages(messages));
     if (input.signal?.aborted) {
       return createAbortResponse();
@@ -188,6 +204,105 @@ export async function runModelToolLoop(input: RunModelToolLoopInput): Promise<Mo
   }
 
   return lastResponse ?? { ok: false, message: "工具调用超过最大轮次，已停止本次请求。" };
+}
+
+function appendGuidanceMessages(messages: ModelRequestMessage[], input: RunModelToolLoopInput): ModelRequestMessage[] {
+  const guidanceItems = input.consumeGuidance?.() ?? [];
+  if (guidanceItems.length === 0) {
+    return messages;
+  }
+
+  const guidanceMessages = guidanceItems
+    .map((item) => createGuidanceModelMessage(item))
+    .filter((message) => Boolean(message.content.trim()) || Boolean(message.attachments?.length));
+  for (const item of guidanceItems) {
+    const createdAt = Date.now();
+    input.onToolTurnMessage?.(createGuidanceToolTurnMessage(item, createdAt));
+    input.onGuidanceConsumed?.(item.id);
+  }
+
+  return guidanceMessages.length ? [...messages, ...guidanceMessages] : messages;
+}
+
+function createGuidanceModelMessage(item: GuidanceItem): ChatMessage {
+  const guidanceContent = buildGuidanceContent(item);
+  return createGuidanceMessage(
+    item.id,
+    `${GUIDANCE_PREFIX}\n${guidanceContent}\n\n${GUIDANCE_SUFFIX}`,
+    item.attachments,
+  );
+}
+
+function createGuidanceMessage(id: string, content: string, attachments?: ChatImageAttachment[], createdAt = Date.now()): ChatMessage {
+  return {
+    id,
+    role: "user",
+    content,
+    createdAt,
+    modelId: "",
+    endpointType: "openai_chat",
+    streamMode: false,
+    systemPrompt: "",
+    contextPrompt: "",
+    contextMode: "text",
+    attachments,
+  };
+}
+
+function createGuidanceToolTurnMessage(item: GuidanceItem, createdAt: number): ChatMessage {
+  return {
+    id: `message-${createdAt}-guided-follow-up-${item.id}`,
+    role: "assistant",
+    assistantMessageKind: "tool_call_turn",
+    content: "",
+    createdAt,
+    modelId: "",
+    endpointType: "openai_chat",
+    streamMode: false,
+    systemPrompt: "",
+    contextPrompt: "",
+    contextMode: "text",
+    toolCallRecords: [
+      {
+        id: `guided-follow-up-${item.id}`,
+        toolId: "chat.follow_up_guidance",
+        name: "chat_follow_up_guidance",
+        displayName: "已引导对话",
+        arguments: {},
+        status: "success",
+        startedAt: createdAt,
+        completedAt: createdAt,
+        resultSummary: getGuidanceResultSummary(item),
+      },
+    ],
+  };
+}
+
+function buildGuidanceContent(item: GuidanceItem): string {
+  const expandedContent = item.promptInvocations?.length
+    ? buildPromptExpandedUserContent({
+        content: item.content,
+        promptInvocations: item.promptInvocations,
+      }).trim()
+    : item.content.trim();
+  if (expandedContent) {
+    return expandedContent;
+  }
+  return item.attachments?.length ? "用户补充了图片附件。" : "";
+}
+
+function getGuidanceResultSummary(item: GuidanceItem): string {
+  const content = item.content.trim();
+  if (content) {
+    return content;
+  }
+  if (item.promptInvocations?.length) {
+    return "已调用提示词";
+  }
+  if (item.attachments?.length) {
+    return "图片消息";
+  }
+  return "";
 }
 
 function createFinalRequestMessages(messages: ModelRequestMessage[]): ModelRequestMessage[] {

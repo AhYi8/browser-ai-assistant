@@ -10,7 +10,7 @@ import {
 import { hasTokenUsage, sumSessionTokenUsage } from "../../shared/chat/tokenUsage";
 import { isPngDataUrl, isTabCaptureImageAttachment, TAB_CAPTURE_VISIBLE_MESSAGE_TYPE, type TabCaptureVisibleResponse } from "../../shared/tabCapture";
 import type { ChatImageAttachment, ChatPromptInvocation, ChatTokenUsage, PromptTemplate, SendShortcut } from "../../shared/types";
-import { useAppStore } from "../state/appStore";
+import { useAppStore, type ChatFollowUpItem } from "../state/appStore";
 import { BoundaryChoiceDialog } from "./BoundaryChoiceDialog";
 import { PromptInlineEditor } from "./PromptInlineEditor";
 
@@ -19,6 +19,7 @@ const MAX_IMAGE_ATTACHMENT_BYTES = 5 * 1024 * 1024;
 const ACCEPTED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
 const TOKEN_KILO_THRESHOLD = 1_000;
 const TOKEN_MEGA_THRESHOLD = 1_000_000;
+const EMPTY_FOLLOW_UPS: ChatFollowUpItem[] = [];
 const SWITCH_ICON_PATHS = {
   appendContext: "M7 7h10M12 7v10M6 3h12a3 3 0 0 1 3 3v12a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3Z",
   stream: "M13 2 5 14h6l-1 8 8-12h-6l1-8Z",
@@ -97,6 +98,7 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   const [contextDialogOpen, setContextDialogOpen] = useState(false);
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
+  const [followUpQueueOpen, setFollowUpQueueOpen] = useState(false);
   const [toolMenuPosition, setToolMenuPosition] = useState<{ left: number; top: number } | undefined>();
   const [composing, setComposing] = useState(false);
   const imageInputId = useId();
@@ -104,6 +106,7 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   const toolMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const currentModelSupportsVision = useAppStore((state) => Boolean(state.models.find((model) => model.id === state.selectedModelId)?.supportsVision));
   const sendShortcut = useAppStore((state) => state.chatPreferences.sendShortcut);
+  const followUpBehavior = useAppStore((state) => state.chatPreferences.followUpBehavior);
   const toolCallingEnabled = useAppStore((state) => {
     const activeSession = state.chatSessions.find((session) => session.id === state.activeSessionId);
     return activeSession?.chatPreferenceOverrides?.toolCallingEnabled ?? state.chatPreferences.toolCallingEnabled;
@@ -126,6 +129,10 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
       ? state.privateChatSession
       : state.chatSessions.find((session) => session.id === state.activeSessionId),
   );
+  const activeFollowUps = useAppStore((state) => {
+    const sessionId = state.privateModeActive ? state.privateChatSession?.id : state.activeSessionId;
+    return sessionId ? state.followUpsBySessionId[sessionId] ?? EMPTY_FOLLOW_UPS : EMPTY_FOLLOW_UPS;
+  });
   const contextTabs = useAppStore((state) => state.contextTabs);
   const contextTabsLoading = useAppStore((state) => state.contextTabsLoading);
   const contextTabsError = useAppStore((state) => state.contextTabsError);
@@ -140,6 +147,9 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   const loadContextTabs = useAppStore((state) => state.loadContextTabs);
   const toggleContextTabSelection = useAppStore((state) => state.toggleContextTabSelection);
   const sendChatMessage = useAppStore((state) => state.sendChatMessage);
+  const submitChatFollowUp = useAppStore((state) => state.submitChatFollowUp);
+  const removeChatFollowUp = useAppStore((state) => state.removeChatFollowUp);
+  const guideChatFollowUp = useAppStore((state) => state.guideChatFollowUp);
   const abortActiveChatTask = useAppStore((state) => state.abortActiveChatTask);
   const respondBoundaryChoice = useAppStore((state) => state.respondBoundaryChoice);
   const registeredTools = useMemo(() => getRegisteredModelTools(mcpSettings), [mcpSettings]);
@@ -248,6 +258,22 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
     await sendChatMessage(content, sendingAttachments, sendingPromptInvocations);
   };
 
+  const submitFollowUp = async (behavior = followUpBehavior) => {
+    const content = input.trim();
+    if (!content && attachments.length === 0 && promptInvocations.length === 0) {
+      return;
+    }
+
+    setInput("");
+    setPromptInvocations([]);
+    setSlashMenuOpen(false);
+    const sendingAttachments = attachments;
+    const sendingPromptInvocations = promptInvocations;
+    setAttachments([]);
+    setAttachmentError("");
+    await submitChatFollowUp(content, sendingAttachments, sendingPromptInvocations, { behavior });
+  };
+
   const handleInputKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
     const isComposingInput = composing || event.nativeEvent.isComposing;
     if (slashMenuOpen) {
@@ -276,12 +302,19 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
       }
     }
 
-    if (isComposingInput || !isSendShortcut(event, sendShortcut)) {
+    const isOppositeFollowUpShortcut = sending && isCtrlShiftEnter(event);
+    if (isComposingInput || (!isOppositeFollowUpShortcut && !isSendShortcut(event, sendShortcut))) {
       return;
     }
 
     event.preventDefault();
-    if (!canSend || sending || (!input.trim() && attachments.length === 0 && promptInvocations.length === 0)) {
+    const hasDraft = input.trim().length > 0 || attachments.length > 0 || promptInvocations.length > 0;
+    if (!hasDraft || (!sending && !canSend)) {
+      return;
+    }
+
+    if (sending) {
+      void submitFollowUp(isOppositeFollowUpShortcut ? getOppositeFollowUpBehavior(followUpBehavior) : followUpBehavior);
       return;
     }
 
@@ -457,9 +490,91 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   const hasDraft = input.trim().length > 0 || attachments.length > 0 || promptInvocations.length > 0;
   const canSubmit = canSend && hasDraft;
   const sessionTokenUsage = sumSessionTokenUsage(activeSession);
+  const submitButtonLabel = sending && !hasDraft ? "终止" : "发送";
+  const visibleQueuedFollowUps = activeFollowUps.filter((item) => item.behavior === "queue");
+  const nextFollowUp = visibleQueuedFollowUps[0];
 
   return (
     <section className="chat-composer" aria-label="聊天输入区">
+      {activeSession && visibleQueuedFollowUps.length > 0 ? (
+        <div className={followUpQueueOpen ? "follow-up-queue follow-up-queue-expanded" : "follow-up-queue follow-up-queue-collapsed"} aria-label="排队对话">
+          {followUpQueueOpen ? (
+            <>
+              <div className="follow-up-queue-header">
+                <button
+                  className="follow-up-queue-icon-button follow-up-queue-toggle"
+                  type="button"
+                  aria-label="折叠排队对话"
+                  aria-expanded={followUpQueueOpen}
+                  title="折叠排队对话"
+                  onClick={() => setFollowUpQueueOpen(false)}
+                >
+                  <CollapseQueueIcon />
+                </button>
+              </div>
+              <div className="follow-up-queue-list">
+              {visibleQueuedFollowUps.map((item, index) => (
+                <div className="follow-up-queue-item" key={item.id}>
+                  <span className="follow-up-queue-content">{item.content || "图片消息"}</span>
+                  {item.attachments?.length ? <span className="follow-up-queue-meta">{item.attachments.length} 张图片</span> : null}
+                  <button
+                    className="follow-up-queue-icon-button follow-up-remove-button"
+                    type="button"
+                    aria-label={`删除第 ${index + 1} 条排队对话：${formatFollowUpActionLabel(item)}`}
+                    title={`删除第 ${index + 1} 条排队对话`}
+                    onClick={() => removeChatFollowUp(activeSession.id, item.id)}
+                  >
+                    <DeleteFollowUpIcon />
+                    </button>
+                  <button
+                    className="follow-up-queue-icon-button follow-up-guide-button"
+                    type="button"
+                    aria-label={`引导第 ${index + 1} 条排队对话：${formatFollowUpActionLabel(item)}`}
+                    title={`引导第 ${index + 1} 条排队对话`}
+                    onClick={() => guideChatFollowUp(activeSession.id, item.id)}
+                  >
+                    <GuideFollowUpIcon />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : nextFollowUp ? (
+            <div className="follow-up-queue-preview" aria-label="下一条排队对话">
+              <span className="follow-up-queue-content">{nextFollowUp.content || "图片消息"}</span>
+              {nextFollowUp.attachments?.length ? <span className="follow-up-queue-meta">{nextFollowUp.attachments.length} 张图片</span> : null}
+              <button
+                className="follow-up-queue-icon-button follow-up-remove-button"
+                type="button"
+                aria-label={`删除下一条排队对话：${formatFollowUpActionLabel(nextFollowUp)}`}
+                title="删除下一条排队对话"
+                onClick={() => removeChatFollowUp(activeSession.id, nextFollowUp.id)}
+              >
+                <DeleteFollowUpIcon />
+              </button>
+              <button
+                className="follow-up-queue-icon-button follow-up-guide-button"
+                type="button"
+                aria-label={`引导下一条排队对话：${formatFollowUpActionLabel(nextFollowUp)}`}
+                title="引导下一条排队对话"
+                onClick={() => guideChatFollowUp(activeSession.id, nextFollowUp.id)}
+              >
+                <GuideFollowUpIcon />
+              </button>
+              <button
+                className="follow-up-queue-icon-button follow-up-queue-toggle"
+                type="button"
+                aria-label="展开排队对话"
+                aria-expanded={followUpQueueOpen}
+                title="展开排队对话"
+                onClick={() => setFollowUpQueueOpen(true)}
+              >
+                <ExpandQueueIcon />
+              </button>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       {attachments.length > 0 ? (
         <div className="image-preview-strip" aria-label="已添加图片">
           {attachments.map((attachment) => (
@@ -726,12 +841,18 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
           />
         </div>
         <button
-          className={sending ? "ui-button-primary composer-abort-button" : "ui-button-primary"}
+          className={sending && !hasDraft ? "ui-button-primary composer-abort-button" : "ui-button-primary"}
           type="button"
           disabled={sending ? false : !canSubmit}
-          onClick={() => (sending ? abortActiveChatTask() : void submit())}
+          onClick={() => {
+            if (sending && !hasDraft) {
+              abortActiveChatTask();
+              return;
+            }
+            void (sending ? submitFollowUp() : submit());
+          }}
         >
-          {sending ? "终止" : "发送"}
+          {submitButtonLabel}
         </button>
       </div>
       {previewAttachment ? (
@@ -970,11 +1091,60 @@ function isSendShortcut(event: ReactKeyboardEvent<HTMLElement>, shortcut: SendSh
       return modifiers.shiftKey && !modifiers.ctrlKey && !modifiers.altKey && !modifiers.metaKey;
     case "ctrl_enter":
       return modifiers.ctrlKey && !modifiers.shiftKey && !modifiers.altKey && !modifiers.metaKey;
-    case "ctrl_shift_enter":
-      return modifiers.ctrlKey && modifiers.shiftKey && !modifiers.altKey && !modifiers.metaKey;
     case "alt_enter":
       return modifiers.altKey && !modifiers.shiftKey && !modifiers.ctrlKey && !modifiers.metaKey;
     default:
       return false;
   }
+}
+
+function isCtrlShiftEnter(event: ReactKeyboardEvent<HTMLElement>): boolean {
+  return event.key === "Enter" && event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey && !event.nativeEvent.isComposing;
+}
+
+function getOppositeFollowUpBehavior(behavior: "queue" | "guide"): "queue" | "guide" {
+  return behavior === "queue" ? "guide" : "queue";
+}
+
+function formatFollowUpActionLabel(item: ChatFollowUpItem): string {
+  const content = item.content.trim() || "图片消息";
+  return content.length > 24 ? `${content.slice(0, 24)}...` : content;
+}
+
+function ExpandQueueIcon() {
+  return (
+    <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24">
+      <path d="M9 4H4v5" />
+      <path d="M15 20h5v-5" />
+    </svg>
+  );
+}
+
+function CollapseQueueIcon() {
+  return (
+    <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24">
+      <path d="M9 9H4V4" />
+      <path d="M15 15h5v5" />
+    </svg>
+  );
+}
+
+function DeleteFollowUpIcon() {
+  return (
+    <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24">
+      <path d="M7 7l10 10" />
+      <path d="M17 7 7 17" />
+    </svg>
+  );
+}
+
+function GuideFollowUpIcon() {
+  return (
+    <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24">
+      <path d="M5 12h12" />
+      <path d="m13 8 4 4-4 4" />
+      <path d="M5 6h5" />
+      <path d="M5 18h5" />
+    </svg>
+  );
 }

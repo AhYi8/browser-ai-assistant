@@ -18,8 +18,12 @@ const sendShortcutOptions: Array<{ value: SendShortcut; label: string }> = [
   { value: "enter", label: "Enter" },
   { value: "shift_enter", label: "Shift+Enter" },
   { value: "ctrl_enter", label: "Ctrl+Enter" },
-  { value: "ctrl_shift_enter", label: "Ctrl+Shift+Enter" },
   { value: "alt_enter", label: "Alt+Enter" },
+];
+
+const followUpBehaviorOptions: Array<{ value: ChatPreferenceValues["followUpBehavior"]; label: string }> = [
+  { value: "queue", label: "排队" },
+  { value: "guide", label: "引导" },
 ];
 
 const browserAutomationModeOptions: Array<{ value: BrowserAutomationMode; label: string }> = [
@@ -278,6 +282,22 @@ export function ChatPreferenceSettings() {
             </option>
           ))}
         </select>
+      </label>
+      <label className="chat-preference-field">
+        跟进行为
+        <select
+          className="ui-input chat-preference-shortcut-select"
+          aria-label="跟进行为"
+          value={chatPreferences.followUpBehavior}
+          onChange={(event) => void updateChatPreferences({ followUpBehavior: event.target.value as ChatPreferenceValues["followUpBehavior"] })}
+        >
+          {followUpBehaviorOptions.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+        <span className="ui-muted text-xs">运行中发送草稿时使用；Ctrl+Shift+Enter 会执行相反操作。</span>
       </label>
       <label className="chat-preference-switch">
         <input
