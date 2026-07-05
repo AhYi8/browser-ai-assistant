@@ -1,16 +1,21 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, ClipboardEvent as ReactClipboardEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
+import { estimateChatContextTokens } from "../../shared/chat/contextCompression";
+import { createPageContextPrompt } from "../../shared/chat/pageContextPrompt";
 import {
   MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
+  TAVILY_SEARCH_TOOL_ID,
   getModelToolGroups,
   getRegisteredModelTools,
   isDebuggerRuntimeRequirement,
   isToolRuntimeAvailable,
 } from "../../shared/models/toolRegistry";
+import { isModelToolConfigured } from "../../shared/webSearch/toolAvailability";
 import { hasTokenUsage, sumSessionTokenUsage } from "../../shared/chat/tokenUsage";
 import { isPngDataUrl, isTabCaptureImageAttachment, TAB_CAPTURE_VISIBLE_MESSAGE_TYPE, type TabCaptureVisibleResponse } from "../../shared/tabCapture";
-import type { ChatImageAttachment, ChatPromptInvocation, ChatTokenUsage, PromptTemplate, SendShortcut } from "../../shared/types";
+import type { ChatImageAttachment, ChatMessage, ChatPromptInvocation, ChatTokenUsage, PromptTemplate, SendShortcut } from "../../shared/types";
 import { useAppStore, type ChatFollowUpItem } from "../state/appStore";
+import { resolveEffectiveChatPreferences } from "../state/appStorePreferences";
 import { BoundaryChoiceDialog } from "./BoundaryChoiceDialog";
 import { PromptInlineEditor } from "./PromptInlineEditor";
 
@@ -129,6 +134,8 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
       ? state.privateChatSession
       : state.chatSessions.find((session) => session.id === state.activeSessionId),
   );
+  const selectedModelId = useAppStore((state) => state.selectedModelId);
+  const chatPreferences = useAppStore((state) => state.chatPreferences);
   const activeFollowUps = useAppStore((state) => {
     const sessionId = state.privateModeActive ? state.privateChatSession?.id : state.activeSessionId;
     return sessionId ? state.followUpsBySessionId[sessionId] ?? EMPTY_FOLLOW_UPS : EMPTY_FOLLOW_UPS;
@@ -137,6 +144,7 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   const contextTabsLoading = useAppStore((state) => state.contextTabsLoading);
   const contextTabsError = useAppStore((state) => state.contextTabsError);
   const mcpSettings = useAppStore((state) => state.mcpSettings);
+  const webSearchSettings = useAppStore((state) => state.webSearchSettings);
   const setStreamMode = useAppStore((state) => state.setStreamMode);
   const setBrowserAutomationMode = useAppStore((state) => state.setBrowserAutomationMode);
   const setContextMode = useAppStore((state) => state.setContextMode);
@@ -155,11 +163,57 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   const registeredTools = useMemo(() => getRegisteredModelTools(mcpSettings), [mcpSettings]);
   const registeredToolGroups = useMemo(() => getModelToolGroups(registeredTools), [registeredTools]);
   const effectiveBrowserAutomationMode: BrowserAutomationMode = browserControlEnabled ? browserAutomationMode : "normal_restricted";
+  const effectiveChatPreferences = useMemo(
+    () => resolveEffectiveChatPreferences(chatPreferences, activeSession?.chatPreferenceOverrides),
+    [activeSession?.chatPreferenceOverrides, chatPreferences],
+  );
+  const requestPageContext = useMemo(() => {
+    const shouldInjectPageContext = (activeSession?.messages.length ?? 0) === 0 && appendPageContextToSystemPrompt;
+    return shouldInjectPageContext ? (pageContext.formatted ? pageContext.text : createPageContextPrompt(pageContext)) : "";
+  }, [activeSession?.messages.length, appendPageContextToSystemPrompt, pageContext]);
+  const currentContextTokens = useMemo(() => {
+    const trimmedInput = input.trim();
+    const hasDraft = Boolean(trimmedInput || attachments.length || promptInvocations.length);
+    const draftMessage: ChatMessage | undefined = hasDraft
+      ? {
+          id: "current-draft-message",
+          role: "user",
+          content: trimmedInput,
+          createdAt: 0,
+          modelId: activeSession?.selectedModelId || selectedModelId,
+          endpointType: "openai_chat",
+          streamMode,
+          systemPrompt: effectiveChatPreferences.systemPrompt,
+          contextPrompt: requestPageContext,
+          contextMode,
+          attachments: attachments.length ? attachments : undefined,
+          promptInvocations: promptInvocations.length ? promptInvocations : undefined,
+        }
+      : undefined;
+    return estimateChatContextTokens({
+        systemPrompt: effectiveChatPreferences.systemPrompt,
+        pageContext: requestPageContext,
+        messages: draftMessage ? [...(activeSession?.messages ?? []), draftMessage] : activeSession?.messages ?? [],
+        tokenUsageEntries: activeSession?.tokenUsageEntries,
+      });
+  }, [
+    activeSession?.messages,
+    activeSession?.selectedModelId,
+    activeSession?.tokenUsageEntries,
+    attachments,
+    contextMode,
+    effectiveChatPreferences.systemPrompt,
+    input,
+    promptInvocations,
+    requestPageContext,
+    selectedModelId,
+    streamMode,
+  ]);
   const runtimeEditableToolIds = useMemo(
     () => registeredTools
-      .filter((tool) => isToolRuntimeAvailable(tool, browserControlEnabled, effectiveBrowserAutomationMode))
+      .filter((tool) => isToolRuntimeAvailable(tool, browserControlEnabled, effectiveBrowserAutomationMode) && isModelToolConfigured(tool, webSearchSettings))
       .map((tool) => tool.id),
-    [browserControlEnabled, effectiveBrowserAutomationMode, registeredTools],
+    [browserControlEnabled, effectiveBrowserAutomationMode, registeredTools, webSearchSettings],
   );
 
   useEffect(() => {
@@ -458,6 +512,9 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
     if (tool && !isToolRuntimeAvailable(tool, browserControlEnabled, effectiveBrowserAutomationMode)) {
       return;
     }
+    if (tool && !isModelToolConfigured(tool, webSearchSettings)) {
+      return;
+    }
     const nextToolIds = checked ? [...enabledToolIds, toolId] : enabledToolIds.filter((id) => id !== toolId);
     void updateActiveSessionChatPreferences({ enabledToolIds: Array.from(new Set(nextToolIds)) });
   };
@@ -596,7 +653,7 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
         </div>
       ) : null}
       <div className="context-strip">
-        <TokenUsageMeter usage={sessionTokenUsage} sending={sending} />
+        <TokenUsageMeter usage={sessionTokenUsage} contextTokens={currentContextTokens} sending={sending} />
         <button
           className="ui-button-secondary context-view-button"
           type="button"
@@ -789,9 +846,15 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
                         {group.tools.map((tool) => {
                           const toolDisplayName = tool.groupId === "mcp_remote" ? (tool.displayName ?? tool.name) : tool.name;
                           const runtimeAvailable = isToolRuntimeAvailable(tool, browserControlEnabled, effectiveBrowserAutomationMode);
+                          const configured = isModelToolConfigured(tool, webSearchSettings);
                           const debuggerRuntime = tool.toolClassification ? isDebuggerRuntimeRequirement(tool.toolClassification.runtime) : false;
-                          const active = runtimeAvailable && enabledToolIds.includes(tool.id);
-                          const disabled = !runtimeAvailable;
+                          const active = runtimeAvailable && configured && enabledToolIds.includes(tool.id);
+                          const disabled = !runtimeAvailable || !configured;
+                          const unavailableDescription = !runtimeAvailable
+                            ? "需开启浏览器控制"
+                            : tool.id === TAVILY_SEARCH_TOOL_ID && !configured
+                              ? "请先配置 Tavily API Key"
+                              : "";
                           return (
                             <button
                               key={tool.id}
@@ -811,7 +874,7 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
                             onClick={() => handleToolToggle(tool.id, !active)}
                           >
                             <span className="composer-tool-menu-item-name">{toolDisplayName}</span>
-                            {!runtimeAvailable ? <span className="composer-tool-menu-item-description">需开启浏览器控制</span> : null}
+                            {unavailableDescription ? <span className="composer-tool-menu-item-description">{unavailableDescription}</span> : null}
                             {tool.description ? <span className="composer-tool-menu-item-description">{tool.description}</span> : null}
                           </button>
                           );
@@ -915,19 +978,23 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   );
 }
 
-function TokenUsageMeter({ usage, sending }: { usage: ChatTokenUsage; sending: boolean }) {
+function TokenUsageMeter({ usage, contextTokens, sending }: { usage: ChatTokenUsage; contextTokens: number; sending: boolean }) {
   const hasUsage = hasTokenUsage(usage);
   return (
-    <div className={`token-usage-meter${hasUsage ? "" : " token-usage-meter-empty"}`} aria-label="当前会话 Token 用量" title="当前会话 Token 用量">
+    <div className={`token-usage-meter${hasUsage ? "" : " token-usage-meter-empty"}`} aria-label="Token 用量统计" title="当前上下文与当前会话累计 Token 用量">
       {hasUsage ? (
         <>
+          <span>上下文 {formatTokenCount(contextTokens)}</span>
           <span>输入 {formatTokenCount(usage.inputTokens)}</span>
           <span>输出 {formatTokenCount(usage.outputTokens)}</span>
           <span>写入 {formatTokenCount(usage.cacheWriteTokens)}</span>
           <span>读取 {formatTokenCount(usage.cacheReadTokens)}</span>
         </>
       ) : (
-        <span>{sending ? "Token 统计中" : "Token 暂无"}</span>
+        <span>
+          上下文 {formatTokenCount(contextTokens)}
+          {sending ? " · Token 统计中" : ""}
+        </span>
       )}
     </div>
   );

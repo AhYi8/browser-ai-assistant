@@ -1,6 +1,7 @@
 import type { ChatMessage, ModelConfig } from "../types";
 import { collectMessageToolAttachments, formatToolAttachmentForPrompt } from "../toolArtifacts";
 import { truncateText } from "../utils/text";
+import { APPROX_CHARS_PER_TOKEN, estimateImageAttachmentTokens, getMessagesFromLatestContextSummary } from "./contextCompression";
 
 interface BuildChatRequestMessagesInput {
   model: ModelConfig;
@@ -9,19 +10,20 @@ interface BuildChatRequestMessagesInput {
   userMessage: ChatMessage;
   systemPrompt?: string;
   appendPageContextToSystemPrompt?: boolean;
+  maxContextTokens?: number;
 }
 
 export function buildChatRequestMessages(input: BuildChatRequestMessagesInput): ChatMessage[] {
   const effectiveSystemPrompt = input.systemPrompt ?? input.model.systemPrompt;
   const shouldAppendPageContext = input.appendPageContextToSystemPrompt ?? true;
-  const existingMessages = input.existingMessages.map(expandAssistantContextAttachments);
+  const existingMessages = getMessagesFromLatestContextSummary(input.existingMessages).map(expandAssistantContextAttachments);
   const pageContext = shouldAppendPageContext
     ? fitPageContextToModelBudget({
         systemPrompt: effectiveSystemPrompt,
         pageContext: input.pageContext,
         existingMessages,
         userMessage: input.userMessage,
-        maxTokens: input.model.maxTokens,
+        maxTokens: input.maxContextTokens ?? input.model.maxTokens,
       })
     : "";
   const systemContent = buildSystemContent(effectiveSystemPrompt, pageContext);
@@ -105,7 +107,6 @@ interface FitPageContextInput {
   maxTokens: number;
 }
 
-const APPROX_CHARS_PER_TOKEN = 2;
 const PAGE_CONTEXT_HEADER = "\n\n当前页面上下文：\n";
 
 function fitPageContextToModelBudget(input: FitPageContextInput): string {
@@ -119,7 +120,7 @@ function fitPageContextToModelBudget(input: FitPageContextInput): string {
     input.systemPrompt.trim().length +
     PAGE_CONTEXT_HEADER.length +
     input.existingMessages.reduce((total, message) => total + getMessageBudgetLength(message), 0) +
-    input.userMessage.content.length;
+    getMessageBudgetLength(input.userMessage);
   const availablePageContextLength = requestBudget - fixedContentLength;
 
   // 当前 maxTokens 同时参与请求预算估算；没有真实 tokenizer 时使用偏向中文场景的保守字符预算。
@@ -133,5 +134,7 @@ function fitPageContextToModelBudget(input: FitPageContextInput): string {
 function getMessageBudgetLength(message: ChatMessage): number {
   const thinkingLength = message.thinking?.length ?? 0;
   const reasoningLength = message.reasoningContent && message.reasoningContent !== message.thinking ? message.reasoningContent.length : 0;
-  return message.content.length + thinkingLength + reasoningLength;
+  const promptInvocationLength = (message.promptInvocations ?? []).reduce((total, prompt) => total + `${prompt.title}\n${prompt.contentSnapshot}`.length, 0);
+  const attachmentLength = estimateImageAttachmentTokens(message) * APPROX_CHARS_PER_TOKEN;
+  return message.content.length + thinkingLength + reasoningLength + promptInvocationLength + attachmentLength;
 }

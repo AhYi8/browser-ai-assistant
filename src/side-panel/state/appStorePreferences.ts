@@ -1,5 +1,10 @@
 import { DEFAULT_MODEL_REQUEST_RETRY_COUNT, normalizeModelRequestRetryCount } from "../../shared/models/modelRequestRetry";
 import { getRegisteredModelTools, isToolRuntimeAvailable, normalizeEnabledToolIds } from "../../shared/models/toolRegistry";
+import {
+  DEFAULT_CONTEXT_COMPRESSION_PROMPT,
+  DEFAULT_CONTEXT_COMPRESSION_THRESHOLD_PERCENT,
+  normalizeContextCompressionThresholdPercent,
+} from "../../shared/chat/contextCompression";
 import type { BrowserAutomationMode } from "../../shared/toolAuthorization";
 import type {
   ChatPreferenceValues,
@@ -12,6 +17,8 @@ import type {
 export function createDefaultChatPreferences(): ChatPreferenceValues {
   return {
     systemPrompt: "你是网页助手",
+    contextCompressionPrompt: DEFAULT_CONTEXT_COMPRESSION_PROMPT,
+    contextCompressionThresholdPercent: DEFAULT_CONTEXT_COMPRESSION_THRESHOLD_PERCENT,
     aiRequestRetryCount: DEFAULT_MODEL_REQUEST_RETRY_COUNT,
     browserAutomationMaxToolIterations: 32,
     defaultBrowserAutomationMode: "normal_restricted",
@@ -20,7 +27,7 @@ export function createDefaultChatPreferences(): ChatPreferenceValues {
     toolCallDisplayMode: "assistant_grouped",
     showToolCallProcessInAssistantMode: false,
     temperature: 0.7,
-    maxTokens: 1024,
+    maxTokens: 256000,
     topK: undefined,
     sendShortcut: "enter",
     followUpBehavior: "queue",
@@ -36,6 +43,8 @@ export type EffectiveChatPreferences = Required<
   Pick<
     ChatSessionPreferenceOverrides,
     | "systemPrompt"
+    | "contextCompressionPrompt"
+    | "contextCompressionThresholdPercent"
     | "aiRequestRetryCount"
     | "browserAutomationMaxToolIterations"
     | "toolCallingEnabled"
@@ -54,6 +63,13 @@ export function normalizeChatPreferences(value?: Partial<ChatPreferenceValues>):
       typeof value?.systemPrompt === "string" && value.systemPrompt.trim()
         ? value.systemPrompt.trim()
         : defaults.systemPrompt,
+    contextCompressionPrompt:
+      typeof value?.contextCompressionPrompt === "string" && value.contextCompressionPrompt.trim()
+        ? value.contextCompressionPrompt.trim()
+        : defaults.contextCompressionPrompt,
+    contextCompressionThresholdPercent: normalizeContextCompressionThresholdPercent(
+      value?.contextCompressionThresholdPercent ?? defaults.contextCompressionThresholdPercent,
+    ),
     aiRequestRetryCount: normalizeModelRequestRetryCount(value?.aiRequestRetryCount, defaults.aiRequestRetryCount),
     browserAutomationMaxToolIterations: normalizeIntegerWithoutRange(
       value?.browserAutomationMaxToolIterations,
@@ -68,7 +84,7 @@ export function normalizeChatPreferences(value?: Partial<ChatPreferenceValues>):
       defaults.showToolCallProcessInAssistantMode,
     ),
     temperature: normalizeNumber(value?.temperature, defaults.temperature, 0, 2),
-    maxTokens: Math.round(normalizeNumber(value?.maxTokens, defaults.maxTokens, 1, 200_000)),
+    maxTokens: Math.round(normalizeNumber(value?.maxTokens, defaults.maxTokens, 1, 1_000_000)),
     topK: normalizeOptionalInteger(value?.topK, 1, 1_000),
     sendShortcut: normalizeSendShortcut(value?.sendShortcut),
     followUpBehavior: normalizeFollowUpBehavior(value?.followUpBehavior),
@@ -108,6 +124,12 @@ export function normalizeChatPreferenceOverrides(value?: ChatSessionPreferenceOv
   if (typeof value?.systemPrompt === "string" && value.systemPrompt.trim()) {
     overrides.systemPrompt = value.systemPrompt.trim();
   }
+  if (typeof value?.contextCompressionPrompt === "string" && value.contextCompressionPrompt.trim()) {
+    overrides.contextCompressionPrompt = value.contextCompressionPrompt.trim();
+  }
+  if (value?.contextCompressionThresholdPercent !== undefined) {
+    overrides.contextCompressionThresholdPercent = normalizeContextCompressionThresholdPercent(value.contextCompressionThresholdPercent);
+  }
   if (value?.aiRequestRetryCount !== undefined) {
     overrides.aiRequestRetryCount = normalizeModelRequestRetryCount(value.aiRequestRetryCount, DEFAULT_CHAT_PREFERENCES.aiRequestRetryCount);
   }
@@ -127,7 +149,7 @@ export function normalizeChatPreferenceOverrides(value?: ChatSessionPreferenceOv
     overrides.temperature = normalizeNumber(value.temperature, DEFAULT_CHAT_PREFERENCES.temperature, 0, 2);
   }
   if (value?.maxTokens !== undefined) {
-    overrides.maxTokens = Math.round(normalizeNumber(value.maxTokens, DEFAULT_CHAT_PREFERENCES.maxTokens, 1, 200_000));
+    overrides.maxTokens = Math.round(normalizeNumber(value.maxTokens, DEFAULT_CHAT_PREFERENCES.maxTokens, 1, 1_000_000));
   }
   if (value?.topK !== undefined) {
     overrides.topK = normalizeOptionalInteger(value.topK, 1, 1_000);
@@ -142,6 +164,8 @@ export function resolveEffectiveChatPreferences(
 ): EffectiveChatPreferences {
   const normalizedOverrides = normalizeChatPreferenceOverrides({
     systemPrompt: overrides?.systemPrompt ?? preferences.systemPrompt,
+    contextCompressionPrompt: overrides?.contextCompressionPrompt ?? preferences.contextCompressionPrompt,
+    contextCompressionThresholdPercent: overrides?.contextCompressionThresholdPercent ?? preferences.contextCompressionThresholdPercent,
     aiRequestRetryCount: overrides?.aiRequestRetryCount ?? preferences.aiRequestRetryCount,
     browserAutomationMaxToolIterations: overrides?.browserAutomationMaxToolIterations ?? preferences.browserAutomationMaxToolIterations,
     toolCallingEnabled: overrides?.toolCallingEnabled ?? preferences.toolCallingEnabled,
@@ -153,6 +177,8 @@ export function resolveEffectiveChatPreferences(
 
   return {
     systemPrompt: normalizedOverrides.systemPrompt ?? preferences.systemPrompt,
+    contextCompressionPrompt: normalizedOverrides.contextCompressionPrompt ?? preferences.contextCompressionPrompt,
+    contextCompressionThresholdPercent: normalizedOverrides.contextCompressionThresholdPercent ?? preferences.contextCompressionThresholdPercent,
     aiRequestRetryCount: normalizedOverrides.aiRequestRetryCount ?? preferences.aiRequestRetryCount,
     browserAutomationMaxToolIterations: normalizedOverrides.browserAutomationMaxToolIterations ?? preferences.browserAutomationMaxToolIterations,
     toolCallingEnabled: normalizedOverrides.toolCallingEnabled ?? preferences.toolCallingEnabled,

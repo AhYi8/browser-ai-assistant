@@ -93,6 +93,8 @@ export interface ModelConfig extends ProviderModel {
 
 export interface ChatPreferenceValues {
   systemPrompt: string;
+  contextCompressionPrompt: string;
+  contextCompressionThresholdPercent: number;
   aiRequestRetryCount: number;
   browserAutomationMaxToolIterations: number;
   defaultBrowserAutomationMode?: BrowserAutomationMode;
@@ -112,6 +114,8 @@ export interface ChatPreferenceValues {
 
 export interface ChatSessionPreferenceOverrides {
   systemPrompt?: string;
+  contextCompressionPrompt?: string;
+  contextCompressionThresholdPercent?: number;
   aiRequestRetryCount?: number;
   browserAutomationMaxToolIterations?: number;
   toolCallingEnabled?: boolean;
@@ -417,7 +421,7 @@ export interface ChatPromptInvocation {
   contentSnapshot: string;
 }
 
-export type ChatTokenUsageSource = "chat" | "tool_decision" | "tool_final" | "title";
+export type ChatTokenUsageSource = "chat" | "tool_decision" | "tool_final" | "title" | "context_compression";
 
 export interface ChatTokenUsage {
   inputTokens: number;
@@ -448,7 +452,7 @@ export interface ExtractionRule {
 export interface ChatMessage {
   id: string;
   role: ChatRole;
-  assistantMessageKind?: "tool_call_turn";
+  assistantMessageKind?: "tool_call_turn" | "context_summary";
   content: string;
   createdAt: number;
   modelId: string;
@@ -466,6 +470,7 @@ export interface ChatMessage {
   thinking?: string;
   reasoningContent?: string;
   streaming?: boolean;
+  tokenUsageEntryIds?: string[];
 }
 
 export interface ChatSession {

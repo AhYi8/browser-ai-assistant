@@ -324,6 +324,7 @@ describe("Tavily 工具调用", () => {
   });
 
   it("启用 Tavily 工具但模型未调用工具时仍重新发起流式最终回答", async () => {
+    await saveAppSetting({ key: "webSearchSettings", value: settings, updatedAt: 1 });
     const encoder = new TextEncoder();
     const streamChunks: Uint8Array[] = [
       encoder.encode('data: {"choices":[{"delta":{"content":"无需"}}]}\n\n'),
@@ -385,6 +386,7 @@ describe("Tavily 工具调用", () => {
   });
 
   it("Tavily 工具参数包含额外字段时拒绝执行并把中文错误回灌给模型", async () => {
+    await saveAppSetting({ key: "webSearchSettings", value: settings, updatedAt: 1 });
     const fetcher = vi
       .fn()
       .mockResolvedValueOnce({
@@ -449,37 +451,9 @@ describe("Tavily 工具调用", () => {
     expect(finalModelBody.tool_choice).toBeUndefined();
   });
 
-  it("缺少 Tavily API Key 时把配置错误作为工具结果回灌", async () => {
+  it("缺少 Tavily API Key 时不向模型注册 Tavily 工具", async () => {
     const fetcher = vi
       .fn()
-      .mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue({
-          choices: [
-            {
-              message: {
-                content: "",
-                tool_calls: [
-                  {
-                    id: "call-1",
-                    type: "function",
-                    function: {
-                      name: "tavily_search",
-                      arguments: '{"query":"Tavily API"}',
-                    },
-                  },
-                ],
-              },
-            },
-          ],
-        }),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue({
-          choices: [{ message: { content: "请先配置后再搜索。" } }],
-        }),
-      })
       .mockResolvedValueOnce({
         ok: true,
         json: vi.fn().mockResolvedValue({
@@ -487,7 +461,7 @@ describe("Tavily 工具调用", () => {
         }),
       });
 
-    await handleChatSendMessage(
+    const result = await handleChatSendMessage(
       {
         type: "chat.send",
         model: createModel(),
@@ -499,15 +473,15 @@ describe("Tavily 工具调用", () => {
       fetcher,
     );
 
+    expect(result).toEqual({
+      ok: true,
+      content: "请先配置后再搜索。",
+      thinking: undefined,
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
     expect(fetcher.mock.calls.map(([url]) => url)).not.toContain("https://api.tavily.com/search");
-    const toolDecisionBody = JSON.parse(String(fetcher.mock.calls[1][1]?.body)) as { messages: Array<{ role: string; content?: string }> };
-    expect(toolDecisionBody.messages).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          role: "tool",
-          content: "请先配置 Tavily API Key",
-        }),
-      ]),
-    );
+    const body = JSON.parse(String(fetcher.mock.calls[0][1]?.body)) as { tools?: unknown[]; tool_choice?: unknown };
+    expect(body.tools).toBeUndefined();
+    expect(body.tool_choice).toBeUndefined();
   });
 });

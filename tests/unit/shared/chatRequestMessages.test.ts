@@ -199,6 +199,38 @@ describe("聊天请求消息构造", () => {
     expect(result[0].contextPrompt.length).toBeLessThanOrEqual(42);
   });
 
+  it("当前用户消息的 Prompt 快照和图片附件会参与页面上下文预算计算", () => {
+    const model = createModelConfig(createProvider(), { ...createModel(), maxTokens: 1200 });
+    const userMessage: ChatMessage = {
+      ...createMessage("message-1", "user", "请结合附件分析", 1),
+      promptInvocations: [
+        {
+          promptId: "prompt-1",
+          title: "长 Prompt",
+          contentSnapshot: "补充约束".repeat(500),
+        },
+      ],
+      attachments: [
+        {
+          id: "image-1",
+          name: "截图.png",
+          mediaType: "image/png",
+          dataUrl: "data:image/png;base64,QUJD",
+        },
+      ],
+    };
+
+    const result = buildChatRequestMessages({
+      model,
+      pageContext: "应被图片和 Prompt 预算挤掉的页面上下文".repeat(20),
+      existingMessages: [],
+      userMessage,
+      systemPrompt: "你是网页助手",
+    });
+
+    expect(result[0].contextPrompt).toBe("");
+  });
+
   it("历史消息中的思考过程参与上下文预算计算", () => {
     const model = createModelConfig(createProvider(), { ...createModel(), maxTokens: 18 });
     const assistantMessage = {

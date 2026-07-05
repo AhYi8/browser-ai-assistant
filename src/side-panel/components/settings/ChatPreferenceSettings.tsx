@@ -3,10 +3,12 @@ import {
   MODEL_TOOL_CAPABILITY_VALUES,
   MODEL_TOOL_RISK_VALUES,
   MODEL_TOOL_RUNTIME_VALUES,
+  TAVILY_SEARCH_TOOL_ID,
   filterModelToolsByClassification,
   getModelToolGroups,
   getRegisteredModelTools,
 } from "../../../shared/models/toolRegistry";
+import { isModelToolConfigured } from "../../../shared/webSearch/toolAvailability";
 import type { ModelToolCapability, ModelToolRisk, ModelToolRuntimeRequirement } from "../../../shared/models/types";
 import type { BrowserAutomationMode } from "../../../shared/toolAuthorization";
 import type { ChatPreferenceValues, SendShortcut } from "../../../shared/types";
@@ -65,6 +67,7 @@ export function ChatPreferenceSettings() {
   const [riskFilter, setRiskFilter] = useState<ModelToolRisk | "">("");
   const chatPreferences = useAppStore((state) => state.chatPreferences);
   const mcpSettings = useAppStore((state) => state.mcpSettings);
+  const webSearchSettings = useAppStore((state) => state.webSearchSettings);
   const updateChatPreferences = useAppStore((state) => state.updateChatPreferences);
   const registeredTools = getRegisteredModelTools(mcpSettings);
   const filteredTools = filterModelToolsByClassification(registeredTools, {
@@ -76,11 +79,18 @@ export function ChatPreferenceSettings() {
   const systemPromptInput = useComposedTextInput(chatPreferences.systemPrompt, (systemPrompt) => {
     void updateChatPreferences({ systemPrompt });
   });
+  const contextCompressionPromptInput = useComposedTextInput(chatPreferences.contextCompressionPrompt, (contextCompressionPrompt) => {
+    void updateChatPreferences({ contextCompressionPrompt });
+  });
   const handleToolToggle = (toolId: string, checked: boolean) => {
+    const tool = registeredTools.find((item) => item.id === toolId);
+    if (tool && !isModelToolConfigured(tool, webSearchSettings)) {
+      return;
+    }
     const nextToolIds = checked ? [...chatPreferences.enabledToolIds, toolId] : chatPreferences.enabledToolIds.filter((id) => id !== toolId);
     void updateChatPreferences({ enabledToolIds: Array.from(new Set(nextToolIds)) });
   };
-  const filteredToolIds = filteredTools.map((tool) => tool.id);
+  const filteredToolIds = filteredTools.filter((tool) => isModelToolConfigured(tool, webSearchSettings)).map((tool) => tool.id);
   const handleEnableFilteredTools = () => {
     void updateChatPreferences({
       enabledToolIds: Array.from(new Set([...chatPreferences.enabledToolIds, ...filteredToolIds])),
@@ -100,6 +110,14 @@ export function ChatPreferenceSettings() {
           className="ui-input min-h-32"
           aria-label="全局系统提示词"
           {...systemPromptInput}
+        />
+      </label>
+      <label className="grid gap-1 text-sm">
+        上下文压缩 Prompt
+        <textarea
+          className="ui-input min-h-32"
+          aria-label="全局上下文压缩 Prompt"
+          {...contextCompressionPromptInput}
         />
       </label>
       <div className="chat-preference-grid">
@@ -141,11 +159,20 @@ export function ChatPreferenceSettings() {
           onChange={(value) => void updateChatPreferences({ temperature: value })}
         />
         <GlobalPreferenceNumberInput
-          label="max_token"
+          label="最大聊天上下文（token）"
           value={chatPreferences.maxTokens}
           min={1}
+          max={1_000_000}
           step={1}
           onChange={(value) => void updateChatPreferences({ maxTokens: value })}
+        />
+        <GlobalPreferenceNumberInput
+          label="自动压缩阈值（%）"
+          value={chatPreferences.contextCompressionThresholdPercent}
+          min={1}
+          max={100}
+          step={1}
+          onChange={(value) => void updateChatPreferences({ contextCompressionThresholdPercent: value })}
         />
         <GlobalPreferenceNumberInput
           label="top_k"
@@ -225,15 +252,19 @@ export function ChatPreferenceSettings() {
                 <div className="chat-preference-tool-group-title">{group.label}</div>
                 {group.tools.map((tool) => {
                   const toolDisplayName = tool.groupId === "mcp_remote" ? (tool.displayName ?? tool.name) : tool.name;
+                  const configured = isModelToolConfigured(tool, webSearchSettings);
+                  const disabledReason = tool.id === TAVILY_SEARCH_TOOL_ID && !configured ? "请先配置 Tavily API Key" : "";
                   return (
                     <label key={tool.id} className="chat-preference-network-type-chip">
                       <input
                         type="checkbox"
                         aria-label={`启用工具 ${toolDisplayName}`}
-                        checked={chatPreferences.enabledToolIds.includes(tool.id)}
+                        checked={configured && chatPreferences.enabledToolIds.includes(tool.id)}
+                        disabled={!configured}
                         onChange={(event) => handleToolToggle(tool.id, event.target.checked)}
                       />
                       <span>{toolDisplayName}</span>
+                      {disabledReason ? <span className="ui-muted text-xs">{disabledReason}</span> : null}
                     </label>
                   );
                 })}

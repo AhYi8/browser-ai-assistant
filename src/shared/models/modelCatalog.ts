@@ -13,7 +13,8 @@ export interface ModelListRequest {
 }
 
 type Fetcher = typeof fetch;
-type ModelConfigPreferenceOverrides = Pick<ChatSessionPreferenceOverrides, "systemPrompt" | "temperature" | "maxTokens" | "topK">;
+// 聊天偏好里的 maxTokens 表示请求上下文预算，不再参与模型输出上限配置。
+type ModelConfigPreferenceOverrides = Pick<ChatSessionPreferenceOverrides, "systemPrompt" | "temperature" | "topK">;
 
 export function createListModelsRequest(provider: ModelProvider): ModelListRequest {
   if (provider.endpointType === "anthropic_messages") {
@@ -161,9 +162,6 @@ function pickModelConfigPreferenceOverrides(overrides: ChatSessionPreferenceOver
   }
   if (overrides.temperature !== undefined) {
     modelOverrides.temperature = overrides.temperature;
-  }
-  if (overrides.maxTokens !== undefined) {
-    modelOverrides.maxTokens = overrides.maxTokens;
   }
   if (overrides.topK !== undefined) {
     modelOverrides.topK = overrides.topK;

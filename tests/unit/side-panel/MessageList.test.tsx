@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { describe, expect, it, vi } from "vitest";
+import { CONTEXT_COMPRESSION_TOOL_ID } from "../../../src/shared/chat/contextCompression";
 import { MessageList } from "../../../src/side-panel/components/MessageList";
 import type { ChatMessage } from "../../../src/shared/types";
 
@@ -38,6 +39,13 @@ function createToolCallMessage(id: string): ChatMessage {
         resultSummary: "已截取页面快照",
       },
     ],
+  };
+}
+
+function createContextSummaryMessage(id: string): ChatMessage {
+  return {
+    ...createChatMessage(id, "压缩后的摘要"),
+    assistantMessageKind: "context_summary",
   };
 }
 
@@ -150,5 +158,30 @@ describe("MessageList 滚动跟随", () => {
     }));
 
     expect(messageList.scrollTop).toBe(620);
+  });
+
+  it("上下文压缩会显示为独立工具调用行并隐藏摘要消息正文", () => {
+    renderMessageList([
+      createChatMessage("message-1", "第一条消息"),
+      {
+        ...createChatMessage("message-compress", ""),
+        assistantMessageKind: "tool_call_turn",
+        toolCallRecords: [
+          {
+            id: "tool-compress",
+            toolId: CONTEXT_COMPRESSION_TOOL_ID,
+            name: "context_compression",
+            displayName: "上下文压缩",
+            arguments: {},
+            status: "running",
+            startedAt: 1,
+          },
+        ],
+      },
+      createContextSummaryMessage("message-summary"),
+    ]);
+
+    expect(screen.getByRole("button", { name: "正在进行上下文压缩" })).toBeInTheDocument();
+    expect(screen.queryByText("压缩后的摘要")).not.toBeInTheDocument();
   });
 });

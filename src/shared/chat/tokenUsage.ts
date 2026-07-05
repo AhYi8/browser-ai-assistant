@@ -207,7 +207,7 @@ function normalizeTimestamp(value: unknown): number {
 }
 
 function isValidTokenUsageSource(value: unknown): value is ChatTokenUsageSource {
-  return value === "chat" || value === "tool_decision" || value === "tool_final" || value === "title";
+  return value === "chat" || value === "tool_decision" || value === "tool_final" || value === "title" || value === "context_compression";
 }
 
 function isCurrentTokenUsageEntry(value: ChatTokenUsageEntry): boolean {

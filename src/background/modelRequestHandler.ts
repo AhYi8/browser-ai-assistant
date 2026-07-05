@@ -3,7 +3,8 @@ import { createTokenUsageEntry } from "../shared/chat/tokenUsage";
 import { createModelRequestPayload } from "../shared/models/modelRequestPayload";
 import { shouldPassDeepSeekReasoningContent } from "../shared/models/openaiChatAdapter";
 import { normalizeModelRequestRetryCount, shouldRetryModelResponse, withModelRequestRetry, type ModelRequestRetryProgress } from "../shared/models/modelRequestRetry";
-import { getRegisteredModelTools, isBrowserAutomationToolId, resolveEnabledModelTools } from "../shared/models/toolRegistry";
+import { getRegisteredModelTools, isBrowserAutomationToolId, resolveEnabledModelTools, TAVILY_SEARCH_TOOL_ID } from "../shared/models/toolRegistry";
+import { filterConfiguredModelTools } from "../shared/webSearch/toolAvailability";
 import type { ModelRequestMessage, ModelToolCall, ModelToolChoice, ModelToolDefinition, ModelToolExecutor, OpenAIStructuredOutputFormat } from "../shared/models/types";
 import type {
   AutomationPlaybookSettings,
@@ -18,6 +19,7 @@ import type {
   ModelConfig,
 } from "../shared/types";
 import type { TavilySearchOptions } from "../shared/webSearch/tavily";
+import { getWebSearchSettings } from "../shared/webSearch/settings";
 import { getEnabledAutomationPlaybooks, normalizeAutomationPlaybookSettings, shouldRunAutomationPlaybookSelection } from "../shared/automationPlaybooks";
 import { appendBrowserControlPromptIfNeeded, createBackgroundToolExecutor, createModelToolDefinition, normalizeBrowserAutomationMaxToolIterations, shouldExposeTool } from "./backgroundToolRuntime";
 import { selectAutomationPlaybook } from "./automationPlaybookSelector";
@@ -96,7 +98,8 @@ export async function handleChatSendMessage(
   callbacks: ChatStreamCallbacks = {},
   executeTool?: ModelToolExecutor,
 ): Promise<ChatSendResponse> {
-  const enabledTools = resolveEnabledModelTools(getRegisteredModelTools(message.mcp), message.enabledToolIds ?? []);
+  const registeredTools = await getConfiguredRegisteredModelTools(message);
+  const enabledTools = resolveEnabledModelTools(registeredTools, message.enabledToolIds ?? []);
   const exposedTools = message.structuredOutput ? [] : enabledTools.filter(shouldExposeTool);
   const toolExecutor = executeTool ?? createBackgroundToolExecutor(message, fetcher);
   const automationPlaybookSelection = await maybeSelectAutomationPlaybook(message, exposedTools, fetcher);
@@ -136,6 +139,15 @@ export async function handleChatSendMessage(
   }
 
   return requestModelOnce({ ...message, messages: initialMessages, tools: toolOptions.tools, toolChoice: toolOptions.toolChoice }, fetcher, callbacks);
+}
+
+async function getConfiguredRegisteredModelTools(message: ChatSendHandlerMessage) {
+  const registeredTools = getRegisteredModelTools(message.mcp);
+  if (!message.enabledToolIds?.includes(TAVILY_SEARCH_TOOL_ID)) {
+    return registeredTools;
+  }
+
+  return filterConfiguredModelTools(registeredTools, await getWebSearchSettings());
 }
 
 async function maybeSelectAutomationPlaybook(

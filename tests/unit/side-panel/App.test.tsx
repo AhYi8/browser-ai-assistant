@@ -798,6 +798,7 @@ describe("App", () => {
     expect(screen.getByRole("textbox", { name: "全局系统提示词" })).toBeInTheDocument();
     expect(screen.queryByRole("textbox", { name: "Network 请求相关性筛选 Prompt" })).not.toBeInTheDocument();
     expect(screen.getByRole("spinbutton", { name: "全局 temperature" })).toBeInTheDocument();
+    expect(screen.getByRole("spinbutton", { name: "全局 自动压缩阈值（%）" })).toHaveDisplayValue("90");
     expect(screen.getByRole("combobox", { name: "发送快捷键" })).toHaveDisplayValue("Enter");
     expect(Array.from(screen.getByRole("combobox", { name: "发送快捷键" }).querySelectorAll("option")).map((option) => option.textContent)).not.toContain("Ctrl+Shift+Enter");
     expect(screen.getByRole("combobox", { name: "跟进行为" })).toHaveDisplayValue("排队");
@@ -907,6 +908,7 @@ describe("App", () => {
     expect(screen.getByRole("dialog", { name: "当前聊天设置" })).not.toHaveClass("history-drawer");
     expect(screen.getByRole("textbox", { name: "当前聊天系统提示词" })).toBeInTheDocument();
     expect(screen.getByRole("spinbutton", { name: "当前聊天 temperature" })).toHaveClass("chat-preference-number-input");
+    expect(screen.getByRole("spinbutton", { name: "当前聊天 自动压缩阈值（%）" })).toHaveAttribute("placeholder", "90");
     expect(screen.getByRole("spinbutton", { name: "当前聊天 top_k" }).closest("label")).toHaveClass("chat-preference-field");
   });
 
@@ -1273,8 +1275,10 @@ describe("App", () => {
     useAppStore.setState({
       chatPreferences: {
         systemPrompt: "你是网页助手",
+        contextCompressionPrompt: "压缩上下文",
         aiRequestRetryCount: 5,
         browserAutomationMaxToolIterations: 32,
+        contextCompressionThresholdPercent: 90,
         toolCallingEnabled: false,
         enabledToolIds: [],
         temperature: 0.7,
@@ -1305,8 +1309,10 @@ describe("App", () => {
     useAppStore.setState({
       chatPreferences: {
         systemPrompt: "你是网页助手",
+        contextCompressionPrompt: "压缩上下文",
         aiRequestRetryCount: 5,
         browserAutomationMaxToolIterations: 32,
+        contextCompressionThresholdPercent: 90,
         toolCallingEnabled: false,
         enabledToolIds: [],
         temperature: 0.7,
@@ -1337,8 +1343,10 @@ describe("App", () => {
     useAppStore.setState({
       chatPreferences: {
         systemPrompt: "你是网页助手",
+        contextCompressionPrompt: "压缩上下文",
         aiRequestRetryCount: 5,
         browserAutomationMaxToolIterations: 32,
+        contextCompressionThresholdPercent: 90,
         defaultBrowserAutomationMode: "normal_restricted",
         toolCallingEnabled: false,
         enabledToolIds: [],
@@ -1370,8 +1378,10 @@ describe("App", () => {
     useAppStore.setState({
       chatPreferences: {
         systemPrompt: "你是网页助手",
+        contextCompressionPrompt: "压缩上下文",
         aiRequestRetryCount: 5,
         browserAutomationMaxToolIterations: 32,
+        contextCompressionThresholdPercent: 90,
         toolCallingEnabled: false,
         enabledToolIds: [],
         temperature: 0.7,
@@ -1690,8 +1700,10 @@ describe("App", () => {
     useAppStore.setState({
       chatPreferences: {
         systemPrompt: "你是网页助手",
+        contextCompressionPrompt: "压缩上下文",
         aiRequestRetryCount: 5,
         browserAutomationMaxToolIterations: 32,
+        contextCompressionThresholdPercent: 90,
         toolCallingEnabled: false,
         enabledToolIds: [],
         temperature: 0.7,
@@ -1726,8 +1738,10 @@ describe("App", () => {
     useAppStore.setState({
       chatPreferences: {
         systemPrompt: "你是网页助手",
+        contextCompressionPrompt: "压缩上下文",
         aiRequestRetryCount: 5,
         browserAutomationMaxToolIterations: 32,
+        contextCompressionThresholdPercent: 90,
         toolCallingEnabled: false,
         enabledToolIds: [],
         temperature: 0.7,
@@ -1758,8 +1772,10 @@ describe("App", () => {
     useAppStore.setState({
       chatPreferences: {
         systemPrompt: "你是网页助手",
+        contextCompressionPrompt: "压缩上下文",
         aiRequestRetryCount: 5,
         browserAutomationMaxToolIterations: 32,
+        contextCompressionThresholdPercent: 90,
         toolCallingEnabled: false,
         enabledToolIds: [],
         temperature: 0.7,

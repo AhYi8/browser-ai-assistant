@@ -304,6 +304,12 @@ function normalizeChatPreferenceOverrides(value: unknown): ChatSessionPreference
   if (typeof source.systemPrompt === "string" && source.systemPrompt.trim()) {
     overrides.systemPrompt = source.systemPrompt;
   }
+  if (typeof source.contextCompressionPrompt === "string" && source.contextCompressionPrompt.trim()) {
+    overrides.contextCompressionPrompt = source.contextCompressionPrompt;
+  }
+  if (typeof source.contextCompressionThresholdPercent === "number" && Number.isFinite(source.contextCompressionThresholdPercent)) {
+    overrides.contextCompressionThresholdPercent = source.contextCompressionThresholdPercent;
+  }
   if (typeof source.browserAutomationMaxToolIterations === "number" && Number.isFinite(source.browserAutomationMaxToolIterations)) {
     overrides.browserAutomationMaxToolIterations = source.browserAutomationMaxToolIterations;
   }
@@ -336,11 +342,17 @@ function normalizeChatMessage(message: ChatMessage): ChatMessage {
   const toolAttachments = mergeCompatibleToolAttachments(normalizedToolAttachments, legacyToolAttachments ?? []);
   return {
     ...messageWithoutLegacyWebSearch,
-    assistantMessageKind: message.assistantMessageKind === "tool_call_turn" ? "tool_call_turn" : undefined,
+    assistantMessageKind:
+      message.assistantMessageKind === "tool_call_turn" || message.assistantMessageKind === "context_summary"
+        ? message.assistantMessageKind
+        : undefined,
     contextMode: message.contextMode ?? "text",
     reasoningContent: typeof message.reasoningContent === "string" ? message.reasoningContent : undefined,
     toolCallRecords: normalizeChatToolCallRecords(message.toolCallRecords),
     toolAttachments: toolAttachments.length ? toolAttachments : undefined,
+    tokenUsageEntryIds: Array.isArray(message.tokenUsageEntryIds)
+      ? message.tokenUsageEntryIds.filter((id): id is string => typeof id === "string" && Boolean(id.trim()))
+      : undefined,
   };
 }
 

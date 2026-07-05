@@ -7,6 +7,7 @@ import {
   downloadChatSessionPdf,
   downloadChatSessionWord,
 } from "../../../src/side-panel/utils/chatMarkdownExport";
+import { CONTEXT_COMPRESSION_TOOL_ID } from "../../../src/shared/chat/contextCompression";
 import type { ChatMessage, ChatSession } from "../../../src/shared/types";
 
 function createMessage(partial: Partial<ChatMessage>): ChatMessage {
@@ -142,6 +143,57 @@ const value = 1;
 
     expect(markdown).toContain("工具调用前的 AI 中间回复");
     expect(markdown).toContain("工具调用前的思考");
+  });
+
+  it("导出时会跳过上下文摘要和上下文压缩过程消息", () => {
+    const session = createSession({
+      title: "导出过滤",
+      messages: [
+        createMessage({
+          id: "message-summary",
+          role: "assistant",
+          assistantMessageKind: "context_summary",
+          content: "压缩后的摘要",
+          createdAt: 1700000000000,
+        }),
+        createMessage({
+          id: "message-user",
+          role: "user",
+          content: "后续问题",
+          createdAt: 1700000100000,
+        }),
+        createMessage({
+          id: "message-context-compression",
+          role: "assistant",
+          assistantMessageKind: "tool_call_turn",
+          content: "",
+          createdAt: 1700000150000,
+          toolCallRecords: [
+            {
+              id: "call-context-compression",
+              toolId: CONTEXT_COMPRESSION_TOOL_ID,
+              name: "context_compression",
+              displayName: "上下文压缩",
+              arguments: {},
+              status: "success",
+              startedAt: 1,
+              completedAt: 2,
+              resultSummary: "压缩后的摘要",
+            },
+          ],
+        }),
+      ],
+    });
+
+    const markdown = createChatSessionMarkdown(session, 1700000200000);
+    const printHtml = createChatSessionPrintHtml(session, 1700000200000);
+
+    expect(markdown).not.toContain("压缩后的摘要");
+    expect(markdown).not.toContain("上下文压缩");
+    expect(markdown).toContain("后续问题");
+    expect(printHtml).not.toContain("压缩后的摘要");
+    expect(printHtml).not.toContain("上下文压缩");
+    expect(printHtml).toContain("后续问题");
   });
 
   it("导出用户消息时把调用的 Prompt 快照拼接到用户输入前", () => {

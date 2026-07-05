@@ -1,4 +1,5 @@
 import type { ChatMessage, ChatSession } from "../../shared/types";
+import { CONTEXT_COMPRESSION_TOOL_ID } from "../../shared/chat/contextCompression";
 import { collectMessageToolAttachments, formatToolAttachmentForExport } from "../../shared/toolArtifacts";
 import { downloadBlob } from "./downloadBlob";
 
@@ -15,17 +16,18 @@ type ExportBlock =
   | { type: "thinking"; text: string };
 
 export function createChatSessionMarkdown(session: ChatSession, exportedAt: number = Date.now()): string {
+  const exportableMessages = getExportableMessages(session);
   const lines = [
     `# ${sanitizeMarkdownHeading(session.title)}`,
     "",
     `- 导出时间：${formatDateTime(exportedAt)}`,
     `- 会话创建时间：${formatDateTime(session.createdAt)}`,
     `- 会话更新时间：${formatDateTime(session.updatedAt)}`,
-    `- 消息数量：${session.messages.length}`,
+    `- 消息数量：${exportableMessages.length}`,
     "",
   ];
 
-  for (const message of session.messages) {
+  for (const message of exportableMessages) {
     lines.push(`## ${roleLabels[message.role]} · ${formatDateTime(message.createdAt)}`, "");
 
     if (message.thinking?.trim()) {
@@ -124,15 +126,16 @@ function createPrintBodyHtml(session: ChatSession, exportedAt: number): string {
 }
 
 function createExportBlocks(session: ChatSession, exportedAt: number): ExportBlock[] {
+  const exportableMessages = getExportableMessages(session);
   const blocks: ExportBlock[] = [
     { type: "heading", level: 1, text: sanitizeMarkdownHeading(session.title) },
     { type: "paragraph", text: `导出时间：${formatDateTime(exportedAt)}` },
     { type: "paragraph", text: `会话创建时间：${formatDateTime(session.createdAt)}` },
     { type: "paragraph", text: `会话更新时间：${formatDateTime(session.updatedAt)}` },
-    { type: "paragraph", text: `消息数量：${session.messages.length}` },
+    { type: "paragraph", text: `消息数量：${exportableMessages.length}` },
   ];
 
-  for (const message of session.messages) {
+  for (const message of exportableMessages) {
     blocks.push({ type: "heading", level: 2, text: `${roleLabels[message.role]} · ${formatDateTime(message.createdAt)}` });
     if (message.thinking?.trim()) {
       blocks.push({ type: "thinking", text: `思考过程：${message.thinking.trim()}` });
@@ -141,6 +144,21 @@ function createExportBlocks(session: ChatSession, exportedAt: number): ExportBlo
   }
 
   return blocks;
+}
+
+function getExportableMessages(session: ChatSession): ChatMessage[] {
+  return session.messages.filter((message) => {
+    if (message.assistantMessageKind === "context_summary") {
+      return false;
+    }
+
+    const toolRecords = message.toolCallRecords ?? [];
+    if (message.assistantMessageKind === "tool_call_turn" && toolRecords.length > 0) {
+      return !toolRecords.every((record) => record.toolId === CONTEXT_COMPRESSION_TOOL_ID);
+    }
+
+    return true;
+  });
 }
 
 function formatMessageExportContent(message: ChatMessage): string {

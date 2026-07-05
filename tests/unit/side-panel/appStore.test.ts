@@ -83,6 +83,18 @@ function disableDefaultToolCalling() {
   });
 }
 
+function configureTavilyApiKeyForTest() {
+  useAppStore.setState((state) => ({
+    webSearchSettings: {
+      ...state.webSearchSettings,
+      tavily: {
+        ...state.webSearchSettings.tavily,
+        apiKeysText: "tvly-test",
+      },
+    },
+  }));
+}
+
 describe("appStore 网络搜索", () => {
   afterEach(async () => {
     vi.unstubAllGlobals();
@@ -134,6 +146,7 @@ describe("appStore 网络搜索", () => {
     await useAppStore.getState().loadChannelConfig();
     await useAppStore.getState().loadChatData();
     useAppStore.getState().setStreamMode(false);
+    configureTavilyApiKeyForTest();
     useAppStore.setState((state) => ({
       chatPreferences: {
         ...state.chatPreferences,
@@ -204,6 +217,7 @@ describe("appStore 网络搜索", () => {
     await useAppStore.getState().loadChannelConfig();
     await useAppStore.getState().loadChatData();
     useAppStore.getState().setStreamMode(false);
+    configureTavilyApiKeyForTest();
     useAppStore.setState((state) => ({
       chatPreferences: {
         ...state.chatPreferences,
@@ -248,6 +262,7 @@ describe("appStore 网络搜索", () => {
     await useAppStore.getState().loadChannelConfig();
     await useAppStore.getState().loadChatData();
     useAppStore.getState().setStreamMode(false);
+    configureTavilyApiKeyForTest();
     useAppStore.setState((state) => ({
       extractionRules: [{
         id: "rule-main",
@@ -294,6 +309,7 @@ describe("appStore 网络搜索", () => {
     await useAppStore.getState().loadChannelConfig();
     await useAppStore.getState().loadChatData();
     useAppStore.getState().setStreamMode(false);
+    configureTavilyApiKeyForTest();
     useAppStore.setState((state) => ({
       chatPreferences: {
         ...state.chatPreferences,
@@ -1434,9 +1450,10 @@ describe("appStore", () => {
     expect(chatRequest?.model).toMatchObject({
       systemPrompt: "全局系统提示",
       temperature: 0.4,
-      maxTokens: 2048,
+      maxTokens: 1024,
       topK: 20,
     });
+    expect(useAppStore.getState().chatPreferences.maxTokens).toBe(2048);
     expect(chatRequest?.messages?.[0]).toMatchObject({
       role: "system",
       content: "全局系统提示",
@@ -1592,6 +1609,19 @@ describe("appStore", () => {
     expect(useAppStore.getState().chatPreferences.showToolCallProcessInAssistantMode).toBe(false);
   });
 
+  it("聊天偏好会默认并保存上下文自动压缩阈值", async () => {
+    expect(useAppStore.getState().chatPreferences.contextCompressionThresholdPercent).toBe(90);
+
+    await useAppStore.getState().updateChatPreferences({
+      contextCompressionThresholdPercent: 75,
+    });
+
+    expect(useAppStore.getState().chatPreferences.contextCompressionThresholdPercent).toBe(75);
+    expect(await getAppSetting("chatPreferences")).toMatchObject({
+      contextCompressionThresholdPercent: 75,
+    });
+  });
+
   it("工具调用偏好旧数据显式空工具列表时保留用户关闭全部工具的选择", async () => {
     await saveAppSetting({
       key: "chatPreferences",
@@ -1673,6 +1703,25 @@ describe("appStore", () => {
     expect(session?.chatPreferenceOverrides).toMatchObject({
       toolCallingEnabled: true,
       enabledToolIds: ["page.read_context"],
+    });
+  });
+
+  it("会话级上下文自动压缩阈值覆盖会保存到当前会话", async () => {
+    const provider = createProvider();
+    const model = createModel();
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    await useAppStore.getState().updateActiveSessionChatPreferences({
+      contextCompressionThresholdPercent: 72,
+    });
+
+    const activeSessionId = useAppStore.getState().activeSessionId;
+    const session = await getChatSession(activeSessionId);
+    expect(session?.chatPreferenceOverrides).toMatchObject({
+      contextCompressionThresholdPercent: 72,
     });
   });
 
@@ -1894,9 +1943,10 @@ describe("appStore", () => {
     expect(chatRequest?.model).toMatchObject({
       systemPrompt: "当前会话系统提示",
       temperature: 0.2,
-      maxTokens: 512,
+      maxTokens: 1024,
       topK: 8,
     });
+    expect(useAppStore.getState().chatSessions[0]?.chatPreferenceOverrides?.maxTokens).toBe(512);
   });
 
   it("未配置 AI 标题生成模型时不会额外发送标题请求", async () => {
@@ -2584,6 +2634,7 @@ describe("appStore", () => {
     await saveProviderModel(model);
     await useAppStore.getState().loadChannelConfig();
     await useAppStore.getState().loadChatData();
+    configureTavilyApiKeyForTest();
     useAppStore.setState((state) => ({
       chatPreferences: {
         ...state.chatPreferences,
@@ -2642,6 +2693,7 @@ describe("appStore", () => {
     await saveProviderModel(model);
     await useAppStore.getState().loadChannelConfig();
     await useAppStore.getState().loadChatData();
+    configureTavilyApiKeyForTest();
     useAppStore.setState((state) => ({
       chatPreferences: {
         ...state.chatPreferences,
@@ -2702,6 +2754,7 @@ describe("appStore", () => {
     await saveProviderModel(model);
     await useAppStore.getState().loadChannelConfig();
     await useAppStore.getState().loadChatData();
+    configureTavilyApiKeyForTest();
     useAppStore.setState((state) => ({
       chatPreferences: {
         ...state.chatPreferences,
@@ -2762,6 +2815,7 @@ describe("appStore", () => {
     await saveProviderModel(model);
     await useAppStore.getState().loadChannelConfig();
     await useAppStore.getState().loadChatData();
+    configureTavilyApiKeyForTest();
     useAppStore.setState((state) => ({
       chatPreferences: {
         ...state.chatPreferences,
@@ -3082,6 +3136,7 @@ describe("appStore", () => {
     await saveProviderModel(model);
     await useAppStore.getState().loadChannelConfig();
     await useAppStore.getState().loadChatData();
+    configureTavilyApiKeyForTest();
     useAppStore.setState((state) => ({
       chatPreferences: {
         ...state.chatPreferences,
@@ -3226,6 +3281,7 @@ describe("appStore", () => {
     await saveProviderModel(model);
     await useAppStore.getState().loadChannelConfig();
     await useAppStore.getState().loadChatData();
+    configureTavilyApiKeyForTest();
     useAppStore.setState((state) => ({
       chatPreferences: {
         ...state.chatPreferences,
@@ -3307,6 +3363,7 @@ describe("appStore", () => {
     await saveProviderModel(model);
     await useAppStore.getState().loadChannelConfig();
     await useAppStore.getState().loadChatData();
+    configureTavilyApiKeyForTest();
     useAppStore.setState((state) => ({
       chatPreferences: {
         ...state.chatPreferences,
@@ -3636,6 +3693,7 @@ describe("appStore", () => {
     await useAppStore.getState().loadChannelConfig();
     await useAppStore.getState().loadChatData();
     await useAppStore.getState().refreshPageContext();
+    configureTavilyApiKeyForTest();
     useAppStore.setState((state) => ({
       chatPreferences: {
         ...state.chatPreferences,

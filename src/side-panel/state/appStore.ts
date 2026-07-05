@@ -1,5 +1,13 @@
 import { create, type StoreApi } from "zustand";
 import { buildChatRequestMessages } from "../../shared/chat/buildChatRequestMessages";
+import {
+  createContextCompressionToolCallRecord,
+  createContextCompressionToolTurnMessage,
+  createContextCompressionMessages,
+  createContextSummaryMessage,
+  getMessagesFromLatestContextSummary,
+  shouldCompressChatContext,
+} from "../../shared/chat/contextCompression";
 import { createModelConfig } from "../../shared/chat/modelConfig";
 import { createPageContextPrompt } from "../../shared/chat/pageContextPrompt";
 import { mergeTokenUsageEntries } from "../../shared/chat/tokenUsage";
@@ -47,6 +55,7 @@ import { parseMcpToolId } from "../../shared/mcp/toolAdapter";
 import type { SyncSecrets, SyncSettings } from "../../shared/sync/types";
 import type { SyncRemoteBackupMeta } from "../../shared/sync/types";
 import type { TavilySearchOptions } from "../../shared/webSearch/tavily";
+import { filterConfiguredModelTools } from "../../shared/webSearch/toolAvailability";
 import type {
   AutomationPlaybookSettings,
   ChatFolder,
@@ -128,6 +137,7 @@ import {
   resolveDefaultContextMode,
   resolveEffectiveChatPreferences,
   resolveRuntimeEnabledToolIds,
+  type EffectiveChatPreferences,
 } from "./appStorePreferences";
 import { upsertSession } from "./appStoreSessionUtils";
 import {
@@ -145,7 +155,7 @@ import {
   unregisterChatTaskFollowUpHandle,
   upsertChatTask,
 } from "./appStoreChatTasks";
-import { sendStreamingChatMessage } from "./appStoreStreaming";
+import { sendPortChatMessage, sendStreamingChatMessage } from "./appStoreStreaming";
 import {
   backupNowAction,
   loadRemoteBackupsAction,
@@ -1416,6 +1426,17 @@ interface RunChatRequestInput {
   set: StoreSetter;
 }
 
+interface PreparedContextCompressionResult {
+  requestExistingMessages: ChatMessage[];
+  sessionMessages: ChatMessage[];
+  tokenUsageEntries?: ChatTokenUsageEntry[];
+}
+
+interface RunChatRequestResult {
+  taskStatus: "completed" | "failed" | "canceled";
+  requestStarted: boolean;
+}
+
 async function sendChatMessageWithState(input: SendChatMessageWithStateInput): Promise<boolean> {
   const trimmedContent = input.content.trim();
   const imageAttachments = (input.attachments ?? []).filter((attachment) => attachment.mediaType.startsWith("image/"));
@@ -1487,7 +1508,7 @@ async function sendChatMessageWithState(input: SendChatMessageWithStateInput): P
     promptInvocations: promptInvocations.length > 0 ? promptInvocations : undefined,
   };
 
-  await runChatRequest({
+  const result = await runChatRequest({
     state,
     privateMode: state.privateChatSession?.id === session.id,
     pageContextPrompt: requestPageContextPrompt,
@@ -1503,7 +1524,7 @@ async function sendChatMessageWithState(input: SendChatMessageWithStateInput): P
     get: input.get,
     set: input.set,
   });
-  return true;
+  return result.requestStarted;
 }
 
 async function regenerateChatMessage(input: RegenerateChatMessageInput): Promise<void> {
@@ -1656,7 +1677,7 @@ async function sendExistingFollowUpMessageWithState(input: {
     return false;
   }
 
-  await runChatRequest({
+  const result = await runChatRequest({
     state,
     privateMode: state.privateModeActive && state.privateChatSession?.id === session.id,
     pageContextPrompt: "",
@@ -1672,7 +1693,7 @@ async function sendExistingFollowUpMessageWithState(input: {
     get: input.get,
     set: input.set,
   });
-  return true;
+  return result.requestStarted;
 }
 
 function findPreviousUserMessage(messages: ChatMessage[], startIndex: number): ChatMessage | undefined {
@@ -1685,11 +1706,194 @@ function findPreviousUserMessage(messages: ChatMessage[], startIndex: number): C
   return undefined;
 }
 
-async function runChatRequest(input: RunChatRequestInput): Promise<void> {
+class ContextCompressionError extends Error {}
+class ContextCompressionCanceledError extends Error {}
+
+async function prepareContextCompression(input: {
+  input: RunChatRequestInput;
+  modelConfig: ReturnType<typeof createModelConfig>;
+  effectiveChatPreferences: EffectiveChatPreferences;
+  chatTaskId: string;
+}): Promise<PreparedContextCompressionResult | undefined> {
+  const scopedMessages = getMessagesFromLatestContextSummary([...input.input.existingMessages, input.input.userMessage]);
+  const shouldCompress = shouldCompressChatContext({
+    maxContextTokens: input.effectiveChatPreferences.maxTokens,
+    thresholdPercent: input.effectiveChatPreferences.contextCompressionThresholdPercent,
+    systemPrompt: input.effectiveChatPreferences.systemPrompt,
+    pageContext: input.input.pageContextPrompt,
+    messages: scopedMessages,
+    tokenUsageEntries: input.input.session.tokenUsageEntries,
+  });
+  if (!shouldCompress) {
+    return undefined;
+  }
+
+  const messagesToCompress = getMessagesFromLatestContextSummary(input.input.existingMessages);
+  if (messagesToCompress.length === 0) {
+    input.input.set({ failure: { message: "当前消息超过最大聊天上下文，且没有可压缩的历史消息。请缩短本次输入或调大最大聊天上下文后重试。" } });
+    throw new ContextCompressionError("没有可压缩的历史消息");
+  }
+
+  const compressionStartedAt = Date.now();
+  const compressionMessageId = `message-${compressionStartedAt}-context-compression`;
+  const compressionToolCallId = `tool-call-${compressionStartedAt}-context-compression`;
+  const runningCompressionRecord = createContextCompressionToolCallRecord({
+    id: compressionToolCallId,
+    status: "running",
+    startedAt: compressionStartedAt,
+  });
+  const runningCompressionMessage = createContextCompressionToolTurnMessage({
+    id: compressionMessageId,
+    record: runningCompressionRecord,
+    createdAt: compressionStartedAt,
+    model: input.modelConfig,
+    systemPrompt: input.effectiveChatPreferences.systemPrompt,
+    contextMode: input.input.state.contextMode,
+  });
+  const sessionWithRunningCompression: ChatSession = {
+    ...input.input.session,
+    messages: [...input.input.existingMessages, input.input.userMessage, runningCompressionMessage],
+  };
+
+  if (input.input.privateMode) {
+    input.input.set({ privateChatSession: sessionWithRunningCompression });
+  } else {
+    await saveChatSession(sessionWithRunningCompression);
+    input.input.set((current) => ({
+      chatSessions: upsertSession(current.chatSessions, sessionWithRunningCompression),
+      sending: isSessionTaskRunning(current.chatTasksBySessionId, sessionWithRunningCompression.id),
+    }));
+  }
+
+  const saveFailedCompressionMessage = async (message: string): Promise<void> => {
+    const failedCompressionRecord = createContextCompressionToolCallRecord({
+      id: compressionToolCallId,
+      status: "error",
+      startedAt: compressionStartedAt,
+      completedAt: Date.now(),
+      errorMessage: message,
+    });
+    const failedCompressionMessage: ChatMessage = {
+      ...runningCompressionMessage,
+      toolCallRecords: [failedCompressionRecord],
+    };
+    const failedCompressionSession: ChatSession = {
+      ...sessionWithRunningCompression,
+      updatedAt: Date.now(),
+      messages: [...input.input.existingMessages, input.input.userMessage, failedCompressionMessage],
+    };
+    if (input.input.privateMode) {
+      input.input.set({ privateChatSession: failedCompressionSession });
+      return;
+    }
+
+    await saveChatSession(failedCompressionSession);
+    input.input.set((current) => ({ chatSessions: upsertSession(current.chatSessions, failedCompressionSession) }));
+  };
+
+  const compressionRequest: AppChatSendMessage = {
+    type: "chat.send",
+    model: input.modelConfig,
+    messages: createContextCompressionMessages({
+      model: input.modelConfig,
+      compressionPrompt: input.effectiveChatPreferences.contextCompressionPrompt,
+      messages: messagesToCompress,
+    }),
+    stream: false,
+    retryCount: input.effectiveChatPreferences.aiRequestRetryCount,
+    tokenUsageSource: "context_compression",
+  };
+  const portResponse = await sendPortChatMessage({
+    request: compressionRequest,
+    onAbortHandle: (handle) => registerChatTaskAbortHandle(sessionWithRunningCompression.id, input.chatTaskId, handle),
+  });
+  const response = portResponse ?? await sendRuntimeMessage<
+    | {
+        ok: true;
+        content: string;
+        tokenUsageEntries?: ChatTokenUsageEntry[];
+      }
+    | { ok: false; message: string; canceled?: boolean }
+    | undefined
+  >(compressionRequest);
+
+  if (!response) {
+    const message = "聊天上下文压缩失败，请稍后重试";
+    input.input.set({ failure: { message } });
+    await saveFailedCompressionMessage(message);
+    throw new ContextCompressionError("上下文压缩失败");
+  }
+  if (!response.ok && response.canceled) {
+    await saveFailedCompressionMessage(response.message);
+    throw new ContextCompressionCanceledError("上下文压缩已取消");
+  }
+  if (!response.ok) {
+    input.input.set({ failure: { message: response.message } });
+    await saveFailedCompressionMessage(response.message);
+    throw new ContextCompressionError("上下文压缩失败");
+  }
+  if (!response.content.trim()) {
+    const message = "聊天上下文压缩失败，请稍后重试";
+    input.input.set({ failure: { message } });
+    await saveFailedCompressionMessage(message);
+    throw new ContextCompressionError("上下文压缩失败");
+  }
+
+  if (!isSessionTaskRunning(input.input.get().chatTasksBySessionId, sessionWithRunningCompression.id)) {
+    await saveFailedCompressionMessage("已终止本次生成。");
+    throw new ContextCompressionCanceledError("上下文压缩已取消");
+  }
+
+  const summaryCreatedAt = Date.now();
+  const summaryMessage = createContextSummaryMessage({
+    content: response.content,
+    createdAt: summaryCreatedAt,
+    model: input.modelConfig,
+    systemPrompt: input.effectiveChatPreferences.systemPrompt,
+    contextMode: input.input.state.contextMode,
+    tokenUsageEntries: response.tokenUsageEntries,
+  });
+
+  const completedCompressionRecord = createContextCompressionToolCallRecord({
+    id: compressionToolCallId,
+    status: "success",
+    startedAt: compressionStartedAt,
+    completedAt: summaryCreatedAt,
+    resultSummary: summaryMessage.content,
+  });
+  const completedCompressionMessage: ChatMessage = {
+    ...runningCompressionMessage,
+    toolCallRecords: [completedCompressionRecord],
+  };
+  const sessionWithCompletedCompression: ChatSession = {
+    ...sessionWithRunningCompression,
+    updatedAt: summaryCreatedAt,
+    messages: [...input.input.existingMessages, summaryMessage, input.input.userMessage, completedCompressionMessage],
+    tokenUsageEntries: mergeTokenUsageEntries(sessionWithRunningCompression.tokenUsageEntries, response.tokenUsageEntries),
+  };
+  if (input.input.privateMode) {
+    input.input.set({ privateChatSession: sessionWithCompletedCompression });
+  } else {
+    await saveChatSession(sessionWithCompletedCompression);
+    input.input.set((current) => ({
+      chatSessions: upsertSession(current.chatSessions, sessionWithCompletedCompression),
+      sending: isSessionTaskRunning(current.chatTasksBySessionId, sessionWithCompletedCompression.id),
+    }));
+  }
+
+  return {
+    requestExistingMessages: [summaryMessage],
+    sessionMessages: sessionWithCompletedCompression.messages,
+    tokenUsageEntries: response.tokenUsageEntries,
+  };
+}
+
+async function runChatRequest(input: RunChatRequestInput): Promise<RunChatRequestResult> {
   const effectiveChatPreferences = resolveEffectiveChatPreferences(input.state.chatPreferences, input.session.chatPreferenceOverrides);
   const modelConfig = createModelConfig(input.provider, input.model, effectiveChatPreferences);
   const now = Date.now();
   const chatTask = createChatTask(input.session.id, now);
+  let preparedContext: PreparedContextCompressionResult | undefined;
   const nextSession: ChatSession = {
     ...input.session,
     title: input.nextTitle,
@@ -1710,16 +1914,35 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
     };
   });
   let taskStatus: "completed" | "failed" | "canceled" = "completed";
+  let requestStarted = false;
 
   try {
+    preparedContext = await prepareContextCompression({
+      input,
+      modelConfig,
+      effectiveChatPreferences,
+      chatTaskId: chatTask.id,
+    });
+    if (!isSessionTaskRunning(input.get().chatTasksBySessionId, nextSession.id)) {
+      taskStatus = "canceled";
+      return { taskStatus, requestStarted };
+    }
+    const requestExistingMessages = preparedContext?.requestExistingMessages ?? input.existingMessages;
+    const requestNextMessages = preparedContext?.sessionMessages ?? input.nextMessages;
+    const sessionToSave: ChatSession = {
+      ...nextSession,
+      messages: requestNextMessages,
+      tokenUsageEntries: mergeTokenUsageEntries(nextSession.tokenUsageEntries, preparedContext?.tokenUsageEntries),
+    };
+
     if (input.privateMode) {
-      input.set({ privateChatSession: nextSession });
+      input.set({ privateChatSession: sessionToSave });
     } else {
-      await saveChatSession(nextSession);
+      await saveChatSession(sessionToSave);
       input.set((current) => ({
-        activeSessionId: current.activeSessionId || nextSession.id,
-        chatSessions: upsertSession(current.chatSessions, nextSession),
-        sending: isSessionTaskRunning(current.chatTasksBySessionId, current.activeSessionId || nextSession.id),
+        activeSessionId: current.activeSessionId || sessionToSave.id,
+        chatSessions: upsertSession(current.chatSessions, sessionToSave),
+        sending: isSessionTaskRunning(current.chatTasksBySessionId, current.activeSessionId || sessionToSave.id),
       }));
     }
 
@@ -1735,7 +1958,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
       });
     }
 
-    const registeredModelTools = getRegisteredModelTools(input.state.mcpSettings);
+    const registeredModelTools = filterConfiguredModelTools(getRegisteredModelTools(input.state.mcpSettings), input.state.webSearchSettings);
     const enabledTools = effectiveChatPreferences.toolCallingEnabled
       ? resolveEnabledModelTools(
           registeredModelTools,
@@ -1750,10 +1973,11 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
       messages: buildChatRequestMessages({
         model: modelConfig,
         pageContext: input.pageContextPrompt,
-        existingMessages: input.existingMessages,
+        existingMessages: requestExistingMessages,
         userMessage: input.userMessage,
         systemPrompt: effectiveChatPreferences.systemPrompt,
         appendPageContextToSystemPrompt: input.state.appendPageContextToSystemPrompt,
+        maxContextTokens: effectiveChatPreferences.maxTokens,
       }),
       stream: requestStreamMode,
       retryCount: effectiveChatPreferences.aiRequestRetryCount,
@@ -1777,6 +2001,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
         : {}),
     };
 
+    requestStarted = true;
     {
       const streamResult = await sendStreamingChatMessage({
         set: input.set,
@@ -1803,7 +2028,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
         taskStatus = "failed";
       }
       if (streamResult.completed) {
-        return;
+        return { taskStatus, requestStarted };
       }
 
       request.stream = false;
@@ -1827,13 +2052,13 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
     if (!response) {
       taskStatus = "failed";
       input.set((current) => (shouldShowFailureForSession(current, nextSession.id) ? { failure: { message: "模型请求失败，请重试" } } : {}));
-      return;
+      return { taskStatus, requestStarted };
     }
 
     if (!response.ok) {
       taskStatus = "failed";
       input.set((current) => (shouldShowFailureForSession(current, nextSession.id) ? { failure: { message: response.message } } : {}));
-      return;
+      return { taskStatus, requestStarted };
     }
 
     const assistantCreatedAt = Date.now();
@@ -1852,6 +2077,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
       contextMode: input.state.contextMode,
       matchedRuleId: input.state.pageContext.matchedRuleId,
       toolAttachments: response.toolAttachments,
+      tokenUsageEntryIds: response.tokenUsageEntries?.map((entry) => entry.id),
     };
     const assistantMessages = [...(response.toolTurnMessages ?? []), assistantMessage];
     if (input.privateMode) {
@@ -1870,7 +2096,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
           },
         };
       });
-      return;
+      return { taskStatus, requestStarted };
     }
 
     const completedSession = await updateChatSession(nextSession.id, (latestSession) => ({
@@ -1880,7 +2106,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
       messages: [...latestSession.messages, ...assistantMessages],
     }));
     if (!completedSession) {
-      return;
+      return { taskStatus, requestStarted };
     }
 
     input.set((current) => {
@@ -1898,8 +2124,15 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
         }),
       };
     });
-  } catch {
+  } catch (error) {
+    if (error instanceof ContextCompressionCanceledError) {
+      taskStatus = "canceled";
+      return { taskStatus, requestStarted };
+    }
     taskStatus = "failed";
+    if (error instanceof ContextCompressionError) {
+      return { taskStatus, requestStarted };
+    }
     input.set((current) =>
       shouldShowFailureForSession(current, nextSession.id)
         ? {
@@ -1920,8 +2153,12 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
         sending: isSessionTaskRunning(chatTasksBySessionId, current.activeSessionId),
       };
     });
-    void consumeNextQueuedFollowUp(nextSession.id, input.get, input.set);
+    if (requestStarted) {
+      void consumeNextQueuedFollowUp(nextSession.id, input.get, input.set);
+    }
   }
+
+  return { taskStatus, requestStarted };
 }
 
 function markChatFollowUpConsumed(set: StoreSetter, sessionId: string, followUpId: string): void {
@@ -1970,28 +2207,56 @@ async function consumeNextQueuedFollowUp(sessionId: string, get: StoreGetter, se
 
   // 跟进队列必须等当前任务完成后再消费；先临时移除可避免 runChatRequest 收尾时重复看到同一条。
   removeQueuedFollowUp(set, sessionId, nextFollowUp.id);
-  let sent = false;
-  if (nextFollowUp.userMessageId) {
-    sent = await sendExistingFollowUpMessageWithState({
-      sessionId,
-      messageId: nextFollowUp.userMessageId,
-      get,
-      set,
-    });
-  } else {
-    sent = await sendChatMessageWithState({
-      content: nextFollowUp.content,
-      attachments: nextFollowUp.attachments ?? [],
-      promptInvocations: nextFollowUp.promptInvocations ?? [],
-      targetSessionId: sessionId,
-      get,
-      set,
-    });
+  if (!nextFollowUp.userMessageId && !validateQueuedFollowUpBeforeAppend({ sessionId, followUp: nextFollowUp, get, set })) {
+    restoreQueuedFollowUp(set, sessionId, nextFollowUp);
+    return;
   }
+  const userMessageId = nextFollowUp.userMessageId ?? appendFollowUpUserMessage({
+    sessionId,
+    followUp: nextFollowUp,
+    state: get(),
+    set,
+  });
+  const queuedFollowUp: ChatFollowUpItem = { ...nextFollowUp, userMessageId };
+  const sent = await sendExistingFollowUpMessageWithState({
+    sessionId,
+    messageId: userMessageId,
+    get,
+    set,
+  });
 
   if (!sent) {
-    restoreQueuedFollowUp(set, sessionId, nextFollowUp);
+    restoreQueuedFollowUp(set, sessionId, queuedFollowUp);
   }
+}
+
+function validateQueuedFollowUpBeforeAppend(input: {
+  sessionId: string;
+  followUp: Pick<ChatFollowUpItem, "attachments">;
+  get: StoreGetter;
+  set: StoreSetter;
+}): boolean {
+  const state = input.get();
+  const session = state.privateModeActive && state.privateChatSession?.id === input.sessionId
+    ? state.privateChatSession
+    : state.chatSessions.find((item) => item.id === input.sessionId);
+  if (!session || isSessionTaskRunning(state.chatTasksBySessionId, session.id)) {
+    return false;
+  }
+
+  const selectedModelId = session.selectedModelId || state.selectedModelId;
+  const model = state.models.find((item) => item.id === selectedModelId);
+  const provider = model ? state.providers.find((item) => item.id === model.providerId) : undefined;
+  if (!model || !provider || !model.enabled || !provider.enabled) {
+    input.set({ failure: { message: "请先配置可用模型后再发送" } });
+    return false;
+  }
+  if ((input.followUp.attachments?.length ?? 0) > 0 && !model.supportsVision) {
+    input.set({ failure: { message: "当前模型不支持视觉理解，无法添加图片" } });
+    return false;
+  }
+
+  return true;
 }
 
 function removeQueuedFollowUp(set: StoreSetter, sessionId: string, followUpId: string): void {

@@ -15,6 +15,9 @@ export function ChatPreferenceDrawer({ open, onOpenChange }: ChatPreferenceDrawe
   const systemPromptInput = useComposedTextInput(overrides.systemPrompt ?? "", (systemPrompt) => {
     void updateActiveSessionChatPreferences({ systemPrompt });
   });
+  const contextCompressionPromptInput = useComposedTextInput(overrides.contextCompressionPrompt ?? "", (contextCompressionPrompt) => {
+    void updateActiveSessionChatPreferences({ contextCompressionPrompt });
+  });
 
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -38,6 +41,15 @@ export function ChatPreferenceDrawer({ open, onOpenChange }: ChatPreferenceDrawe
                 {...systemPromptInput}
               />
             </label>
+            <label className="grid gap-1 text-sm">
+              上下文压缩 Prompt
+              <textarea
+                className="ui-input min-h-28"
+                aria-label="当前聊天上下文压缩 Prompt"
+                placeholder={chatPreferences.contextCompressionPrompt}
+                {...contextCompressionPromptInput}
+              />
+            </label>
             <div className="chat-preference-grid">
               <PreferenceNumberInput
                 label="temperature"
@@ -49,12 +61,22 @@ export function ChatPreferenceDrawer({ open, onOpenChange }: ChatPreferenceDrawe
                 onChange={(value) => void updateActiveSessionChatPreferences({ temperature: value })}
               />
               <PreferenceNumberInput
-                label="max_token"
+                label="最大聊天上下文（token）"
                 value={overrides.maxTokens}
                 placeholder={chatPreferences.maxTokens}
                 min={1}
+                max={1_000_000}
                 step={1}
                 onChange={(value) => void updateActiveSessionChatPreferences({ maxTokens: value })}
+              />
+              <PreferenceNumberInput
+                label="自动压缩阈值（%）"
+                value={overrides.contextCompressionThresholdPercent}
+                placeholder={chatPreferences.contextCompressionThresholdPercent}
+                min={1}
+                max={100}
+                step={1}
+                onChange={(value) => void updateActiveSessionChatPreferences({ contextCompressionThresholdPercent: value })}
               />
               <PreferenceNumberInput
                 label="top_k"

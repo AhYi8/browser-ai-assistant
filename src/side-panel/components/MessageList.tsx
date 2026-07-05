@@ -3,6 +3,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { formatNetworkAttachmentSummary, redactNetworkRequestDetail } from "../../shared/networkContext";
 import { formatTavilySearchAttachmentSummary } from "../../shared/webSearch/tavily";
+import { CONTEXT_COMPRESSION_TOOL_ID } from "../../shared/chat/contextCompression";
 import {
   aggregateToolAttachmentGroupByKind,
   collectMessageToolAttachments,
@@ -158,6 +159,10 @@ export function MessageList({
   return (
     <section aria-label="消息列表" className="message-list" ref={messageListRef} onScroll={handleMessageListScroll}>
       {messages.map((message) => {
+        if (message.assistantMessageKind === "context_summary") {
+          return null;
+        }
+
         const isToolCallTurn = message.role === "assistant" && message.assistantMessageKind === "tool_call_turn";
         const toolCallRecords = message.toolCallRecords ?? [];
         const shouldShowToolCallTimeline = shouldShowToolCallTimelineForMessage(message, toolCallDisplayMode, showToolCallProcessInAssistantMode);
@@ -995,6 +1000,12 @@ export function getJsSourceAttachmentDisplayCount(attachment: ChatToolAttachment
 
 function formatToolCallLine(record: ChatToolCallRecord): string {
   const query = typeof record.arguments.query === "string" && record.arguments.query.trim() ? `：${record.arguments.query.trim()}` : "";
+  if (record.toolId === CONTEXT_COMPRESSION_TOOL_ID) {
+    if (record.status === "running") {
+      return "正在进行上下文压缩";
+    }
+    return record.status === "error" ? "上下文压缩失败" : "上下文压缩";
+  }
   if (record.toolId === "chat.follow_up_guidance") {
     return `${record.displayName}${query}`;
   }
@@ -1089,9 +1100,13 @@ function shouldShowToolCallTimelineForMessage(
     return false;
   }
 
-  return displayMode === "compact" || showToolCallProcessInAssistantMode || isGuidanceToolTurnMessage(message);
+  return displayMode === "compact" || showToolCallProcessInAssistantMode || isGuidanceToolTurnMessage(message) || isContextCompressionToolTurnMessage(message);
 }
 
 function isGuidanceToolTurnMessage(message: ChatMessage): boolean {
   return Boolean(message.toolCallRecords?.some((record) => record.toolId === "chat.follow_up_guidance"));
+}
+
+function isContextCompressionToolTurnMessage(message: ChatMessage): boolean {
+  return Boolean(message.toolCallRecords?.some((record) => record.toolId === CONTEXT_COMPRESSION_TOOL_ID));
 }

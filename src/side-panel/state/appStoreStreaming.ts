@@ -47,6 +47,10 @@ interface StreamingChatResult {
   unconsumedFollowUpIds?: string[];
 }
 
+export type PortChatMessageResult =
+  | { ok: true; content: string; tokenUsageEntries?: ChatTokenUsageEntry[] }
+  | { ok: false; message: string; canceled?: boolean };
+
 interface StreamingChatInput {
   set: StoreSetter;
   sessionId: string;
@@ -74,6 +78,80 @@ interface StreamingChatInput {
 }
 
 type AssistantPlaceholderInput = Omit<StreamingChatInput, "request">;
+
+export async function sendPortChatMessage(input: {
+  request: AppChatSendMessage;
+  onAbortHandle?: (handle: () => void) => void;
+}): Promise<PortChatMessageResult | undefined> {
+  if (!globalThis.chrome?.runtime?.connect) {
+    return undefined;
+  }
+
+  return new Promise<PortChatMessageResult>((resolve) => {
+    const port = globalThis.chrome.runtime.connect({ name: "chat.stream" });
+    let settled = false;
+    let canceledByUser = false;
+    let pendingTokenUsageEntries: ChatTokenUsageEntry[] | undefined;
+    const finish = (result: PortChatMessageResult, options: { disconnect: boolean } = { disconnect: true }) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      if (options.disconnect) {
+        port.disconnect();
+      }
+      resolve(result);
+    };
+
+    input.onAbortHandle?.(() => {
+      if (settled) {
+        return;
+      }
+
+      canceledByUser = true;
+      port.disconnect();
+    });
+
+    port.onMessage.addListener((message: ChatStreamPortMessage) => {
+      if (message.type === "token_usage") {
+        pendingTokenUsageEntries = mergeTokenUsageEntries(pendingTokenUsageEntries, message.tokenUsageEntries);
+        return;
+      }
+
+      if (message.type === "complete") {
+        finish({
+          ok: true,
+          content: message.content,
+          tokenUsageEntries: mergeTokenUsageEntries(pendingTokenUsageEntries, message.tokenUsageEntries),
+        });
+        return;
+      }
+
+      if (message.type === "error") {
+        finish({ ok: false, message: resolveStreamPortFailureMessage(message) });
+      }
+    });
+
+    port.onDisconnect.addListener(() => {
+      if (settled) {
+        return;
+      }
+
+      if (canceledByUser) {
+        finish({ ok: false, message: STREAM_CANCELED_MESSAGE, canceled: true }, { disconnect: false });
+        return;
+      }
+
+      finish({ ok: false, message: STREAM_FAILURE_MESSAGE }, { disconnect: false });
+    });
+
+    port.postMessage({
+      type: "chat.stream.start",
+      payload: input.request,
+    });
+  });
+}
 
 async function appendChatMessageToSession(
   sessionId: string,
@@ -702,6 +780,7 @@ async function finalizeAssistantMessage(
   privateMode = false,
   options: FinalizeAssistantOptions = {},
 ): Promise<void> {
+  const nextTokenUsageEntryIds = options.tokenUsageEntries?.map((entry) => entry.id);
   if (privateMode) {
     set((current) => {
       const updated = updatePrivateAssistantMessageInState(current, sessionId, messageId, (message) => ({
@@ -711,6 +790,7 @@ async function finalizeAssistantMessage(
         reasoningContent: options.reasoningContent ?? message.reasoningContent,
         toolCallRecords: options.toolCallRecords ?? message.toolCallRecords,
         toolAttachments: mergeToolAttachments(message.toolAttachments, options.toolAttachments),
+        tokenUsageEntryIds: nextTokenUsageEntryIds ?? message.tokenUsageEntryIds,
         streaming: false,
       }));
       if (!updated.privateChatSession) {
@@ -740,6 +820,7 @@ async function finalizeAssistantMessage(
             reasoningContent: options.reasoningContent ?? message.reasoningContent,
             toolCallRecords: options.toolCallRecords ?? message.toolCallRecords,
             toolAttachments: mergeToolAttachments(message.toolAttachments, options.toolAttachments),
+            tokenUsageEntryIds: nextTokenUsageEntryIds ?? message.tokenUsageEntryIds,
             streaming: false,
           }
         : message,
@@ -758,6 +839,7 @@ async function finalizeAssistantMessage(
         reasoningContent: options.reasoningContent ?? message.reasoningContent,
         toolCallRecords: options.toolCallRecords ?? message.toolCallRecords,
         toolAttachments: mergeToolAttachments(message.toolAttachments, options.toolAttachments),
+        tokenUsageEntryIds: nextTokenUsageEntryIds ?? message.tokenUsageEntryIds,
         streaming: false,
       }),
       options.tokenUsageEntries,

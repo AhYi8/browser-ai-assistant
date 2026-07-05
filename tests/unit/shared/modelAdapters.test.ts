@@ -661,7 +661,7 @@ describe("模型适配器", () => {
     expect(payload.body).not.toHaveProperty("tool_choice");
   });
 
-  it("创建聊天模型配置时允许用聊天偏好覆盖采样参数", () => {
+  it("创建聊天模型配置时允许用聊天偏好覆盖采样参数但不覆盖输出上限", () => {
     const model = createModelConfig(createProvider(), createProviderModel(), {
       systemPrompt: "全局系统提示",
       temperature: 0.4,
@@ -672,7 +672,7 @@ describe("模型适配器", () => {
     expect(model).toMatchObject({
       systemPrompt: "全局系统提示",
       temperature: 0.4,
-      maxTokens: 2048,
+      maxTokens: 256,
       topK: 20,
     });
   });
