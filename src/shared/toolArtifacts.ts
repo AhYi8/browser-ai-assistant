@@ -17,6 +17,7 @@ import type {
   ChatWebSearchResult,
   ChatWebSearchPayload,
   ChatWebSearchToolAttachment,
+  ToolAttachmentContextMode,
   JsSourceContext,
   JsSourceFetchFailure,
   JsSourceMatch,
@@ -34,8 +35,13 @@ const TOOL_ATTACHMENT_KIND_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const GENERIC_DETAIL_LIMIT = 4000;
 const AUTOMATION_EVIDENCE_LIMIT = 500;
 const AUTOMATION_CONCLUSION_LIMIT = 800;
+const TOOL_ATTACHMENT_CONTEXT_ITEM_LIMIT = 50;
+const TOOL_ATTACHMENT_CONTEXT_TEXT_LIMIT = 500;
+const TOOL_ATTACHMENT_CONTEXT_URL_LIMIT = 240;
 const SENSITIVE_INLINE_PATTERN = /\b(token|access_token|refresh_token|password|passwd|secret|api[_-]?key|authorization|session|cookie|csrf|jwt)\s*[:=]\s*([^\s,;&"'<>]+)/gi;
 const BEARER_INLINE_PATTERN = /\bBearer\s+[A-Za-z0-9._~+/=-]+/gi;
+
+export type ChatToolAttachmentsById = Record<string, ChatToolAttachment>;
 
 type ToolAttachmentAggregateGroup = {
   attachments: ChatToolAttachment[];
@@ -106,18 +112,228 @@ export function createAutomationReportToolAttachment(input: {
   return report;
 }
 
-export function collectMessageToolAttachments(message: ChatMessage): ChatToolAttachment[] {
-  return aggregateToolAttachments(collectRawMessageToolAttachments(message), message.toolCallRecords);
+export function collectMessageToolAttachments(message: ChatMessage, toolAttachmentsById?: ChatToolAttachmentsById): ChatToolAttachment[] {
+  return aggregateToolAttachments(collectRawMessageToolAttachments(message, toolAttachmentsById), message.toolCallRecords);
 }
 
 // 原始附件用于工具调用详情追溯；聚合附件用于消息展示、导出和后续追问，避免同一轮多次工具调用撑开附件区。
-export function collectRawMessageToolAttachments(message: ChatMessage): ChatToolAttachment[] {
-  const attachments = uniqueToolAttachmentsById(message.toolAttachments ?? []);
+export function collectRawMessageToolAttachments(message: ChatMessage, toolAttachmentsById?: ChatToolAttachmentsById): ChatToolAttachment[] {
+  const referencedAttachments = (message.toolAttachmentIds ?? [])
+    .map((id) => toolAttachmentsById?.[id])
+    .filter((attachment): attachment is ChatToolAttachment => Boolean(attachment));
+  const attachments = uniqueToolAttachmentsById([...referencedAttachments, ...(message.toolAttachments ?? [])]);
   const legacyAttachments: ChatToolAttachment[] = [];
   if (message.networkContextAttachment) {
     legacyAttachments.push(createNetworkToolAttachment(message.networkContextAttachment));
   }
   return mergeCompatibleToolAttachments(attachments, legacyAttachments);
+}
+
+export function collectMessageToolAttachmentIds(message: ChatMessage, toolAttachmentsById?: ChatToolAttachmentsById): string[] {
+  const ids = new Set<string>();
+  for (const id of message.toolAttachmentIds ?? []) {
+    if (typeof id === "string" && id.trim()) {
+      ids.add(id.trim());
+    }
+  }
+  for (const attachment of collectRawMessageToolAttachments(message, toolAttachmentsById)) {
+    ids.add(attachment.id);
+  }
+  return [...ids];
+}
+
+export function mergeToolAttachmentsIntoStore(
+  current: ChatToolAttachmentsById | undefined,
+  attachments: ChatToolAttachment[] | undefined,
+  options: { detailPoolKeepLimit?: number } = {},
+): ChatToolAttachmentsById | undefined {
+  const next: ChatToolAttachmentsById = { ...(current ?? {}) };
+  for (const attachment of prepareToolAttachmentsForPersistence(attachments, options)) {
+    next[attachment.id] = attachment;
+  }
+  return Object.keys(next).length ? next : undefined;
+}
+
+export function mergeToolAttachmentStores(
+  current: ChatToolAttachmentsById | undefined,
+  nextStore: ChatToolAttachmentsById | undefined,
+  options: { detailPoolKeepLimit?: number } = {},
+): ChatToolAttachmentsById | undefined {
+  return mergeToolAttachmentsIntoStore(current, nextStore ? Object.values(nextStore) : undefined, options);
+}
+
+export function prepareToolAttachmentsForPersistence(
+  attachments: ChatToolAttachment[] | undefined,
+  options: { detailPoolKeepLimit?: number } = {},
+): ChatToolAttachment[] {
+  const keepLimit = normalizeToolDetailPoolKeepLimit(options.detailPoolKeepLimit, 500);
+  return (attachments ?? [])
+    .map((attachment) => applyToolAttachmentRetentionPolicy(attachment, keepLimit))
+    .filter((attachment): attachment is ChatToolAttachment => Boolean(attachment));
+}
+
+export function normalizeToolDetailPoolKeepLimit(value: unknown, fallback = 500): number {
+  const numberValue = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numberValue)) {
+    return fallback;
+  }
+  return Math.max(0, Math.round(numberValue));
+}
+
+function applyToolAttachmentRetentionPolicy(attachment: ChatToolAttachment, keepLimit: number): ChatToolAttachment | undefined {
+  if (isNetworkToolAttachment(attachment)) {
+    return applyNetworkAttachmentRetentionPolicy(attachment, keepLimit);
+  }
+
+  if (isJsSourceToolAttachment(attachment)) {
+    return applyJsSourceAttachmentRetentionPolicy(attachment, keepLimit);
+  }
+
+  if (isSourceMapToolAttachment(attachment)) {
+    return applySourceMapAttachmentRetentionPolicy(attachment, keepLimit);
+  }
+
+  return attachment;
+}
+
+function applyNetworkAttachmentRetentionPolicy(
+  attachment: ChatNetworkToolAttachment,
+  keepLimit: number,
+): ChatNetworkToolAttachment | undefined {
+  const relevantRequests = attachment.requests.filter((request) => !isDiscardableNetworkNoise(request));
+  if (relevantRequests.length === 0) {
+    return undefined;
+  }
+
+  const requests = keepLimit > 0
+    ? relevantRequests.slice(0, keepLimit)
+    : relevantRequests.map(createNetworkRequestSummaryOnly);
+  return {
+    ...attachment,
+    requests,
+    retentionMode: keepLimit > 0 && requests.some(hasNetworkRequestDetailPayload) ? "detail_pool" : "summary",
+    summary: formatNetworkAttachmentSummary(requests),
+    truncated: attachment.truncated || relevantRequests.length > requests.length,
+  };
+}
+
+function applyJsSourceAttachmentRetentionPolicy(
+  attachment: ChatJsSourceToolAttachment,
+  keepLimit: number,
+): ChatJsSourceToolAttachment | undefined {
+  const resources = attachment.resources.slice(0, keepLimit || TOOL_ATTACHMENT_CONTEXT_ITEM_LIMIT);
+  const jsMatches = keepLimit > 0 ? attachment.jsMatches.slice(0, keepLimit) : [];
+  const contexts = keepLimit > 0 ? attachment.contexts.slice(0, keepLimit) : [];
+  if (!resources.length && !jsMatches.length && !contexts.length && !attachment.failedFetches.length) {
+    return undefined;
+  }
+
+  const nextAttachment: ChatJsSourceToolAttachment = {
+    ...attachment,
+    resources,
+    jsMatches,
+    contexts,
+    retentionMode: jsMatches.length || contexts.length ? "detail_pool" : "summary",
+    truncated: attachment.truncated ||
+      attachment.resources.length > resources.length ||
+      attachment.jsMatches.length > jsMatches.length ||
+      attachment.contexts.length > contexts.length,
+  };
+  return {
+    ...nextAttachment,
+    summary: formatJsSourceAttachmentSummary(nextAttachment),
+  };
+}
+
+function applySourceMapAttachmentRetentionPolicy(
+  attachment: ChatSourceMapToolAttachment,
+  keepLimit: number,
+): ChatSourceMapToolAttachment | undefined {
+  const candidates = attachment.candidates.slice(0, keepLimit || TOOL_ATTACHMENT_CONTEXT_ITEM_LIMIT);
+  const resolvedLocations = attachment.resolvedLocations.slice(0, keepLimit || TOOL_ATTACHMENT_CONTEXT_ITEM_LIMIT);
+  const originalContexts = keepLimit > 0 ? attachment.originalContexts.slice(0, keepLimit) : [];
+  if (!candidates.length && !resolvedLocations.length && !originalContexts.length && !attachment.failures.length) {
+    return undefined;
+  }
+
+  const nextAttachment: ChatSourceMapToolAttachment = {
+    ...attachment,
+    candidates,
+    resolvedLocations,
+    originalContexts,
+    retentionMode: originalContexts.length ? "detail_pool" : "summary",
+    truncated: attachment.truncated ||
+      attachment.candidates.length > candidates.length ||
+      attachment.resolvedLocations.length > resolvedLocations.length ||
+      attachment.originalContexts.length > originalContexts.length,
+  };
+  return {
+    ...nextAttachment,
+    summary: formatSourceMapAttachmentSummary(nextAttachment),
+  };
+}
+
+function createNetworkRequestSummaryOnly(request: ChatNetworkToolAttachment["requests"][number]): ChatNetworkToolAttachment["requests"][number] {
+  return {
+    id: request.id,
+    url: request.url,
+    method: request.method,
+    status: request.status,
+    statusText: request.statusText,
+    mimeType: request.mimeType,
+    resourceType: request.resourceType,
+    startedAt: request.startedAt,
+    durationMs: request.durationMs,
+    failed: request.failed,
+    error: request.error,
+    truncated: request.truncated,
+    redacted: true,
+  };
+}
+
+function hasNetworkRequestDetailPayload(request: ChatNetworkToolAttachment["requests"][number]): boolean {
+  return Boolean(
+    request.requestHeaders?.length ||
+    request.responseHeaders?.length ||
+    request.requestBody?.trim() ||
+    request.responseBody?.trim(),
+  );
+}
+
+function isDiscardableNetworkNoise(request: ChatNetworkToolAttachment["requests"][number]): boolean {
+  const resourceType = (request.resourceType ?? "").toLowerCase();
+  const mimeType = (request.mimeType ?? "").toLowerCase();
+  const url = request.url.toLowerCase();
+  const staticResource = (
+    ["image", "font", "media", "stylesheet"].includes(resourceType) ||
+    /^(image|font|audio|video)\//.test(mimeType) ||
+    /\.(?:png|jpe?g|gif|webp|svg|ico|woff2?|ttf|otf|mp4|webm|mp3|css)(?:[?#]|$)/i.test(url)
+  );
+  const noisyEndpoint = /(doubleclick|googletagmanager|google-analytics|analytics|collect|beacon|sentry|adsystem|adservice|tracking|track|umeng|cnzz)/i.test(url);
+  return Boolean(staticResource || noisyEndpoint);
+}
+
+export function uniqueToolAttachmentIds(ids: readonly string[] | undefined): string[] | undefined {
+  const unique = uniqueNonEmptyStrings((ids ?? []).filter((item): item is string => typeof item === "string"));
+  return unique.length ? unique : undefined;
+}
+
+export function moveMessageToolAttachmentsToRefs(message: ChatMessage): ChatMessage {
+  const legacyAttachments = message.networkContextAttachment ? [createNetworkToolAttachment(message.networkContextAttachment)] : [];
+  const attachmentIds = uniqueToolAttachmentIds([
+    ...(message.toolAttachmentIds ?? []),
+    ...(message.toolAttachments ?? []).map((attachment) => attachment.id),
+    ...legacyAttachments.map((attachment) => attachment.id),
+  ]);
+  const {
+    toolAttachments: _toolAttachments,
+    networkContextAttachment: _networkContextAttachment,
+    ...messageWithoutInlineToolAttachments
+  } = message;
+  return {
+    ...messageWithoutInlineToolAttachments,
+    toolAttachmentIds: attachmentIds,
+  };
 }
 
 export function aggregateToolAttachments(attachments: ChatToolAttachment[], records: ChatToolCallRecord[] = []): ChatToolAttachment[] {
@@ -176,6 +392,57 @@ export function formatToolAttachmentForPrompt(attachment: ChatToolAttachment): s
   }
 
   return attachment.summary.trim() ? [`后续追问需要继续参考以下历史工具附件：${attachment.title}`, attachment.summary.trim()].join("\n") : undefined;
+}
+
+export function formatToolAttachmentForPromptSummary(
+  attachment: ChatToolAttachment,
+  mode: ToolAttachmentContextMode = "summary",
+): string | undefined {
+  if (mode === "none") {
+    return undefined;
+  }
+
+  if (isWebSearchToolAttachment(attachment)) {
+    return [
+      "后续追问可参考以下历史网络搜索摘要：",
+      formatWebSearchAttachmentForPromptSummary(attachment),
+    ].join("\n");
+  }
+
+  if (isNetworkToolAttachment(attachment)) {
+    return [
+      "后续追问可参考以下历史 Network 请求摘要；完整 body/header 仅保存在附件弹窗，不默认注入模型上下文：",
+      formatNetworkAttachmentForPromptSummary(attachment),
+    ].join("\n");
+  }
+
+  if (isJsSourceToolAttachment(attachment)) {
+    return [
+      "后续追问可参考以下历史 JS 资源摘要；完整源码仅保存在附件弹窗，不默认注入模型上下文：",
+      formatJsSourceAttachmentForPromptSummary(attachment),
+    ].join("\n");
+  }
+
+  if (isSourceMapToolAttachment(attachment)) {
+    return [
+      "后续追问可参考以下历史 Source Map 摘要；完整原始片段仅保存在附件弹窗，不默认注入模型上下文：",
+      formatSourceMapAttachmentForPromptSummary(attachment),
+    ].join("\n");
+  }
+
+  if (isBrowserScreenshotToolAttachment(attachment)) {
+    return [
+      "后续追问可参考一张历史浏览器截图附件；正文只保留元数据，不注入图片 base64：",
+      formatBrowserScreenshotAttachmentSummary(attachment),
+    ].join("\n");
+  }
+
+  if (isAutomationReportToolAttachment(attachment)) {
+    return ["后续追问可参考以下自动化任务报告摘要：", formatAutomationReportSummary(attachment)].join("\n");
+  }
+
+  const summary = attachment.summary.trim();
+  return summary ? [`后续追问可参考以下历史工具附件摘要：${attachment.title}`, summary].join("\n") : undefined;
 }
 
 export function formatToolAttachmentForExport(attachment: ChatToolAttachment): string {
@@ -1069,6 +1336,205 @@ export function formatAutomationReportTypeLabel(type: AutomationReportType): str
     return "接口分析";
   }
   return "通用自动化";
+}
+
+function formatWebSearchAttachmentForPromptSummary(attachment: ChatWebSearchToolAttachment): string {
+  const lines = [
+    `查询：${attachment.query}`,
+    `摘要：${attachment.answer || attachment.summary}`,
+    ...attachment.results.slice(0, TOOL_ATTACHMENT_CONTEXT_ITEM_LIMIT).map((result, index) =>
+      `${index + 1}. ${truncateText(result.title, 120).text} | ${truncateText(result.url, TOOL_ATTACHMENT_CONTEXT_URL_LIMIT).text}\n${truncateText(result.content, TOOL_ATTACHMENT_CONTEXT_TEXT_LIMIT).text}`,
+    ),
+  ];
+  if (attachment.results.length > TOOL_ATTACHMENT_CONTEXT_ITEM_LIMIT) {
+    lines.push(`已省略 ${attachment.results.length - TOOL_ATTACHMENT_CONTEXT_ITEM_LIMIT} 条搜索结果。`);
+  }
+  return lines.filter((line) => line.trim()).join("\n");
+}
+
+function formatNetworkAttachmentForPromptSummary(attachment: ChatNetworkToolAttachment): string {
+  const sections = [attachment.summary.trim()];
+  for (const request of attachment.requests.slice(0, TOOL_ATTACHMENT_CONTEXT_ITEM_LIMIT)) {
+    sections.push(formatNetworkRequestForPromptSummary(request));
+  }
+  if (attachment.requests.length > TOOL_ATTACHMENT_CONTEXT_ITEM_LIMIT) {
+    sections.push(`已省略 ${attachment.requests.length - TOOL_ATTACHMENT_CONTEXT_ITEM_LIMIT} 条请求。`);
+  }
+  if (attachment.truncated || attachment.redacted) {
+    sections.push(`附件状态：${attachment.redacted ? '已脱敏' : '未脱敏'}，${attachment.truncated ? '已截断' : '未截断'}。`);
+  }
+  return sections.filter((item) => item.trim()).join("\n");
+}
+
+function formatNetworkRequestForPromptSummary(request: ChatNetworkToolAttachment["requests"][number]): string {
+  const flags = [
+    request.failed ? 'failed' : undefined,
+    request.redacted ? 'redacted' : undefined,
+    request.truncated ? 'truncated' : undefined,
+  ].filter(Boolean).join(',');
+  const lines = [
+    `- ${request.id || 'unknown'}`,
+    `${request.method || 'GET'} ${request.status ?? '-'} ${request.statusText ?? ''}`.trim(),
+    request.resourceType || request.mimeType || 'unknown',
+    truncateText(request.url, TOOL_ATTACHMENT_CONTEXT_URL_LIMIT).text,
+    flags ? `标记=${flags}` : '',
+    formatNetworkRequestFieldSummary(request),
+    request.error ? `错误=${truncateText(request.error, TOOL_ATTACHMENT_CONTEXT_TEXT_LIMIT).text}` : '',
+  ].filter(Boolean);
+  return lines.join(' | ');
+}
+
+function formatNetworkRequestFieldSummary(request: ChatNetworkToolAttachment["requests"][number]): string {
+  const fieldGroups = [
+    formatNamedFields('query', collectUrlParamNames(request.url)),
+    formatNamedFields('requestHeaders', (request.requestHeaders ?? []).map((header) => header.name)),
+    formatNamedFields('responseHeaders', (request.responseHeaders ?? []).map((header) => header.name)),
+    formatNamedFields('requestBody', collectPayloadFieldPaths(request.requestBody)),
+    formatNamedFields('responseBody', collectPayloadFieldPaths(request.responseBody)),
+  ].filter(Boolean);
+
+  return fieldGroups.length ? `fields=${fieldGroups.join('; ')}` : '';
+}
+
+function formatNamedFields(label: string, fields: string[]): string {
+  const uniqueFields = uniqueNonEmptyStrings(fields).slice(0, 30);
+  return uniqueFields.length ? `${label}[${uniqueFields.join(', ')}]` : '';
+}
+
+function collectUrlParamNames(urlText: string): string[] {
+  try {
+    return Array.from(new URL(urlText).searchParams.keys());
+  } catch {
+    const queryStart = urlText.indexOf('?');
+    if (queryStart < 0) {
+      return [];
+    }
+    const queryEnd = urlText.indexOf('#', queryStart);
+    const query = urlText.slice(queryStart + 1, queryEnd >= 0 ? queryEnd : undefined);
+    return Array.from(new URLSearchParams(query).keys());
+  }
+}
+
+function collectPayloadFieldPaths(value: string | undefined): string[] {
+  if (!value?.trim()) {
+    return [];
+  }
+
+  try {
+    return collectJsonFieldPaths(JSON.parse(value));
+  } catch {
+    if (!value.includes("=") && !value.includes("&")) {
+      return [`text:${value.length}chars`];
+    }
+
+    try {
+      const keys = Array.from(new URLSearchParams(value).keys());
+      return keys.length ? keys : [`text:${value.length}chars`];
+    } catch {
+      return [`text:${value.length}chars`];
+    }
+  }
+}
+
+function collectJsonFieldPaths(value: unknown, prefix = '', output: string[] = []): string[] {
+  if (output.length >= 80) {
+    return output;
+  }
+  if (Array.isArray(value)) {
+    if (!prefix) {
+      output.push('[]');
+    }
+    if (value.length > 0) {
+      collectJsonFieldPaths(value[0], `${prefix}[]`, output);
+    }
+    return output;
+  }
+  if (value && typeof value === 'object') {
+    for (const key of Object.keys(value as Record<string, unknown>)) {
+      const path = prefix ? `${prefix}.${key}` : key;
+      output.push(path);
+      collectJsonFieldPaths((value as Record<string, unknown>)[key], path, output);
+      if (output.length >= 80) {
+        break;
+      }
+    }
+  }
+  return output;
+}
+function formatJsSourceAttachmentForPromptSummary(attachment: ChatJsSourceToolAttachment): string {
+  const sections: string[] = [formatJsSourceAttachmentSummary(attachment)];
+  if (attachment.query?.length) {
+    sections.push(`查询关键词：${attachment.query.join("、")}`);
+  }
+  if (attachment.resources.length) {
+    sections.push([
+      "资源：",
+      ...attachment.resources.slice(0, TOOL_ATTACHMENT_CONTEXT_ITEM_LIMIT).map((resource) =>
+        `- ${resource.id} | ${resource.source} | ${formatAttachmentByteSize(resource.size)} | ${resource.mimeType ?? "-"} | ${truncateText(resource.url, TOOL_ATTACHMENT_CONTEXT_URL_LIMIT).text}${resource.truncated ? " | truncated" : ""}`,
+      ),
+      ...(attachment.resources.length > TOOL_ATTACHMENT_CONTEXT_ITEM_LIMIT ? [`已省略 ${attachment.resources.length - TOOL_ATTACHMENT_CONTEXT_ITEM_LIMIT} 个资源。`] : []),
+    ].join("\n"));
+  }
+  if (attachment.jsMatches.length) {
+    sections.push([
+      "命中：",
+      ...attachment.jsMatches.slice(0, TOOL_ATTACHMENT_CONTEXT_ITEM_LIMIT).map((match) =>
+        `- ${match.resourceId}:${match.line}:${match.column} ${match.term}: ${truncateText(match.snippet, TOOL_ATTACHMENT_CONTEXT_TEXT_LIMIT).text}`,
+      ),
+      ...(attachment.jsMatches.length > TOOL_ATTACHMENT_CONTEXT_ITEM_LIMIT ? [`已省略 ${attachment.jsMatches.length - TOOL_ATTACHMENT_CONTEXT_ITEM_LIMIT} 个命中。`] : []),
+    ].join("\n"));
+  }
+  if (attachment.contexts.length) {
+    sections.push([
+      "上下文片段：",
+      ...attachment.contexts.slice(0, TOOL_ATTACHMENT_CONTEXT_ITEM_LIMIT).map((context) =>
+        `- ${context.resourceId}:${context.line}:${context.column}\n${truncateText(context.snippet, TOOL_ATTACHMENT_CONTEXT_TEXT_LIMIT).text}`,
+      ),
+      ...(attachment.contexts.length > TOOL_ATTACHMENT_CONTEXT_ITEM_LIMIT ? [`已省略 ${attachment.contexts.length - TOOL_ATTACHMENT_CONTEXT_ITEM_LIMIT} 个上下文片段。`] : []),
+    ].join("\n"));
+  }
+  if (attachment.failedFetches.length) {
+    sections.push([
+      "同源补位失败：",
+      ...attachment.failedFetches.slice(0, 20).map((failure) => `- ${truncateText(failure.url, TOOL_ATTACHMENT_CONTEXT_URL_LIMIT).text}: ${failure.message}`),
+    ].join("\n"));
+  }
+  return sections.filter((section) => section.trim()).join("\n\n");
+}
+
+function formatSourceMapAttachmentForPromptSummary(attachment: ChatSourceMapToolAttachment): string {
+  const sections: string[] = [formatSourceMapAttachmentSummary(attachment)];
+  if (attachment.candidates.length) {
+    sections.push([
+      "候选：",
+      ...attachment.candidates.slice(0, TOOL_ATTACHMENT_CONTEXT_ITEM_LIMIT).map((candidate) =>
+        `- ${candidate.resourceId} | ${candidate.source} | ${candidate.status} | ${candidate.inline ? "inline" : truncateText(candidate.url ?? "", TOOL_ATTACHMENT_CONTEXT_URL_LIMIT).text || "无 URL"}`,
+      ),
+    ].join("\n"));
+  }
+  if (attachment.resolvedLocations.length) {
+    sections.push([
+      "映射：",
+      ...attachment.resolvedLocations.slice(0, TOOL_ATTACHMENT_CONTEXT_ITEM_LIMIT).map((location) =>
+        `- ${location.resourceId}:${location.generatedLine}:${location.generatedColumn} -> ${truncateText(location.source ?? "未映射", TOOL_ATTACHMENT_CONTEXT_URL_LIMIT).text}:${location.originalLine ?? "-"}:${location.originalColumn ?? "-"}`,
+      ),
+    ].join("\n"));
+  }
+  if (attachment.originalContexts.length) {
+    sections.push([
+      "原始片段位置：",
+      ...attachment.originalContexts.slice(0, TOOL_ATTACHMENT_CONTEXT_ITEM_LIMIT).map((context) =>
+        `- ${context.resourceId}:${context.generatedLine}:${context.generatedColumn} -> ${truncateText(context.source ?? "未映射", TOOL_ATTACHMENT_CONTEXT_URL_LIMIT).text}:${context.originalLine ?? "-"}:${context.originalColumn ?? "-"}${context.truncated ? " | truncated" : ""}`,
+      ),
+    ].join("\n"));
+  }
+  if (attachment.failures.length) {
+    sections.push([
+      "失败：",
+      ...attachment.failures.slice(0, 20).map((failure) => `- ${failure.resourceId ?? truncateText(failure.url ?? "unknown", TOOL_ATTACHMENT_CONTEXT_URL_LIMIT).text}: ${failure.message}`),
+    ].join("\n"));
+  }
+  return sections.filter((section) => section.trim()).join("\n\n");
 }
 
 function formatJsSourceAttachmentForText(attachment: ChatJsSourceToolAttachment): string {

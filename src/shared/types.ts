@@ -14,6 +14,19 @@ export type TavilyIncludeRawContent = boolean | "markdown" | "text";
 export type AutomationPlaybookSource = "builtin" | "skill" | "user";
 export type AutomationPlaybookRisk = "low" | "medium" | "high" | "critical";
 export type AutomationPlaybookConfidence = "low" | "medium" | "high";
+export type ChatContextEstimateScope = "request" | "tool_loop";
+export type ChatContextEstimatePhase = "decision" | "final";
+export type ToolAttachmentContextMode = "none" | "summary" | "selected_details";
+export type ToolAttachmentRetentionMode = "discard" | "summary" | "detail_pool" | "current_turn_detail";
+
+export interface ChatContextEstimate {
+  scope: ChatContextEstimateScope;
+  phase?: ChatContextEstimatePhase;
+  estimatedContextTokens: number;
+  maxContextTokens: number;
+  thresholdPercent: number;
+  triggerThresholdTokens: number;
+}
 
 export interface McpDiscoveredTool {
   name: string;
@@ -73,6 +86,7 @@ export interface ProviderModel {
   displayName: string;
   modelId: string;
   temperature: number;
+  /** 模型请求 payload 的输出上限 max_tokens，不表示聊天上下文预算。 */
   maxTokens: number;
   topK?: number;
   systemPrompt: string;
@@ -95,6 +109,7 @@ export interface ChatPreferenceValues {
   systemPrompt: string;
   contextCompressionPrompt: string;
   contextCompressionThresholdPercent: number;
+  toolDetailPoolKeepLimit: number;
   aiRequestRetryCount: number;
   browserAutomationMaxToolIterations: number;
   defaultBrowserAutomationMode?: BrowserAutomationMode;
@@ -103,6 +118,7 @@ export interface ChatPreferenceValues {
   toolCallDisplayMode: ToolCallDisplayMode;
   showToolCallProcessInAssistantMode: boolean;
   temperature: number;
+  /** 最大聊天上下文预算，只用于请求上下文裁剪与自动压缩判断，不作为输出 max_tokens。 */
   maxTokens: number;
   topK?: number;
   sendShortcut: SendShortcut;
@@ -116,11 +132,13 @@ export interface ChatSessionPreferenceOverrides {
   systemPrompt?: string;
   contextCompressionPrompt?: string;
   contextCompressionThresholdPercent?: number;
+  toolDetailPoolKeepLimit?: number;
   aiRequestRetryCount?: number;
   browserAutomationMaxToolIterations?: number;
   toolCallingEnabled?: boolean;
   enabledToolIds?: string[];
   temperature?: number;
+  /** 当前会话覆盖的最大聊天上下文预算，不作为模型输出 max_tokens。 */
   maxTokens?: number;
   topK?: number;
 }
@@ -228,6 +246,7 @@ export interface ChatToolAttachmentBase {
   createdAt: number;
   redacted: boolean;
   truncated: boolean;
+  retentionMode?: ToolAttachmentRetentionMode;
 }
 
 export interface ChatWebSearchToolAttachment extends ChatToolAttachmentBase {
@@ -465,6 +484,7 @@ export interface ChatMessage {
   attachments?: ChatImageAttachment[];
   networkContextAttachment?: ChatNetworkContextAttachment;
   toolCallRecords?: ChatToolCallRecord[];
+  toolAttachmentIds?: string[];
   toolAttachments?: ChatToolAttachment[];
   promptInvocations?: ChatPromptInvocation[];
   thinking?: string;
@@ -484,6 +504,7 @@ export interface ChatSession {
   createdAt: number;
   updatedAt: number;
   messages: ChatMessage[];
+  toolAttachmentsById?: Record<string, ChatToolAttachment>;
   tokenUsageEntries?: ChatTokenUsageEntry[];
   chatPreferenceOverrides?: ChatSessionPreferenceOverrides;
 }

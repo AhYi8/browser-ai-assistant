@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { handleChatSendMessage } from "../../../src/background/modelRequestHandler";
+import { MODEL_OUTPUT_TRUNCATED_MESSAGE } from "../../../src/background/modelResponseStopReason";
 import type { ModelToolRegistryEntry } from "../../../src/shared/models/types";
 import type { ChatMessage, ModelConfig } from "../../../src/shared/types";
 
@@ -328,6 +329,7 @@ describe("聊天模型请求处理", () => {
         model: createModel(),
         messages: [createMessage("user", "你好")],
         stream: true,
+        retryCount: 0,
       },
       fetcher,
     );
@@ -342,6 +344,29 @@ describe("聊天模型请求处理", () => {
         method: "POST",
       }),
     );
+  });
+
+  it("非流式响应达到 max_tokens 上限时返回截断错误且不重试", async () => {
+    const fetcher = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        choices: [{ finish_reason: "length", message: { content: "半截回答" } }],
+      }),
+    });
+
+    const result = await handleChatSendMessage(
+      {
+        type: "chat.send",
+        model: createModel(),
+        messages: [createMessage("user", "你好")],
+        stream: false,
+        retryCount: 5,
+      },
+      fetcher,
+    );
+
+    expect(result).toEqual({ ok: false, message: MODEL_OUTPUT_TRUNCATED_MESSAGE });
+    expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
   it("OpenAI-compatible 流式响应会逐段回调并在完成时解析思考过程", async () => {
@@ -603,6 +628,7 @@ describe("聊天模型请求处理", () => {
         model: createModel(),
         messages: [createMessage("user", "你好")],
         stream: false,
+        retryCount: 0,
       },
       fetcher,
     );
@@ -611,6 +637,95 @@ describe("聊天模型请求处理", () => {
       ok: false,
       message: "模型响应中没有可用内容",
     });
+  });
+
+  it("非流式空模型响应会按重试次数重新请求", async () => {
+    vi.useFakeTimers();
+    const onRetryProgress = vi.fn();
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          choices: [{ message: { content: "" } }],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          choices: [{ message: { content: "重试后回答" } }],
+        }),
+      });
+
+    try {
+      const pending = handleChatSendMessage(
+        {
+          type: "chat.send",
+          model: createModel(),
+          messages: [createMessage("user", "你好")],
+          stream: false,
+          retryCount: 1,
+        },
+        fetcher,
+        { onRetryProgress },
+      );
+      await vi.runAllTimersAsync();
+
+      await expect(pending).resolves.toMatchObject({ ok: true, content: "重试后回答" });
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(onRetryProgress).toHaveBeenCalledWith({ currentRetry: 1, maxRetries: 1 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("流式空模型响应未输出内容时会按重试次数重新请求", async () => {
+    vi.useFakeTimers();
+    const encoder = new TextEncoder();
+    const createStream = (chunks: string[]) => new ReadableStream({
+      pull(controller) {
+        const chunk = chunks.shift();
+        if (chunk) {
+          controller.enqueue(encoder.encode(chunk));
+          return;
+        }
+        controller.close();
+      },
+    });
+    const onRetryProgress = vi.fn();
+    const onContentChunk = vi.fn();
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        body: createStream(["data: [DONE]\n\n"]),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        body: createStream(['data: {"choices":[{"delta":{"content":"重试后"}}]}\n\n', "data: [DONE]\n\n"]),
+      });
+
+    try {
+      const pending = handleChatSendMessage(
+        {
+          type: "chat.send",
+          model: createModel(),
+          messages: [createMessage("user", "你好")],
+          stream: true,
+          retryCount: 1,
+        },
+        fetcher,
+        { onRetryProgress, onContentChunk },
+      );
+      await vi.runAllTimersAsync();
+
+      await expect(pending).resolves.toMatchObject({ ok: true, content: "重试后" });
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(onRetryProgress).toHaveBeenCalledWith({ currentRetry: 1, maxRetries: 1 });
+      expect(onContentChunk).toHaveBeenCalledWith("重试后");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("OpenAI 工具调用响应会读取 function arguments 作为正文", async () => {
@@ -691,6 +806,7 @@ describe("聊天模型请求处理", () => {
         model: createModel(),
         messages: [createMessage("user", "读取页面")],
         stream: false,
+        retryCount: 0,
         tools: [
           {
             name: "read_page_context",
@@ -813,6 +929,132 @@ describe("聊天模型请求处理", () => {
     expect(finalBody.tool_choice).toBeUndefined();
   });
 
+  it("工具循环内上下文超阈值时会先发起无工具压缩请求并返回摘要消息", async () => {
+    registeredModelToolsMock.tools = [
+      {
+        id: "page.read_context",
+        name: "read_page_context",
+        description: "读取当前页面上下文",
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+      },
+    ];
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          choices: [{ message: { content: "压缩摘要" } }],
+          usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          choices: [
+            {
+              message: {
+                content: "",
+                tool_calls: [
+                  {
+                    id: "call-compressed",
+                    type: "function",
+                    function: { name: "read_page_context", arguments: "{}" },
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          choices: [{ message: { content: "二次压缩摘要" } }],
+          usage: { prompt_tokens: 12, completion_tokens: 6, total_tokens: 18 },
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          choices: [{ message: { content: "工具决策完成" } }],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          choices: [{ message: { content: "最终前压缩摘要" } }],
+          usage: { prompt_tokens: 14, completion_tokens: 7, total_tokens: 21 },
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          choices: [{ message: { content: "最终回答" } }],
+        }),
+      });
+
+    const result = await handleChatSendMessage(
+      {
+        type: "chat.send",
+        model: createModel(),
+        messages: [createMessage("user", "读取页面".repeat(100))],
+        stream: false,
+        enabledToolIds: ["page.read_context"],
+        toolChoice: "auto",
+        retryCount: 2,
+        contextCompression: {
+          maxContextTokens: 240,
+          thresholdPercent: 50,
+          compressionPrompt: "请压缩",
+          systemPrompt: "你是网页助手",
+          contextMode: "text",
+        },
+      },
+      fetcher,
+      {},
+      async (toolCall) => ({
+        toolCallId: toolCall.id,
+        name: toolCall.name,
+        content: "页面结构快照",
+      }),
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.message);
+    }
+    expect(result.content).toBe("最终回答");
+    expect(result.tokenUsageEntries).toEqual(expect.arrayContaining([expect.objectContaining({ source: "context_compression" })]));
+    expect(result.toolTurnMessages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ assistantMessageKind: "tool_call_turn", toolCallRecords: [expect.objectContaining({ toolId: "chat.context_compression", status: "success" })] }),
+      expect.objectContaining({ assistantMessageKind: "context_summary", content: "压缩摘要" }),
+      expect.objectContaining({ assistantMessageKind: "tool_call_turn", toolCallRecords: [expect.objectContaining({ id: "call-compressed" })] }),
+      expect.objectContaining({ assistantMessageKind: "context_summary", content: "二次压缩摘要" }),
+      expect.objectContaining({ assistantMessageKind: "context_summary", content: "最终前压缩摘要" }),
+    ]));
+    const compressionBody = JSON.parse(String(fetcher.mock.calls[0][1]?.body)) as { tools?: unknown[]; tool_choice?: unknown; messages: Array<{ content?: string }> };
+    expect(compressionBody.tools).toBeUndefined();
+    expect(compressionBody.tool_choice).toBeUndefined();
+    expect(compressionBody.messages.at(-1)?.content).toContain("读取页面");
+    const decisionBody = JSON.parse(String(fetcher.mock.calls[1][1]?.body)) as { tools?: unknown[]; messages: Array<{ role: string; content?: string }> };
+    expect(decisionBody.tools).toEqual([expect.objectContaining({ type: "function" })]);
+    expect(decisionBody.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ role: "user", content: expect.stringContaining("读取页面") }),
+        expect.objectContaining({ role: "assistant", content: "压缩摘要" }),
+        expect.objectContaining({ role: "user", content: "请基于以上压缩上下文继续当前任务。" }),
+      ]),
+    );
+    const secondCompressionBody = JSON.parse(String(fetcher.mock.calls[2][1]?.body)) as { tools?: unknown[]; tool_choice?: unknown; messages: Array<{ content?: string }> };
+    expect(secondCompressionBody.tools).toBeUndefined();
+    expect(secondCompressionBody.tool_choice).toBeUndefined();
+    expect(secondCompressionBody.messages.at(-1)?.content).toContain("页面结构快照");
+    const finalCompressionBody = JSON.parse(String(fetcher.mock.calls[4][1]?.body)) as { tools?: unknown[]; tool_choice?: unknown; messages: Array<{ content?: string }> };
+    expect(finalCompressionBody.tools).toBeUndefined();
+    expect(finalCompressionBody.tool_choice).toBeUndefined();
+    expect(finalCompressionBody.messages.at(-1)?.content).toContain("工具调用阶段已经结束");
+  });
+
   it("携带任务策略设置时会先预选 Playbook 且不改变工具暴露边界", async () => {
     registeredModelToolsMock.tools = [
       {
@@ -882,7 +1124,7 @@ describe("聊天模型请求处理", () => {
       async (toolCall) => ({
         toolCallId: toolCall.id,
         name: toolCall.name,
-        content: "页面结构快照",
+        content: "页面上下文",
       }),
     );
 
@@ -1544,7 +1786,7 @@ describe("聊天模型请求处理", () => {
     expect(finalBody.tool_choice).toBeUndefined();
   });
 
-  it("浏览器自动化最大工具轮次使用聊天请求中的偏好值", async () => {
+  it("最大工具决策轮次使用聊天请求中的偏好值", async () => {
     registeredModelToolsMock.tools = [
       {
         id: "browser.click",
@@ -1601,7 +1843,7 @@ describe("聊天模型请求处理", () => {
     expect(browserControlManagerMock.executeBrowserTool).toHaveBeenCalledTimes(2);
   });
 
-  it("浏览器自动化最大工具轮次默认使用 32 轮保护", async () => {
+  it("最大工具决策轮次默认使用 32 轮保护", async () => {
     registeredModelToolsMock.tools = [
       {
         id: "browser.click",
@@ -1658,6 +1900,63 @@ describe("聊天模型请求处理", () => {
     expect(result).toEqual({ ok: false, message: "工具调用超过最大轮次，已停止本次请求。" });
     expect(browserControlManagerMock.executeBrowserTool).toHaveBeenCalledTimes(32);
     expect(fetcher).toHaveBeenCalledTimes(32);
+  });
+
+  it("非浏览器工具也会使用配置的最大工具决策轮次", async () => {
+    registeredModelToolsMock.tools = [
+      {
+        id: "page.read_context",
+        name: "read_page_context",
+        description: "读取页面上下文",
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+      },
+    ];
+    const executeTool = vi.fn(async (call) => ({
+      toolCallId: call.id,
+      name: call.name,
+      content: "页面上下文",
+    }));
+    const fetcher = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        choices: [
+          {
+            message: {
+              content: "",
+              tool_calls: [
+                {
+                  id: "call-loop",
+                  type: "function",
+                  function: {
+                    name: "read_page_context",
+                    arguments: "{}",
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    });
+
+    const result = await handleChatSendMessage(
+      {
+        type: "chat.send",
+        model: createModel(),
+        messages: [createMessage("user", "连续读取页面")],
+        stream: false,
+        enabledToolIds: ["page.read_context"],
+        toolChoice: "auto",
+        browserAutomationMaxToolIterations: 12,
+      },
+      fetcher,
+      {},
+      executeTool,
+    );
+
+    expect(result).toEqual({ ok: false, message: "工具调用超过最大轮次，已停止本次请求。" });
+    expect(executeTool).toHaveBeenCalledTimes(12);
+    expect(fetcher).toHaveBeenCalledTimes(12);
   });
 
   it("默认 background 执行器会把阶段四浏览器导航工具转发给浏览器控制管理器", async () => {

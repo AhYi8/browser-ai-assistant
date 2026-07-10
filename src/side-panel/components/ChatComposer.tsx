@@ -1,6 +1,8 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, ClipboardEvent as ReactClipboardEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
-import { estimateChatContextTokens } from "../../shared/chat/contextCompression";
+import { buildChatRequestMessages } from "../../shared/chat/buildChatRequestMessages";
+import { estimateModelRequestContextTokens } from "../../shared/chat/contextCompression";
+import { createModelConfig } from "../../shared/chat/modelConfig";
 import { createPageContextPrompt } from "../../shared/chat/pageContextPrompt";
 import {
   MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
@@ -14,6 +16,7 @@ import { isModelToolConfigured } from "../../shared/webSearch/toolAvailability";
 import { hasTokenUsage, sumSessionTokenUsage } from "../../shared/chat/tokenUsage";
 import { isPngDataUrl, isTabCaptureImageAttachment, TAB_CAPTURE_VISIBLE_MESSAGE_TYPE, type TabCaptureVisibleResponse } from "../../shared/tabCapture";
 import type { ChatImageAttachment, ChatMessage, ChatPromptInvocation, ChatTokenUsage, PromptTemplate, SendShortcut } from "../../shared/types";
+import type { ModelRequestMessage } from "../../shared/models/types";
 import { useAppStore, type ChatFollowUpItem } from "../state/appStore";
 import { resolveEffectiveChatPreferences } from "../state/appStorePreferences";
 import { BoundaryChoiceDialog } from "./BoundaryChoiceDialog";
@@ -110,6 +113,8 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   const toolMenuRef = useRef<HTMLDivElement | null>(null);
   const toolMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const currentModelSupportsVision = useAppStore((state) => Boolean(state.models.find((model) => model.id === state.selectedModelId)?.supportsVision));
+  const providers = useAppStore((state) => state.providers);
+  const models = useAppStore((state) => state.models);
   const sendShortcut = useAppStore((state) => state.chatPreferences.sendShortcut);
   const followUpBehavior = useAppStore((state) => state.chatPreferences.followUpBehavior);
   const toolCallingEnabled = useAppStore((state) => {
@@ -136,6 +141,10 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   );
   const selectedModelId = useAppStore((state) => state.selectedModelId);
   const chatPreferences = useAppStore((state) => state.chatPreferences);
+  const activeContextEstimate = useAppStore((state) => {
+    const sessionId = state.privateModeActive ? state.privateChatSession?.id : state.activeSessionId;
+    return sessionId ? state.activeContextEstimateBySessionId[sessionId] : undefined;
+  });
   const activeFollowUps = useAppStore((state) => {
     const sessionId = state.privateModeActive ? state.privateChatSession?.id : state.activeSessionId;
     return sessionId ? state.followUpsBySessionId[sessionId] ?? EMPTY_FOLLOW_UPS : EMPTY_FOLLOW_UPS;
@@ -171,42 +180,67 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
     const shouldInjectPageContext = (activeSession?.messages.length ?? 0) === 0 && appendPageContextToSystemPrompt;
     return shouldInjectPageContext ? (pageContext.formatted ? pageContext.text : createPageContextPrompt(pageContext)) : "";
   }, [activeSession?.messages.length, appendPageContextToSystemPrompt, pageContext]);
+  const effectiveModelConfig = useMemo(() => {
+    const modelId = activeSession?.selectedModelId || selectedModelId;
+    const model = models.find((item) => item.id === modelId) ?? models.find((item) => item.id === selectedModelId);
+    const provider = providers.find((item) => item.id === model?.providerId);
+    return model && provider ? createModelConfig(provider, model, effectiveChatPreferences) : undefined;
+  }, [activeSession?.selectedModelId, effectiveChatPreferences, models, providers, selectedModelId]);
   const currentContextTokens = useMemo(() => {
+    if (sending && activeContextEstimate) {
+      return activeContextEstimate.estimatedContextTokens;
+    }
+
     const trimmedInput = input.trim();
-    const hasDraft = Boolean(trimmedInput || attachments.length || promptInvocations.length);
-    const draftMessage: ChatMessage | undefined = hasDraft
-      ? {
-          id: "current-draft-message",
-          role: "user",
-          content: trimmedInput,
-          createdAt: 0,
-          modelId: activeSession?.selectedModelId || selectedModelId,
-          endpointType: "openai_chat",
-          streamMode,
+    const draftMessage: ChatMessage = {
+      id: "current-draft-message",
+      role: "user",
+      content: trimmedInput,
+      createdAt: 0,
+      modelId: effectiveModelConfig?.id || activeSession?.selectedModelId || selectedModelId,
+      endpointType: effectiveModelConfig?.endpointType ?? "openai_chat",
+      streamMode,
+      systemPrompt: effectiveChatPreferences.systemPrompt,
+      contextPrompt: requestPageContext,
+      contextMode,
+      attachments: attachments.length ? attachments : undefined,
+      promptInvocations: promptInvocations.length ? promptInvocations : undefined,
+    };
+    const requestMessages = effectiveModelConfig
+      ? buildChatRequestMessages({
+          model: effectiveModelConfig,
+          pageContext: requestPageContext,
+          existingMessages: activeSession?.messages ?? [],
+          userMessage: draftMessage,
           systemPrompt: effectiveChatPreferences.systemPrompt,
-          contextPrompt: requestPageContext,
-          contextMode,
-          attachments: attachments.length ? attachments : undefined,
-          promptInvocations: promptInvocations.length ? promptInvocations : undefined,
-        }
-      : undefined;
-    return estimateChatContextTokens({
-        systemPrompt: effectiveChatPreferences.systemPrompt,
-        pageContext: requestPageContext,
-        messages: draftMessage ? [...(activeSession?.messages ?? []), draftMessage] : activeSession?.messages ?? [],
-        tokenUsageEntries: activeSession?.tokenUsageEntries,
-      });
+          appendPageContextToSystemPrompt,
+          maxContextTokens: effectiveChatPreferences.maxTokens,
+          toolAttachmentsById: activeSession?.toolAttachmentsById,
+        })
+      : buildFallbackRequestMessagesForEstimate({
+          systemPrompt: effectiveChatPreferences.systemPrompt,
+          pageContext: requestPageContext,
+          existingMessages: activeSession?.messages ?? [],
+          userMessage: draftMessage,
+          appendPageContextToSystemPrompt,
+        });
+    return estimateModelRequestContextTokens(requestMessages);
   }, [
+    activeContextEstimate,
     activeSession?.messages,
     activeSession?.selectedModelId,
-    activeSession?.tokenUsageEntries,
+    activeSession?.toolAttachmentsById,
+    appendPageContextToSystemPrompt,
     attachments,
     contextMode,
+    effectiveChatPreferences.maxTokens,
     effectiveChatPreferences.systemPrompt,
+    effectiveModelConfig,
     input,
     promptInvocations,
     requestPageContext,
     selectedModelId,
+    sending,
     streamMode,
   ]);
   const runtimeEditableToolIds = useMemo(
@@ -653,7 +687,13 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
         </div>
       ) : null}
       <div className="context-strip">
-        <TokenUsageMeter usage={sessionTokenUsage} contextTokens={currentContextTokens} sending={sending} />
+        <TokenUsageMeter
+          usage={sessionTokenUsage}
+          contextTokens={currentContextTokens}
+          contextLimit={effectiveChatPreferences.maxTokens}
+          compressionThresholdPercent={effectiveChatPreferences.contextCompressionThresholdPercent}
+          sending={sending}
+        />
         <button
           className="ui-button-secondary context-view-button"
           type="button"
@@ -978,13 +1018,26 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   );
 }
 
-function TokenUsageMeter({ usage, contextTokens, sending }: { usage: ChatTokenUsage; contextTokens: number; sending: boolean }) {
+function TokenUsageMeter({
+  usage,
+  contextTokens,
+  contextLimit,
+  compressionThresholdPercent,
+  sending,
+}: {
+  usage: ChatTokenUsage;
+  contextTokens: number;
+  contextLimit: number;
+  compressionThresholdPercent: number;
+  sending: boolean;
+}) {
   const hasUsage = hasTokenUsage(usage);
+  const contextLabel = `${sending ? "运行中上下文" : "实际请求上下文"} ${formatTokenCount(contextTokens)}/${formatTokenCount(contextLimit)} · 压缩 ${compressionThresholdPercent}%`;
   return (
-    <div className={`token-usage-meter${hasUsage ? "" : " token-usage-meter-empty"}`} aria-label="Token 用量统计" title="当前上下文与当前会话累计 Token 用量">
+    <div className={`token-usage-meter${hasUsage ? "" : " token-usage-meter-empty"}`} aria-label="Token 用量统计" title="实际请求上下文、最大聊天上下文、自动压缩阈值与当前对话累计 Token 用量">
       {hasUsage ? (
         <>
-          <span>上下文 {formatTokenCount(contextTokens)}</span>
+          <span>{contextLabel}</span>
           <span>输入 {formatTokenCount(usage.inputTokens)}</span>
           <span>输出 {formatTokenCount(usage.outputTokens)}</span>
           <span>写入 {formatTokenCount(usage.cacheWriteTokens)}</span>
@@ -992,12 +1045,32 @@ function TokenUsageMeter({ usage, contextTokens, sending }: { usage: ChatTokenUs
         </>
       ) : (
         <span>
-          上下文 {formatTokenCount(contextTokens)}
+          {contextLabel}
           {sending ? " · Token 统计中" : ""}
         </span>
       )}
     </div>
   );
+}
+
+function buildFallbackRequestMessagesForEstimate(input: {
+  systemPrompt: string;
+  pageContext: string;
+  existingMessages: ChatMessage[];
+  userMessage: ChatMessage;
+  appendPageContextToSystemPrompt: boolean;
+}): ModelRequestMessage[] {
+  const trimmedSystemPrompt = input.systemPrompt.trim();
+  const trimmedPageContext = input.appendPageContextToSystemPrompt ? input.pageContext.trim() : "";
+  const systemContent = trimmedPageContext
+    ? `${trimmedSystemPrompt}\n\n当前页面上下文：\n${trimmedPageContext}`.trim()
+    : trimmedSystemPrompt;
+
+  return [
+    { role: "system", content: systemContent },
+    ...(input.existingMessages ?? []),
+    input.userMessage,
+  ];
 }
 
 function formatTokenCount(value: number): string {

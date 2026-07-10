@@ -1,4 +1,5 @@
 import type { ChatMessage, ChatSession } from "../../shared/types";
+import type { ChatToolAttachmentsById } from "../../shared/toolArtifacts";
 import { CONTEXT_COMPRESSION_TOOL_ID } from "../../shared/chat/contextCompression";
 import { collectMessageToolAttachments, formatToolAttachmentForExport } from "../../shared/toolArtifacts";
 import { downloadBlob } from "./downloadBlob";
@@ -34,13 +35,13 @@ export function createChatSessionMarkdown(session: ChatSession, exportedAt: numb
       lines.push(formatThinkingMarkdown(message.thinking), "");
     }
 
-    lines.push(formatContentCodeBlock(formatMessageExportContent(message)), "");
+    lines.push(formatContentCodeBlock(formatMessageExportContent(message, session.toolAttachmentsById)), "");
   }
 
   return lines.join("\n");
 }
 
-export function createChatMessageMarkdown(message: ChatMessage): string {
+export function createChatMessageMarkdown(message: ChatMessage, toolAttachmentsById?: ChatToolAttachmentsById): string {
   if (message.role === "user") {
     return message.content.trim();
   }
@@ -50,7 +51,7 @@ export function createChatMessageMarkdown(message: ChatMessage): string {
     sections.push(formatThinkingMarkdown(message.thinking));
   }
 
-  const content = formatMessageExportContent(message).trim();
+  const content = formatMessageExportContent(message, toolAttachmentsById).trim();
   if (content) {
     sections.push(content);
   }
@@ -140,7 +141,7 @@ function createExportBlocks(session: ChatSession, exportedAt: number): ExportBlo
     if (message.thinking?.trim()) {
       blocks.push({ type: "thinking", text: `思考过程：${message.thinking.trim()}` });
     }
-    blocks.push({ type: "code", text: formatMessageExportContent(message).trimEnd() });
+    blocks.push({ type: "code", text: formatMessageExportContent(message, session.toolAttachmentsById).trimEnd() });
   }
 
   return blocks;
@@ -161,9 +162,9 @@ function getExportableMessages(session: ChatSession): ChatMessage[] {
   });
 }
 
-function formatMessageExportContent(message: ChatMessage): string {
+function formatMessageExportContent(message: ChatMessage, toolAttachmentsById?: ChatToolAttachmentsById): string {
   const promptInvocations = message.role === "user" ? (message.promptInvocations ?? []) : [];
-  const contentSections = [message.content, ...collectMessageToolAttachments(message).map(formatToolAttachmentForExport)];
+  const contentSections = [message.content, ...collectMessageToolAttachments(message, toolAttachmentsById).map(formatToolAttachmentForExport)];
 
   if (promptInvocations.length === 0) {
     return contentSections.join("\n\n").trim();

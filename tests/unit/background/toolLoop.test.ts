@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { runModelToolLoop } from "../../../src/background/toolCalling/toolLoop";
 import type { ModelRequestMessage, ModelToolExecutor, ModelToolRegistryEntry } from "../../../src/shared/models/types";
-import type { ChatToolAttachment, ChatToolCallRecord } from "../../../src/shared/types";
+import type { ChatContextEstimate, ChatToolAttachment, ChatToolCallRecord, ModelConfig } from "../../../src/shared/types";
 
 const baseMessages: ModelRequestMessage[] = [
   {
@@ -45,6 +45,25 @@ const browserTool: ModelToolRegistryEntry = {
   },
 };
 
+const modelConfig: ModelConfig = {
+  id: "model-1",
+  providerId: "provider-1",
+  name: "模型",
+  displayName: "模型",
+  channelName: "渠道",
+  endpointType: "openai_chat",
+  endpointUrl: "https://api.example.com/v1/chat/completions",
+  apiKey: "sk-test",
+  modelId: "gpt-test",
+  temperature: 0.7,
+  maxTokens: 1024,
+  systemPrompt: "你是网页助手",
+  isTitleModel: false,
+  enabled: true,
+  createdAt: 1,
+  updatedAt: 1,
+};
+
 describe("通用模型工具循环", () => {
   it("没有工具调用时直接返回最终文本", async () => {
     const requestModel = vi.fn().mockResolvedValue({ ok: true, content: "最终回答" });
@@ -60,6 +79,64 @@ describe("通用模型工具循环", () => {
 
     expect(result).toEqual({ ok: true, content: "最终回答", thinking: undefined });
     expect(executeTool).not.toHaveBeenCalled();
+  });
+
+  it("工具决策请求会锚定最新用户问题，避免继续旧任务", async () => {
+    const requestModel = vi.fn().mockResolvedValue({ ok: true, content: "解释空响应原因" });
+    const executeTool = vi.fn<ModelToolExecutor>();
+
+    await runModelToolLoop({
+      initialMessages: [
+        {
+          id: "user-old",
+          role: "user",
+          content: "帮我逆向一下 Gemini 当前激活标签页接口",
+          createdAt: 1,
+          modelId: "model-1",
+          endpointType: "openai_chat",
+          streamMode: false,
+          systemPrompt: "你是网页助手",
+          contextPrompt: "",
+          contextMode: "text",
+        },
+        {
+          role: "assistant",
+          content: "正在分析 Gemini 接口",
+          toolCalls: [{ id: "call-old", name: tool.name, arguments: { mode: "text" } }],
+        },
+        {
+          role: "tool",
+          toolCallId: "call-old",
+          name: tool.name,
+          content: "历史工具结果",
+        },
+        {
+          id: "user-new",
+          role: "user",
+          content: "为什么会出现模型响应没有可用内容？具体请求详情给我看一下。",
+          createdAt: 1,
+          modelId: "model-1",
+          endpointType: "openai_chat",
+          streamMode: false,
+          systemPrompt: "你是网页助手",
+          contextPrompt: "",
+          contextMode: "text",
+        },
+      ],
+      tools: [tool],
+      enabledToolIds: [tool.id],
+      requestModel,
+      executeTool,
+    });
+
+    const requestMessages = requestModel.mock.calls[0]?.[0] as ModelRequestMessage[];
+    expect(requestMessages.at(-1)).toMatchObject({
+      role: "user",
+      content: expect.stringContaining("为什么会出现模型响应没有可用内容"),
+    });
+    expect(requestMessages.at(-1)).toMatchObject({
+      content: expect.stringContaining("除非最新请求明确要求继续旧任务"),
+    });
   });
 
   it("工具调用前的 AI 回复会作为独立工具轮消息返回，最终回答不再承载工具记录", async () => {
@@ -256,15 +333,358 @@ describe("通用模型工具循环", () => {
       consumeGuidance,
     });
 
-    expect(requestModel).toHaveBeenLastCalledWith(
-      expect.arrayContaining([
-        expect.objectContaining({
-          role: "user",
-          content: expect.stringContaining("用户在当前任务运行中补充了以下引导：\n请优先检查登录表单"),
-        }),
-      ]),
-    );
+    const lastRequestMessages = requestModel.mock.calls.at(-1)?.[0] as ModelRequestMessage[];
+    expect(lastRequestMessages.find((message) => message.role === "system")).toMatchObject({
+      content: expect.stringContaining("用户在当前任务运行中补充了以下引导：\n请优先检查登录表单"),
+    });
+    expect(lastRequestMessages.at(-1)).toMatchObject({
+      role: "user",
+      content: expect.stringContaining("当前必须优先处理的最新用户请求是："),
+    });
     expect(consumeGuidance).toHaveBeenCalled();
+  });
+
+  it("运行中引导会在多轮工具决策中持续置顶但只消费展示一次", async () => {
+    const requestModel = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        content: "先读取页面",
+        toolCalls: [{ id: "call-guide-1", name: "read_page_context", arguments: { mode: "text" } }],
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        content: "继续读取页面",
+        toolCalls: [{ id: "call-guide-2", name: "read_page_context", arguments: { mode: "all" } }],
+      })
+      .mockResolvedValueOnce({ ok: true, content: "已按引导完成" });
+    const executeTool: ModelToolExecutor = vi.fn(async (call) => ({
+      toolCallId: call.id,
+      name: call.name,
+      content: `页面内容 ${call.id}`,
+    }));
+    const guidanceItems = [{ id: "follow-up-persistent", content: "是对话列表接口需要刷新页面才能触发" }];
+    const consumeGuidance = vi.fn(() => guidanceItems);
+    const displayedMessages: string[] = [];
+
+    await runModelToolLoop({
+      initialMessages: baseMessages,
+      tools: [tool],
+      enabledToolIds: [tool.id],
+      requestModel,
+      executeTool,
+      consumeGuidance,
+      onToolTurnMessage: (message) => {
+        if (message.toolCallRecords?.some((record) => record.toolId === "chat.follow_up_guidance")) {
+          displayedMessages.push(message.id);
+        }
+      },
+    });
+
+    expect(requestModel).toHaveBeenCalledTimes(3);
+    for (const call of requestModel.mock.calls) {
+      const requestMessages = call[0] as ModelRequestMessage[];
+      const systemContent = requestMessages.find((message) => message.role === "system")?.content ?? "";
+      expect(systemContent).toEqual(expect.stringContaining("是对话列表接口需要刷新页面才能触发"));
+      expect(systemContent).toEqual(expect.stringContaining("不要回复确认、不要复述引导"));
+      expect(systemContent.match(/当前任务运行中的持续引导：/g)).toHaveLength(1);
+      expect(requestMessages.find((message) => message.role === "system")).toMatchObject({
+        content: expect.stringContaining("是对话列表接口需要刷新页面才能触发"),
+      });
+      expect(requestMessages.find((message) => message.role === "system")).toMatchObject({
+        content: expect.stringContaining("不要回复确认、不要复述引导"),
+      });
+      expect(requestMessages.at(-1)).toMatchObject({
+        role: "user",
+        content: expect.stringContaining("当前必须优先处理的最新用户请求是："),
+      });
+      expect(requestMessages.at(-1)?.content).toEqual(expect.stringContaining("引导是最高优先级覆盖约束"));
+    }
+    expect(displayedMessages).toHaveLength(1);
+  });
+
+  it("无新引导时只过滤确认话术，实质工具决策正文仍会展示和回灌", async () => {
+    const displayedContents: string[] = [];
+    const requestModel = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        content: "好的，消息已发送。等待对话回复完成。",
+        toolCalls: [{ id: "call-confirmation", name: "read_page_context", arguments: { mode: "text" } }],
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        content: "发现页面已经返回对话内容，需要读取 Network 请求详情。",
+        toolCalls: [{ id: "call-substantive", name: "read_page_context", arguments: { mode: "all" } }],
+      })
+      .mockResolvedValueOnce({ ok: true, content: "已继续处理" });
+    const executeTool: ModelToolExecutor = vi.fn(async (call) => ({
+      toolCallId: call.id,
+      name: call.name,
+      content: "页面内容",
+    }));
+
+    await runModelToolLoop({
+      initialMessages: baseMessages,
+      tools: [tool],
+      enabledToolIds: [tool.id],
+      requestModel,
+      executeTool,
+      onToolTurnMessage: (message) => displayedContents.push(message.content),
+    });
+
+    expect(displayedContents[0]).toBe("");
+    expect(displayedContents[1]).toBe("发现页面已经返回对话内容，需要读取 Network 请求详情。");
+    const secondRequestMessages = requestModel.mock.calls[1]?.[0] as ModelRequestMessage[];
+    expect(secondRequestMessages).not.toContainEqual(expect.objectContaining({
+      role: "assistant",
+      content: expect.stringContaining("好的"),
+    }));
+    expect(secondRequestMessages).not.toContainEqual(expect.objectContaining({
+      role: "assistant",
+      content: expect.stringContaining("消息已发送"),
+    }));
+    const thirdRequestMessages = requestModel.mock.calls[2]?.[0] as ModelRequestMessage[];
+    expect(thirdRequestMessages).toContainEqual(expect.objectContaining({
+      role: "assistant",
+      content: "发现页面已经返回对话内容，需要读取 Network 请求详情。",
+    }));
+  });
+
+  it("刚消费引导后的第一轮工具决策只展示净化后的实质正文，后续轮次不再展示正文", async () => {
+    const displayedContents: string[] = [];
+    const requestModel = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        content: "好的，聚焦于对话接口。清空 Network 缓存后重新发送消息。",
+        toolCalls: [{ id: "call-guided-visible", name: "read_page_context", arguments: { mode: "text" } }],
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        content: "按最新用户消息，两个接口都需要。继续获取列表接口。",
+        toolCalls: [{ id: "call-guided-hidden", name: "read_page_context", arguments: { mode: "all" } }],
+      })
+      .mockResolvedValueOnce({ ok: true, content: "已完成" });
+    const executeTool: ModelToolExecutor = vi.fn(async (call) => ({
+      toolCallId: call.id,
+      name: call.name,
+      content: "页面内容",
+    }));
+    const guidanceItems = [{ id: "follow-up-dialog-only", content: "不需要对话列表接口了，只逆向对话接口" }];
+
+    await runModelToolLoop({
+      initialMessages: [{ ...baseMessages[0], content: "逆向对话接口和历史对话列表接口" }],
+      tools: [tool],
+      enabledToolIds: [tool.id],
+      requestModel,
+      executeTool,
+      consumeGuidance: vi.fn(() => guidanceItems.splice(0)),
+      onToolTurnMessage: (message) => displayedContents.push(message.content),
+    });
+
+    expect(displayedContents).toContain("清空 Network 缓存后重新发送消息。");
+    expect(displayedContents.some((content) => content.includes("好的"))).toBe(false);
+    expect(displayedContents.some((content) => content.includes("聚焦于"))).toBe(false);
+    expect(displayedContents.some((content) => content.includes("两个接口都需要"))).toBe(false);
+    const secondRequestMessages = requestModel.mock.calls[1]?.[0] as ModelRequestMessage[];
+    expect(secondRequestMessages).toContainEqual(expect.objectContaining({
+      role: "assistant",
+      content: "清空 Network 缓存后重新发送消息。",
+    }));
+    const thirdRequestMessages = requestModel.mock.calls[2]?.[0] as ModelRequestMessage[];
+    expect(thirdRequestMessages).not.toContainEqual(expect.objectContaining({
+      role: "assistant",
+      content: expect.stringContaining("两个接口都需要"),
+    }));
+  });
+
+  it("聚焦于前缀后没有标点时不会吞掉实质工具决策正文", async () => {
+    const displayedContents: string[] = [];
+    const requestModel = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        content: "聚焦于对话接口并读取页面",
+        toolCalls: [{ id: "call-focus-no-punctuation", name: "read_page_context", arguments: { mode: "text" } }],
+      })
+      .mockResolvedValueOnce({ ok: true, content: "已完成" });
+    const executeTool: ModelToolExecutor = vi.fn(async (call) => ({
+      toolCallId: call.id,
+      name: call.name,
+      content: "页面内容",
+    }));
+
+    await runModelToolLoop({
+      initialMessages: baseMessages,
+      tools: [tool],
+      enabledToolIds: [tool.id],
+      requestModel,
+      executeTool,
+      onToolTurnMessage: (message) => displayedContents.push(message.content),
+    });
+
+    expect(displayedContents[0]).toBe("对话接口并读取页面");
+    const secondRequestMessages = requestModel.mock.calls[1]?.[0] as ModelRequestMessage[];
+    expect(secondRequestMessages).toContainEqual(expect.objectContaining({
+      role: "assistant",
+      content: "对话接口并读取页面",
+    }));
+  });
+
+  it("刚消费引导后的第一轮如果只剩复述引导则不展示也不回灌", async () => {
+    const displayedContents: string[] = [];
+    const requestModel = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        content: "好的，根据最新引导，只逆向对话接口。",
+        toolCalls: [{ id: "call-guidance-restatement", name: "read_page_context", arguments: { mode: "text" } }],
+      })
+      .mockResolvedValueOnce({ ok: true, content: "已完成" });
+    const executeTool: ModelToolExecutor = vi.fn(async (call) => ({
+      toolCallId: call.id,
+      name: call.name,
+      content: "页面内容",
+    }));
+    const guidanceItems = [{ id: "follow-up-restatement", content: "不需要对话列表接口了，只逆向对话接口" }];
+
+    await runModelToolLoop({
+      initialMessages: [{ ...baseMessages[0], content: "逆向对话接口和历史对话列表接口" }],
+      tools: [tool],
+      enabledToolIds: [tool.id],
+      requestModel,
+      executeTool,
+      consumeGuidance: vi.fn(() => guidanceItems.splice(0)),
+      onToolTurnMessage: (message) => displayedContents.push(message.content),
+    });
+
+    expect(displayedContents.some((content) => content.includes("只逆向对话接口"))).toBe(false);
+    const secondRequestMessages = requestModel.mock.calls[1]?.[0] as ModelRequestMessage[];
+    expect(secondRequestMessages.some((message) => message.role === "assistant" && typeof message.content === "string" && message.content.includes("只逆向对话接口"))).toBe(false);
+  });
+
+  it("运行中引导会持续进入最终回答请求", async () => {
+    const requestModel = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        content: "先读取页面",
+        toolCalls: [{ id: "call-guide-final", name: "read_page_context", arguments: { mode: "text" } }],
+      })
+      .mockResolvedValueOnce({ ok: true, content: "工具阶段完成" });
+    const requestFinalModel = vi.fn().mockResolvedValue({ ok: true, content: "最终回答" });
+    const executeTool: ModelToolExecutor = vi.fn(async (call) => ({
+      toolCallId: call.id,
+      name: call.name,
+      content: "页面内容",
+    }));
+    const guidanceItems = [{ id: "follow-up-final", content: "最终回答必须说明刷新页面这一点" }];
+
+    await runModelToolLoop({
+      initialMessages: baseMessages,
+      tools: [tool],
+      enabledToolIds: [tool.id],
+      requestModel,
+      requestFinalModel,
+      executeTool,
+      consumeGuidance: vi.fn(() => guidanceItems.splice(0)),
+    });
+
+    const finalMessages = requestFinalModel.mock.calls[0]?.[0] as ModelRequestMessage[];
+    expect(finalMessages.find((message) => message.role === "system")).toMatchObject({
+      content: expect.stringContaining("最终回答必须说明刷新页面这一点"),
+    });
+    expect(finalMessages.at(-1)).toMatchObject({
+      role: "user",
+      content: expect.stringContaining("工具调用阶段已经结束"),
+    });
+    expect(finalMessages.at(-1)?.content).not.toEqual(expect.stringContaining("最终回答必须说明刷新页面这一点"));
+  });
+
+  it("运行中引导会作为任务提醒中的覆盖约束参与后续决策", async () => {
+    const requestModel = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        content: "先读取页面。",
+        toolCalls: [{ id: "call-guide-main-task", name: "read_page_context", arguments: { mode: "text" } }],
+      })
+      .mockResolvedValueOnce({ ok: true, content: "已按真实任务继续" });
+    const executeTool: ModelToolExecutor = vi.fn(async (call) => ({
+      toolCallId: call.id,
+      name: call.name,
+      content: "页面内容",
+    }));
+    const guidanceItems = [
+      {
+        id: "follow-up-main-task",
+        content: "是对话列表接口需要刷新页面才能触发",
+      },
+    ];
+
+    await runModelToolLoop({
+      initialMessages: [
+        {
+          ...baseMessages[0],
+          content: "帮我逆向一下 Gemini 当前激活标签页接口",
+        },
+      ],
+      tools: [tool],
+      enabledToolIds: [tool.id],
+      requestModel,
+      executeTool,
+      consumeGuidance: vi.fn(() => guidanceItems.splice(0)),
+    });
+
+    const firstRequestMessages = requestModel.mock.calls[0]?.[0] as ModelRequestMessage[];
+    const reminderMessages = firstRequestMessages.filter(
+      (message) => message.role === "user" && message.content.startsWith("当前必须优先处理的最新用户请求是："),
+    );
+    expect(reminderMessages).toHaveLength(1);
+    expect(reminderMessages[0]?.content).toContain("帮我逆向一下 Gemini 当前激活标签页接口");
+    expect(reminderMessages[0]?.content).toContain("是对话列表接口需要刷新页面才能触发");
+    expect(reminderMessages[0]?.content).toContain("引导是最高优先级覆盖约束");
+    expect(firstRequestMessages.find((message) => message.role === "system")).toMatchObject({
+      content: expect.stringContaining("是对话列表接口需要刷新页面才能触发"),
+    });
+  });
+
+  it("运行中引导可以取消原任务中的子目标并阻止冲突决策正文回灌", async () => {
+    const displayedContents: string[] = [];
+    const requestModel = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        content: "按最新用户消息，两个接口都需要。先获取列表接口。",
+        toolCalls: [{ id: "call-conflict", name: "read_page_context", arguments: { mode: "text" } }],
+      })
+      .mockResolvedValueOnce({ ok: true, content: "已按对话接口继续" });
+    const executeTool: ModelToolExecutor = vi.fn(async (call) => ({
+      toolCallId: call.id,
+      name: call.name,
+      content: "页面内容",
+    }));
+    const guidanceItems = [{ id: "follow-up-cancel-list", content: "不需要对话列表接口了，只逆向对话接口" }];
+
+    await runModelToolLoop({
+      initialMessages: [{ ...baseMessages[0], content: "帮我逆向对话接口和历史对话列表接口" }],
+      tools: [tool],
+      enabledToolIds: [tool.id],
+      requestModel,
+      executeTool,
+      consumeGuidance: vi.fn(() => guidanceItems.splice(0)),
+      onToolTurnMessage: (message) => displayedContents.push(message.content),
+    });
+
+    const firstRequestMessages = requestModel.mock.calls[0]?.[0] as ModelRequestMessage[];
+    const systemContent = firstRequestMessages.find((message) => message.role === "system")?.content ?? "";
+    expect(systemContent).toContain("不需要对话列表接口了，只逆向对话接口");
+    expect(firstRequestMessages.at(-1)?.content).toContain("不需要对话列表接口了，只逆向对话接口");
+    expect(firstRequestMessages.at(-1)?.content).toContain("被引导取消、缩小或排除的目标不得继续执行");
+    expect(displayedContents.some((content) => content.includes("两个接口都需要"))).toBe(false);
+    const secondRequestMessages = requestModel.mock.calls[1]?.[0] as ModelRequestMessage[];
+    expect(secondRequestMessages.some((message) => message.role === "assistant" && typeof message.content === "string" && message.content.includes("两个接口都需要"))).toBe(false);
   });
 
   it("运行中引导会携带 Prompt 调用快照注入模型请求", async () => {
@@ -304,18 +724,13 @@ describe("通用模型工具循环", () => {
       consumeGuidance: vi.fn(() => guidanceItems.splice(0)),
     });
 
-    expect(requestModel).toHaveBeenLastCalledWith(
-      expect.arrayContaining([
-        expect.objectContaining({
-          role: "user",
-          content: expect.stringContaining("已调用提示词：\n1. 检查清单\n先核对按钮状态，再核对错误提示。"),
-        }),
-        expect.objectContaining({
-          role: "user",
-          content: expect.stringContaining("用户输入：\n补充关注异常态"),
-        }),
-      ]),
-    );
+    const lastRequestMessages = requestModel.mock.calls.at(-1)?.[0] as ModelRequestMessage[];
+    expect(lastRequestMessages.find((message) => message.role === "system")).toMatchObject({
+      content: expect.stringContaining("已调用提示词：\n1. 检查清单\n先核对按钮状态，再核对错误提示。"),
+    });
+    expect(lastRequestMessages.find((message) => message.role === "system")).toMatchObject({
+      content: expect.stringContaining("用户输入：\n补充关注异常态"),
+    });
   });
 
   it("运行中纯图片引导会携带图片附件注入模型请求", async () => {
@@ -344,15 +759,21 @@ describe("通用模型工具循环", () => {
       consumeGuidance: vi.fn(() => guidanceItems.splice(0)),
     });
 
-    expect(requestModel).toHaveBeenCalledWith(
-      expect.arrayContaining([
-        expect.objectContaining({
-          role: "user",
-          content: expect.stringContaining("用户补充了图片附件。"),
-          attachments: [imageAttachment],
-        }),
-      ]),
-    );
+    const requestMessages = requestModel.mock.calls[0]?.[0] as ModelRequestMessage[];
+    expect(requestMessages.find((message) => message.role === "system")).toMatchObject({
+      content: expect.stringContaining("用户补充了图片附件。"),
+    });
+    expect(requestMessages).toContainEqual(expect.objectContaining({
+      role: "user",
+      content: expect.stringContaining("当前任务持续引导包含图片附件"),
+      attachments: [imageAttachment],
+    }));
+    expect(requestMessages.at(-1)).toMatchObject({
+      role: "user",
+      content: expect.stringContaining("当前必须优先处理的最新用户请求是："),
+    });
+    expect(requestMessages.at(-1)?.content).toEqual(expect.stringContaining("读取页面"));
+    expect(requestMessages.at(-1)?.content).not.toEqual(expect.stringContaining("当前任务持续引导包含图片附件"));
   });
 
   it("运行中引导被消费时会输出已引导过程提示", async () => {
@@ -848,5 +1269,484 @@ describe("通用模型工具循环", () => {
     });
 
     expect(result).toEqual({ ok: false, message: "工具调用超过最大轮次，已停止本次请求。" });
+  });
+
+  it("首次工具决策请求前超过阈值会先压缩上下文", async () => {
+    const requestModel = vi.fn().mockResolvedValue({ ok: true, content: "压缩后回答" });
+    const requestCompression = vi.fn().mockResolvedValue({
+      ok: true,
+      content: "压缩摘要",
+      tokenUsageEntries: [{ id: "usage-compression", usageSchemaVersion: 1, source: "context_compression", modelId: "model-1", endpointType: "openai_chat", createdAt: 1, inputTokens: 10, outputTokens: 5, cacheWriteTokens: 0, cacheReadTokens: 0 }],
+    });
+    const displayedMessages: string[] = [];
+    const contextEstimates: ChatContextEstimate[] = [];
+    const guidanceItems = [{ id: "follow-up-compression", content: "压缩后仍然优先检查对话接口" }];
+
+    const result = await runModelToolLoop({
+      initialMessages: [{ ...baseMessages[0], content: "很长的用户问题".repeat(200) }],
+      tools: [tool],
+      enabledToolIds: [tool.id],
+      requestModel,
+      executeTool: vi.fn<ModelToolExecutor>(),
+      consumeGuidance: vi.fn(() => guidanceItems.splice(0)),
+      onToolTurnMessage: (message) => displayedMessages.push(message.assistantMessageKind ?? ""),
+      onContextEstimate: (estimate) => contextEstimates.push(estimate),
+      contextCompression: {
+        model: modelConfig,
+        maxContextTokens: 400,
+        thresholdPercent: 50,
+        compressionPrompt: "请压缩",
+        systemPrompt: "你是网页助手",
+        contextMode: "text",
+        requestCompression,
+      },
+    });
+
+    expect(result).toMatchObject({ ok: true, content: "压缩后回答" });
+    expect(requestCompression).toHaveBeenCalledTimes(1);
+    expect(contextEstimates).toEqual([
+      expect.objectContaining({
+        scope: "tool_loop",
+        phase: "decision",
+        maxContextTokens: 400,
+        thresholdPercent: 50,
+        triggerThresholdTokens: 200,
+      }),
+      expect.objectContaining({
+        scope: "tool_loop",
+        phase: "decision",
+        maxContextTokens: 400,
+        thresholdPercent: 50,
+        triggerThresholdTokens: 200,
+      }),
+    ]);
+    expect(contextEstimates[0]?.estimatedContextTokens).toBeGreaterThanOrEqual(200);
+    expect(contextEstimates[1]?.estimatedContextTokens).toBeLessThan(contextEstimates[0]?.estimatedContextTokens ?? 0);
+    expect(requestCompression.mock.calls[0]?.[0].some((message: ModelRequestMessage) => "content" in message && String(message.content).includes("很长的用户问题"))).toBe(true);
+    const compressedDecisionRequest = requestModel.mock.calls[0]?.[0] as ModelRequestMessage[];
+    expect(compressedDecisionRequest).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: "assistant", assistantMessageKind: "context_summary", content: "压缩摘要" }),
+      expect.objectContaining({ role: "user", content: expect.stringContaining("很长的用户问题") }),
+    ]));
+    expect(compressedDecisionRequest).not.toContainEqual(expect.objectContaining({ role: "user", content: "请基于以上压缩上下文继续当前任务。" }));
+    expect(compressedDecisionRequest.find((message) => message.role === "system")).toMatchObject({
+      content: expect.stringContaining("压缩后仍然优先检查对话接口"),
+    });
+    expect(compressedDecisionRequest.at(-1)).toMatchObject({
+      role: "user",
+      content: expect.stringContaining("当前必须优先处理的最新用户请求是："),
+    });
+    expect(compressedDecisionRequest.at(-1)?.content).toContain("引导是最高优先级覆盖约束");
+    expect(displayedMessages).toEqual(["tool_call_turn", "tool_call_turn"]);
+    expect(result.ok && result.toolTurnMessages?.map((message) => message.assistantMessageKind)).toEqual(["tool_call_turn", "context_summary"]);
+  });
+
+  it("首次工具决策压缩后保留最新用户任务，避免被旧历史带偏", async () => {
+    const requestModel = vi.fn().mockResolvedValue({ ok: true, content: "开始逆向 Gemini 接口" });
+    const requestCompression = vi.fn().mockResolvedValue({ ok: true, content: "旧历史主要是 Clash Verge。" });
+    const oldUserMessage = { ...baseMessages[0], id: "user-old", content: "总结 Clash Verge 高级玩法".repeat(20) };
+    const currentUserMessage = { ...baseMessages[0], id: "user-current", content: "帮我逆向一下 Gemini 当前激活标签页接口" };
+
+    await runModelToolLoop({
+      initialMessages: [oldUserMessage, currentUserMessage],
+      tools: [tool],
+      enabledToolIds: [tool.id],
+      requestModel,
+      executeTool: vi.fn<ModelToolExecutor>(),
+      contextCompression: {
+        model: modelConfig,
+        maxContextTokens: 80,
+        thresholdPercent: 50,
+        compressionPrompt: "请压缩",
+        systemPrompt: "你是网页助手",
+        contextMode: "text",
+        requestCompression,
+      },
+    });
+
+    const compressedRequest = requestModel.mock.calls[0]?.[0] as ModelRequestMessage[];
+    expect(compressedRequest).toContainEqual(expect.objectContaining({ role: "user", content: expect.stringContaining("Gemin") }));
+    expect(compressedRequest).not.toContainEqual(expect.objectContaining({ role: "user", content: "总结 Clash Verge 高级玩法" }));
+  });
+
+  it("首次工具决策前优先使用侧边栏传入的初始上下文估算，避免本地文本估算虚高误压缩", async () => {
+    const requestModel = vi.fn().mockResolvedValue({ ok: true, content: "直接决策" });
+    const requestCompression = vi.fn().mockResolvedValue({ ok: true, content: "不应压缩" });
+
+    await runModelToolLoop({
+      initialMessages: [
+        { role: "assistant", content: "本地估算很长".repeat(100), toolCalls: [] },
+        { ...baseMessages[0], content: "继续" },
+      ],
+      tools: [tool],
+      enabledToolIds: [tool.id],
+      requestModel,
+      executeTool: vi.fn<ModelToolExecutor>(),
+      contextCompression: {
+        model: modelConfig,
+        maxContextTokens: 100,
+        initialContextTokens: 50,
+        thresholdPercent: 90,
+        compressionPrompt: "请压缩",
+        systemPrompt: "你是网页助手",
+        contextMode: "text",
+        requestCompression,
+      },
+    });
+
+    expect(requestCompression).not.toHaveBeenCalled();
+    expect(requestModel).toHaveBeenCalledTimes(1);
+  });
+
+  it("工具结果追加后超过阈值会在下一轮 AI 请求前压缩", async () => {
+    const requestModel = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, content: "先读页面", toolCalls: [{ id: "call-large", name: tool.name, arguments: { mode: "text" } }] })
+      .mockResolvedValueOnce({ ok: true, content: "基于压缩摘要回答" });
+    const requestCompression = vi.fn().mockResolvedValue({ ok: true, content: "工具结果压缩摘要" });
+    const executeTool: ModelToolExecutor = vi.fn(async (call) => ({
+      toolCallId: call.id,
+      name: call.name,
+      content: "很长的工具结果".repeat(30),
+    }));
+
+    await runModelToolLoop({
+      initialMessages: baseMessages,
+      tools: [tool],
+      enabledToolIds: [tool.id],
+      requestModel,
+      executeTool,
+      contextCompression: {
+        model: modelConfig,
+        maxContextTokens: 80,
+        thresholdPercent: 90,
+        compressionPrompt: "请压缩",
+        systemPrompt: "你是网页助手",
+        contextMode: "text",
+        requestCompression,
+      },
+    });
+
+    expect(requestCompression).toHaveBeenCalledTimes(1);
+    expect(requestCompression.mock.calls[0]?.[0].some((message: ModelRequestMessage) => "content" in message && String(message.content).includes("很长的工具结果"))).toBe(true);
+    expect(requestModel).toHaveBeenLastCalledWith([
+      expect.objectContaining({ role: "assistant", assistantMessageKind: "context_summary", content: "工具结果压缩摘要" }),
+      expect.objectContaining({ role: "user", content: "读取页面" }),
+      expect.objectContaining({ role: "user", content: expect.stringContaining("当前必须优先处理的最新用户请求") }),
+    ]);
+  });
+
+  it("最终回答请求前超过阈值会先压缩再请求最终回答", async () => {
+    const requestModel = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, content: "先读页面", toolCalls: [{ id: "call-final-compress", name: tool.name, arguments: { mode: "text" } }] })
+      .mockResolvedValueOnce({ ok: true, content: "工具决策完成" });
+    const requestFinalModel = vi.fn().mockResolvedValue({ ok: true, content: "最终回答" });
+    const requestCompression = vi.fn().mockResolvedValue({ ok: true, content: "最终前摘要" });
+    const executeTool: ModelToolExecutor = vi.fn(async (call) => ({
+      toolCallId: call.id,
+      name: call.name,
+      content: "工具结果",
+    }));
+
+    await runModelToolLoop({
+      initialMessages: [{ ...baseMessages[0], content: "普通问题".repeat(20) }],
+      tools: [tool],
+      enabledToolIds: [tool.id],
+      requestModel,
+      requestFinalModel,
+      executeTool,
+      contextCompression: {
+        model: modelConfig,
+        maxContextTokens: 80,
+        thresholdPercent: 90,
+        compressionPrompt: "请压缩",
+        systemPrompt: "你是网页助手",
+        contextMode: "text",
+        requestCompression,
+      },
+    });
+
+    expect(requestCompression).toHaveBeenCalled();
+    expect(requestFinalModel).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ role: "assistant", assistantMessageKind: "context_summary", content: "最终前摘要" }),
+        expect.objectContaining({ role: "user", content: expect.stringContaining("工具调用阶段已经结束") }),
+      ]),
+    );
+  });
+
+  it("最终回答指令导致真实最终请求超阈值时也会先压缩", async () => {
+    const requestModel = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, content: "先读页面", toolCalls: [{ id: "call-final-instruction", name: tool.name, arguments: { mode: "text" } }] })
+      .mockResolvedValueOnce({ ok: true, content: "工具决策完成" });
+    const requestFinalModel = vi.fn().mockResolvedValue({ ok: true, content: "最终回答" });
+    const requestCompression = vi.fn().mockResolvedValue({ ok: true, content: "最终请求摘要" });
+    const executeTool: ModelToolExecutor = vi.fn(async (call) => ({
+      toolCallId: call.id,
+      name: call.name,
+      content: "短结果",
+    }));
+
+    await runModelToolLoop({
+      initialMessages: baseMessages,
+      tools: [tool],
+      enabledToolIds: [tool.id],
+      requestModel,
+      requestFinalModel,
+      executeTool,
+      contextCompression: {
+        model: modelConfig,
+        maxContextTokens: 120,
+        thresholdPercent: 100,
+        compressionPrompt: "请压缩",
+        systemPrompt: "你是网页助手",
+        contextMode: "text",
+        requestCompression,
+      },
+    });
+
+    expect(requestCompression).toHaveBeenCalledTimes(1);
+    expect(requestCompression.mock.calls[0]?.[0].some((message: ModelRequestMessage) => "content" in message && String(message.content).includes("工具调用阶段已经结束"))).toBe(true);
+    expect(requestFinalModel).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ role: "assistant", assistantMessageKind: "context_summary", content: "最终请求摘要" }),
+        expect.objectContaining({ role: "user", content: expect.stringContaining("工具调用阶段已经结束") }),
+      ]),
+    );
+  });
+
+  it("最终回答压缩成功后会再次发送压缩后的运行中上下文估算", async () => {
+    const requestModel = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, content: "先读页面", toolCalls: [{ id: "call-final-estimate", name: tool.name, arguments: { mode: "text" } }] })
+      .mockResolvedValueOnce({ ok: true, content: "工具决策完成" });
+    const requestFinalModel = vi.fn().mockResolvedValue({ ok: true, content: "最终回答" });
+    const requestCompression = vi.fn().mockResolvedValue({ ok: true, content: "最终回答前摘要" });
+    const contextEstimates: ChatContextEstimate[] = [];
+
+    await runModelToolLoop({
+      initialMessages: baseMessages,
+      tools: [tool],
+      enabledToolIds: [tool.id],
+      requestModel,
+      requestFinalModel,
+      executeTool: vi.fn(async (call) => ({
+        toolCallId: call.id,
+        name: call.name,
+        content: "短工具结果",
+      })),
+      onContextEstimate: (estimate) => contextEstimates.push(estimate),
+      contextCompression: {
+        model: modelConfig,
+        maxContextTokens: 120,
+        thresholdPercent: 100,
+        compressionPrompt: "请压缩",
+        systemPrompt: "你是网页助手",
+        contextMode: "text",
+        requestCompression,
+      },
+    });
+
+    const finalEstimates = contextEstimates.filter((estimate) => estimate.phase === "final");
+    expect(finalEstimates).toHaveLength(2);
+    expect(finalEstimates[0]?.estimatedContextTokens).toBeGreaterThanOrEqual(120);
+    expect(finalEstimates[1]?.estimatedContextTokens).toBeLessThan(finalEstimates[0]?.estimatedContextTokens ?? 0);
+  });
+
+  it("压缩请求本身超预算时会先摘要化长工具结果且保留附件索引", async () => {
+    const hugeToolContent = `${"Network body ".repeat(6000)}BODYTAIL`;
+    const networkAttachment: ChatToolAttachment = {
+      id: "tool-attachment-network-1",
+      kind: "network",
+      title: "Network 请求详情",
+      summary: "共 1 条请求",
+      sourceToolCallId: "call-large-network",
+      createdAt: 1,
+      redacted: true,
+      truncated: false,
+      requests: [
+        {
+          id: "req-1",
+          url: "https://example.com/api/huge",
+          method: "POST",
+          status: 200,
+          responseBody: "完整响应正文",
+          truncated: false,
+          redacted: true,
+        },
+      ],
+    };
+    const requestModel = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, content: "读取 Network", toolCalls: [{ id: "call-large-network", name: tool.name, arguments: { mode: "network" } }] })
+      .mockResolvedValueOnce({ ok: true, content: "基于摘要继续" });
+    const requestCompression = vi.fn().mockResolvedValue({ ok: true, content: "不应调用 AI 压缩" });
+
+    await runModelToolLoop({
+      initialMessages: baseMessages,
+      tools: [tool],
+      enabledToolIds: [tool.id],
+      requestModel,
+      executeTool: vi.fn(async (call) => ({
+        toolCallId: call.id,
+        name: call.name,
+        content: hugeToolContent,
+        toolAttachments: [networkAttachment],
+      })),
+      contextCompression: {
+        model: modelConfig,
+        maxContextTokens: 20000,
+        thresholdPercent: 90,
+        compressionPrompt: "请压缩",
+        systemPrompt: "你是网页助手",
+        contextMode: "text",
+        requestCompression,
+      },
+    });
+
+    expect(requestCompression).not.toHaveBeenCalled();
+    const secondDecisionMessages = requestModel.mock.calls[1]?.[0] as ModelRequestMessage[];
+    const summarizedToolMessage = secondDecisionMessages.find((message) => message.role === "tool");
+    expect(summarizedToolMessage).toMatchObject({
+      role: "tool",
+      toolCallId: "call-large-network",
+      name: tool.name,
+      toolAttachments: [networkAttachment],
+    });
+    expect(summarizedToolMessage?.content).toContain("工具结果已因上下文预算被摘要化");
+    expect(summarizedToolMessage?.content).toContain("req-1");
+    expect(summarizedToolMessage?.content).not.toContain("BODYTAIL");
+  });
+
+  it("压缩失败时停止工具循环并返回中文错误", async () => {
+    const requestModel = vi.fn().mockResolvedValue({ ok: true, content: "不应调用" });
+    const requestCompression = vi.fn().mockResolvedValue({ ok: false, message: "聊天上下文压缩失败，请稍后重试" });
+    const completedRecords: ChatToolCallRecord[] = [];
+
+    const result = await runModelToolLoop({
+      initialMessages: [{ ...baseMessages[0], content: "很长的问题".repeat(20) }],
+      tools: [tool],
+      enabledToolIds: [tool.id],
+      requestModel,
+      executeTool: vi.fn<ModelToolExecutor>(),
+      onToolCallComplete: (record) => completedRecords.push(record),
+      contextCompression: {
+        model: modelConfig,
+        maxContextTokens: 80,
+        thresholdPercent: 50,
+        compressionPrompt: "请压缩",
+        systemPrompt: "你是网页助手",
+        contextMode: "text",
+        requestCompression,
+      },
+    });
+
+    expect(result).toEqual({ ok: false, message: "聊天上下文压缩失败，请稍后重试" });
+    expect(requestModel).not.toHaveBeenCalled();
+    expect(completedRecords[0]).toMatchObject({ toolId: "chat.context_compression", status: "error" });
+  });
+
+  it("压缩后仍超过阈值时不会继续请求模型", async () => {
+    const requestModel = vi.fn().mockResolvedValue({ ok: true, content: "不应调用" });
+    const requestCompression = vi.fn().mockResolvedValue({ ok: true, content: "压缩摘要" });
+    const completedRecords: ChatToolCallRecord[] = [];
+
+    const result = await runModelToolLoop({
+      initialMessages: [
+        { role: "system", content: "很长的系统提示".repeat(20) },
+        { ...baseMessages[0], content: "很长的问题".repeat(20) },
+      ],
+      tools: [tool],
+      enabledToolIds: [tool.id],
+      requestModel,
+      executeTool: vi.fn<ModelToolExecutor>(),
+      onToolCallComplete: (record) => completedRecords.push(record),
+      contextCompression: {
+        model: modelConfig,
+        maxContextTokens: 10,
+        thresholdPercent: 50,
+        compressionPrompt: "请压缩",
+        systemPrompt: "你是网页助手",
+        contextMode: "text",
+        requestCompression,
+      },
+    });
+
+    expect(result).toEqual({ ok: false, message: "聊天上下文压缩后仍超过自动压缩阈值，请调大最大聊天上下文或缩短系统提示、页面上下文后重试" });
+    expect(requestModel).not.toHaveBeenCalled();
+    expect(completedRecords[0]).toMatchObject({
+      toolId: "chat.context_compression",
+      status: "error",
+      errorMessage: "聊天上下文压缩后仍超过自动压缩阈值，请调大最大聊天上下文或缩短系统提示、页面上下文后重试",
+      resultSummary: "压缩摘要",
+    });
+  });
+
+  it("压缩请求返回后已取消时会收尾压缩工具过程", async () => {
+    const controller = new AbortController();
+    const requestModel = vi.fn().mockResolvedValue({ ok: true, content: "不应调用" });
+    const requestCompression = vi.fn().mockImplementation(async () => {
+      controller.abort();
+      return { ok: true, content: "不应使用" };
+    });
+    const completedRecords: ChatToolCallRecord[] = [];
+
+    const result = await runModelToolLoop({
+      initialMessages: [{ ...baseMessages[0], content: "很长的问题".repeat(20) }],
+      tools: [tool],
+      enabledToolIds: [tool.id],
+      requestModel,
+      executeTool: vi.fn<ModelToolExecutor>(),
+      signal: controller.signal,
+      onToolCallComplete: (record) => completedRecords.push(record),
+      contextCompression: {
+        model: modelConfig,
+        maxContextTokens: 80,
+        thresholdPercent: 50,
+        compressionPrompt: "请压缩",
+        systemPrompt: "你是网页助手",
+        contextMode: "text",
+        requestCompression,
+      },
+    });
+
+    expect(result).toEqual({ ok: false, message: "已终止本次生成。" });
+    expect(requestModel).not.toHaveBeenCalled();
+    expect(completedRecords[0]).toMatchObject({
+      toolId: "chat.context_compression",
+      status: "error",
+      errorMessage: "已终止本次生成。",
+    });
+  });
+
+  it("压缩前已取消时不会发起压缩和工具请求", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const requestModel = vi.fn().mockResolvedValue({ ok: true, content: "不应调用" });
+    const requestCompression = vi.fn().mockResolvedValue({ ok: true, content: "不应调用" });
+
+    const result = await runModelToolLoop({
+      initialMessages: [{ ...baseMessages[0], content: "很长的问题".repeat(20) }],
+      tools: [tool],
+      enabledToolIds: [tool.id],
+      requestModel,
+      executeTool: vi.fn<ModelToolExecutor>(),
+      signal: controller.signal,
+      contextCompression: {
+        model: modelConfig,
+        maxContextTokens: 80,
+        thresholdPercent: 50,
+        compressionPrompt: "请压缩",
+        systemPrompt: "你是网页助手",
+        contextMode: "text",
+        requestCompression,
+      },
+    });
+
+    expect(result).toEqual({ ok: false, message: "已终止本次生成。" });
+    expect(requestCompression).not.toHaveBeenCalled();
+    expect(requestModel).not.toHaveBeenCalled();
   });
 });

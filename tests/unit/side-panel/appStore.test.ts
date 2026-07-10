@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAppStore } from "../../../src/side-panel/state/appStore";
 import { normalizeChatPreferenceOverrides } from "../../../src/side-panel/state/appStorePreferences";
 import { AUTOMATION_PLAYBOOK_SETTINGS_KEY } from "../../../src/shared/automationPlaybooks";
+import { DEFAULT_MODEL_OUTPUT_MAX_TOKENS } from "../../../src/shared/models/modelCatalog";
 import { getRegisteredModelTools } from "../../../src/shared/models/toolRegistry";
 import {
   clearDatabase,
@@ -171,13 +172,15 @@ describe("appStore 网络搜索", () => {
       },
     });
     expect(chatRequests[0].messages?.at(-1)?.content).not.toContain("网络搜索上下文：");
-    expect(useAppStore.getState().chatSessions[0].messages[1].toolAttachments).toEqual([
+    const storedSession = useAppStore.getState().chatSessions[0];
+    expect(storedSession.messages[1].toolAttachmentIds).toEqual(["tool-attachment-search"]);
+    expect(Object.values(storedSession.toolAttachmentsById ?? {})).toEqual([
       expect.objectContaining({
         kind: "web-search",
         query: "Tavily API 是什么",
       }),
     ]);
-    expect(chatRequests[1].messages?.some((message) => message.content.includes("后续追问需要继续参考以下历史网络搜索结果："))).toBe(true);
+    expect(chatRequests[1].messages?.some((message) => message.content.includes("后续追问可参考以下历史网络搜索摘要："))).toBe(true);
     expect(chatRequests[1].messages?.some((message) => message.content.includes("Tavily Docs"))).toBe(true);
   });
 
@@ -1450,7 +1453,7 @@ describe("appStore", () => {
     expect(chatRequest?.model).toMatchObject({
       systemPrompt: "全局系统提示",
       temperature: 0.4,
-      maxTokens: 1024,
+      maxTokens: DEFAULT_MODEL_OUTPUT_MAX_TOKENS,
       topK: 20,
     });
     expect(useAppStore.getState().chatPreferences.maxTokens).toBe(2048);
@@ -1725,7 +1728,7 @@ describe("appStore", () => {
     });
   });
 
-  it("发送聊天时携带当前有效的浏览器自动化最大工具轮次", async () => {
+  it("发送聊天时携带当前有效的最大工具决策轮次", async () => {
     const provider = createProvider();
     const model = createModel();
     let postedMessage: unknown;
@@ -1943,7 +1946,7 @@ describe("appStore", () => {
     expect(chatRequest?.model).toMatchObject({
       systemPrompt: "当前会话系统提示",
       temperature: 0.2,
-      maxTokens: 1024,
+      maxTokens: DEFAULT_MODEL_OUTPUT_MAX_TOKENS,
       topK: 8,
     });
     expect(useAppStore.getState().chatSessions[0]?.chatPreferenceOverrides?.maxTokens).toBe(512);
@@ -3185,7 +3188,8 @@ describe("appStore", () => {
     const activeSession = useAppStore.getState().chatSessions[0];
     expect(activeSession.messages.map((message) => message.content)).toEqual(["需要搜索", "工具调用后的 AI 回复内容"]);
     expect(activeSession.messages[1].streaming).toBe(false);
-    expect(activeSession.messages[1].toolAttachments).toEqual([
+    expect(activeSession.messages[1].toolAttachmentIds).toEqual(["tool-attachment-search"]);
+    expect(Object.values(activeSession.toolAttachmentsById ?? {})).toEqual([
       expect.objectContaining({
         kind: "web-search",
         query: "需要搜索",

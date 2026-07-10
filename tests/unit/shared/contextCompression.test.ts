@@ -2,11 +2,15 @@ import { describe, expect, it } from "vitest";
 import {
   createContextSummaryMessage,
   estimateChatContextTokens,
+  estimateModelRequestContextTokens,
+  estimateTextTokens,
   getMessagesFromLatestContextSummary,
   normalizeContextCompressionThresholdPercent,
   shouldCompressChatContext,
 } from "../../../src/shared/chat/contextCompression";
+import type { ModelRequestMessage } from "../../../src/shared/models/types";
 import type { ChatMessage, ChatTokenUsageEntry, ModelConfig } from "../../../src/shared/types";
+import { formatToolAttachmentForPrompt } from "../../../src/shared/toolArtifacts";
 
 function createMessage(id: string, role: ChatMessage["role"], content: string, partial: Partial<ChatMessage> = {}): ChatMessage {
   return {
@@ -160,6 +164,98 @@ describe("聊天上下文压缩预算", () => {
         tokenUsageEntries: [usage],
       }),
     ).toBe(true);
+  });
+
+  it("最大聊天上下文为 100k 且阈值 90% 时 20k 上下文不会触发压缩", () => {
+    const messages = [
+      createMessage("user-old", "user", "旧问题"),
+      createMessage("assistant-old", "assistant", "旧回答", { tokenUsageEntryIds: ["usage-old"] }),
+      createMessage("user-new", "user", "继续"),
+    ];
+    const usage = {
+      ...createUsage("usage-old", 10),
+      inputTokens: 20000,
+      outputTokens: 800,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    };
+
+    expect(
+      shouldCompressChatContext({
+        maxContextTokens: 100000,
+        thresholdPercent: 90,
+        systemPrompt: "",
+        pageContext: "",
+        messages,
+        tokenUsageEntries: [usage],
+      }),
+    ).toBe(false);
+  });
+
+  it("工具循环即时上下文估算不会重复计入工具附件", () => {
+    const toolMessage: ModelRequestMessage = {
+      role: "tool",
+      toolCallId: "call-search",
+      name: "tavily_search",
+      content: "搜索结果摘要",
+      toolAttachments: [
+        {
+          id: "attachment-search",
+          kind: "web-search",
+          title: "网络搜索结果",
+          summary: "搜索结果摘要",
+          sourceToolCallId: "call-search",
+          createdAt: 1,
+          redacted: false,
+          truncated: false,
+          provider: "tavily",
+          query: "Clash Verge",
+          results: [
+            { title: "结果", url: "https://example.com", content: "很长的附件内容".repeat(1000) },
+          ],
+        },
+      ],
+    };
+
+    expect(estimateModelRequestContextTokens([toolMessage])).toBeLessThan(100);
+  });
+
+  it("工具循环即时上下文估算不会重复计入已展开到历史助手内容里的工具附件", () => {
+    const webSearchAttachment = {
+      id: "attachment-search",
+      kind: "web-search" as const,
+      title: "网络搜索结果",
+      summary: "搜索结果摘要",
+      sourceToolCallId: "call-search",
+      createdAt: 1,
+      redacted: false,
+      truncated: false,
+      provider: "tavily" as const,
+      query: "Clash Verge",
+      results: [
+        { title: "结果", url: "https://example.com", content: "很长的附件内容".repeat(1000) },
+      ],
+    };
+    const expandedContent = formatToolAttachmentForPrompt(webSearchAttachment) ?? "";
+    const message = createMessage("assistant-search", "assistant", expandedContent, {
+      assistantMessageKind: "tool_call_turn",
+      toolCallRecords: [
+        {
+          id: "call-search",
+          toolId: "tavily_search",
+          name: "tavily_search",
+          displayName: "网络搜索",
+          arguments: { query: "Clash Verge" },
+          status: "success",
+          startedAt: 1,
+          completedAt: 2,
+          attachmentIds: [webSearchAttachment.id],
+        },
+      ],
+      toolAttachments: [webSearchAttachment],
+    });
+
+    expect(estimateModelRequestContextTokens([message])).toBe(estimateTextTokens(expandedContent));
   });
 
   it("缺少 usage 的旧消息使用文本估算兜底", () => {

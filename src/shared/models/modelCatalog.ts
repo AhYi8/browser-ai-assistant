@@ -13,8 +13,19 @@ export interface ModelListRequest {
 }
 
 type Fetcher = typeof fetch;
-// 聊天偏好里的 maxTokens 表示请求上下文预算，不再参与模型输出上限配置。
+export const DEFAULT_MODEL_OUTPUT_MAX_TOKENS = 32768;
+export const LEGACY_MODEL_OUTPUT_MAX_TOKENS = 1024;
+export const MAX_MODEL_OUTPUT_MAX_TOKENS = 1_000_000;
+
+// ProviderModel.maxTokens 表示模型输出 max_tokens；聊天偏好里的 maxTokens 表示请求上下文预算，二者不得混用。
 type ModelConfigPreferenceOverrides = Pick<ChatSessionPreferenceOverrides, "systemPrompt" | "temperature" | "topK">;
+
+export function normalizeModelOutputMaxTokens(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value === LEGACY_MODEL_OUTPUT_MAX_TOKENS) {
+    return DEFAULT_MODEL_OUTPUT_MAX_TOKENS;
+  }
+  return Math.round(Math.min(MAX_MODEL_OUTPUT_MAX_TOKENS, Math.max(1, value)));
+}
 
 export function createListModelsRequest(provider: ModelProvider): ModelListRequest {
   if (provider.endpointType === "anthropic_messages") {

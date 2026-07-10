@@ -1,7 +1,14 @@
 import { updateChatSession } from "../../shared/storage/repositories";
 import { mergeTokenUsageEntries } from "../../shared/chat/tokenUsage";
+import {
+  collectRawMessageToolAttachments,
+  mergeToolAttachmentsIntoStore,
+  moveMessageToolAttachmentsToRefs,
+  uniqueToolAttachmentIds,
+} from "../../shared/toolArtifacts";
 import type {
   ChatMessage,
+  ChatContextEstimate,
   ChatImageAttachment,
   ChatNetworkContextAttachment,
   ChatPromptInvocation,
@@ -23,8 +30,10 @@ type ChatStreamPortMessage =
   | { type: "follow-up:consumed"; followUpId: string }
   | { type: "retry:progress"; currentRetry: number; maxRetries: number }
   | { type: "assistant:final-start" }
+  | { type: "context:estimate"; estimate: ChatContextEstimate }
   | { type: "token_usage"; tokenUsageEntries?: ChatTokenUsageEntry[] }
   | { type: "assistant:tool-turn"; message: ChatMessage }
+  | { type: "assistant:context-summary"; message: ChatMessage }
   | { type: "tool:start"; record: ChatToolCallRecord }
   | { type: "tool:complete"; record: ChatToolCallRecord; attachments?: ChatToolAttachment[] }
   | {
@@ -64,6 +73,7 @@ interface StreamingChatInput {
   networkContextAttachment?: ChatNetworkContextAttachment;
   streamMode: boolean;
   toolAttachments?: ChatToolAttachment[];
+  toolDetailPoolKeepLimit?: number;
   request: AppChatSendMessage;
   onAbortHandle?: (handle: () => void) => void;
   onFollowUpHandle?: (handle: (followUp: {
@@ -158,7 +168,11 @@ async function appendChatMessageToSession(
   chatMessage: ChatMessage,
   set: StoreSetter,
   privateMode = false,
+  toolDetailPoolKeepLimit?: number,
 ): Promise<ChatMessage | undefined> {
+  const normalizedMessage = moveMessageToolAttachmentsToRefs(chatMessage);
+  const messageToolAttachments = collectRawMessageToolAttachments(chatMessage);
+  const nextToolAttachmentsById = mergeToolAttachmentsIntoStore(undefined, messageToolAttachments, { detailPoolKeepLimit: toolDetailPoolKeepLimit });
   if (privateMode) {
     set((current) => {
       const currentSession = current.privateChatSession;
@@ -169,18 +183,20 @@ async function appendChatMessageToSession(
       return {
         privateChatSession: {
           ...currentSession,
-          updatedAt: chatMessage.createdAt,
-          messages: [...currentSession.messages, chatMessage],
+          updatedAt: normalizedMessage.createdAt,
+          toolAttachmentsById: mergeToolAttachmentsIntoStore(currentSession.toolAttachmentsById, messageToolAttachments, { detailPoolKeepLimit: toolDetailPoolKeepLimit }),
+          messages: [...currentSession.messages, normalizedMessage],
         },
       };
     });
-    return chatMessage;
+    return normalizedMessage;
   }
 
   const initializedSession = await updateChatSession(sessionId, (latestSession) => ({
     ...latestSession,
-    updatedAt: chatMessage.createdAt,
-    messages: [...latestSession.messages, chatMessage],
+    updatedAt: normalizedMessage.createdAt,
+    toolAttachmentsById: mergeToolAttachmentsIntoStore(latestSession.toolAttachmentsById, messageToolAttachments, { detailPoolKeepLimit: toolDetailPoolKeepLimit }),
+    messages: [...latestSession.messages, normalizedMessage],
   }));
   if (!initializedSession) {
     return undefined;
@@ -195,13 +211,14 @@ async function appendChatMessageToSession(
     return {
       chatSessions: upsertSession(current.chatSessions, {
         ...currentSession,
-        updatedAt: chatMessage.createdAt,
-        messages: [...currentSession.messages, chatMessage],
+        updatedAt: normalizedMessage.createdAt,
+        toolAttachmentsById: mergeToolAttachmentsIntoStore(currentSession.toolAttachmentsById, Object.values(nextToolAttachmentsById ?? {}), { detailPoolKeepLimit: toolDetailPoolKeepLimit }),
+        messages: [...currentSession.messages, normalizedMessage],
       }),
     };
   });
 
-  return chatMessage;
+  return normalizedMessage;
 }
 
 async function appendAssistantMessageToSession(
@@ -209,8 +226,9 @@ async function appendAssistantMessageToSession(
   assistantMessage: ChatMessage,
   set: StoreSetter,
   privateMode = false,
+  toolDetailPoolKeepLimit?: number,
 ): Promise<ChatMessage | undefined> {
-  return appendChatMessageToSession(sessionId, assistantMessage, set, privateMode);
+  return appendChatMessageToSession(sessionId, assistantMessage, set, privateMode, toolDetailPoolKeepLimit);
 }
 
 async function createAssistantPlaceholder(input: AssistantPlaceholderInput): Promise<ChatMessage | undefined> {
@@ -232,7 +250,7 @@ async function createAssistantPlaceholder(input: AssistantPlaceholderInput): Pro
     streaming: true,
   };
 
-  return appendAssistantMessageToSession(input.sessionId, assistantMessage, input.set, input.privateMode);
+  return appendAssistantMessageToSession(input.sessionId, assistantMessage, input.set, input.privateMode, input.toolDetailPoolKeepLimit);
 }
 
 export async function sendStreamingChatMessage(input: StreamingChatInput): Promise<StreamingChatResult> {
@@ -263,6 +281,7 @@ export async function sendStreamingChatMessage(input: StreamingChatInput): Promi
       }
 
       settled = true;
+      clearActiveContextEstimateInState(input.sessionId, input.set);
       if (options.disconnect) {
         port.disconnect();
       }
@@ -314,6 +333,12 @@ export async function sendStreamingChatMessage(input: StreamingChatInput): Promi
         updateAssistantRetryProgress(assistantMessage.id, pendingRetryProgress, input.set);
       }
       return assistantMessage;
+    };
+    const clearPendingRetryProgress = () => {
+      pendingRetryProgress = undefined;
+      if (assistantMessage) {
+        clearAssistantRetryProgress(assistantMessage.id, input.set);
+      }
     };
 
     port.onMessage.addListener((message: ChatStreamPortMessage) => {
@@ -370,6 +395,11 @@ export async function sendStreamingChatMessage(input: StreamingChatInput): Promi
         return;
       }
 
+      if (message.type === "context:estimate") {
+        setActiveContextEstimateInState(input.sessionId, message.estimate, input.set);
+        return;
+      }
+
       if (message.type === "token_usage") {
         void enqueueWrite(async () => {
           pendingTokenUsageEntries = mergeTokenUsageEntries(pendingTokenUsageEntries, message.tokenUsageEntries);
@@ -380,16 +410,26 @@ export async function sendStreamingChatMessage(input: StreamingChatInput): Promi
 
       if (message.type === "assistant:tool-turn") {
         void enqueueWrite(async () => {
-          const storedMessage = await appendAssistantMessageToSession(input.sessionId, message.message, input.set, input.privateMode);
+          clearPendingRetryProgress();
+          const storedMessage = await appendAssistantMessageToSession(input.sessionId, message.message, input.set, input.privateMode, input.request.toolDetailPoolKeepLimit);
           currentToolTurnMessageId = storedMessage?.id;
+        });
+        return;
+      }
+
+      if (message.type === "assistant:context-summary") {
+        void enqueueWrite(async () => {
+          clearPendingRetryProgress();
+          await appendAssistantMessageToSession(input.sessionId, message.message, input.set, input.privateMode, input.request.toolDetailPoolKeepLimit);
         });
         return;
       }
 
       if (message.type === "tool:start") {
         void enqueueWrite(async () => {
+          clearPendingRetryProgress();
           if (currentToolTurnMessageId) {
-            await upsertAssistantToolCallRecord(input.sessionId, currentToolTurnMessageId, message.record, [], input.set, input.privateMode);
+            await upsertAssistantToolCallRecord(input.sessionId, currentToolTurnMessageId, message.record, [], input.set, input.privateMode, input.request.toolDetailPoolKeepLimit);
           }
         });
         return;
@@ -397,8 +437,9 @@ export async function sendStreamingChatMessage(input: StreamingChatInput): Promi
 
       if (message.type === "tool:complete") {
         void enqueueWrite(async () => {
+          clearPendingRetryProgress();
           if (currentToolTurnMessageId) {
-            await upsertAssistantToolCallRecord(input.sessionId, currentToolTurnMessageId, message.record, message.attachments ?? [], input.set, input.privateMode);
+            await upsertAssistantToolCallRecord(input.sessionId, currentToolTurnMessageId, message.record, message.attachments ?? [], input.set, input.privateMode, input.request.toolDetailPoolKeepLimit);
           }
         });
         return;
@@ -417,7 +458,7 @@ export async function sendStreamingChatMessage(input: StreamingChatInput): Promi
             reasoningContent: message.reasoningContent,
             toolAttachments: mergeToolAttachments(input.toolAttachments, message.toolAttachments),
             tokenUsageEntries: mergeTokenUsageEntries(pendingTokenUsageEntries, message.tokenUsageEntries),
-          });
+          }, input.request.toolDetailPoolKeepLimit);
         }).then(() => finish({ completed: true, assistantContent: message.content, unconsumedFollowUpIds: Array.from(pendingFollowUpIds) }));
         return;
       }
@@ -516,6 +557,27 @@ function previewTokenUsageEntriesInState(
         tokenUsageEntries: mergeTokenUsageEntries(session.tokenUsageEntries, tokenUsageEntries),
       }),
     };
+  });
+}
+
+function setActiveContextEstimateInState(sessionId: string, estimate: ChatContextEstimate, set: StoreSetter): void {
+  set((current) => ({
+    activeContextEstimateBySessionId: {
+      ...current.activeContextEstimateBySessionId,
+      [sessionId]: estimate,
+    },
+  }));
+}
+
+function clearActiveContextEstimateInState(sessionId: string, set: StoreSetter): void {
+  set((current) => {
+    if (!current.activeContextEstimateBySessionId[sessionId]) {
+      return {};
+    }
+
+    const nextEstimates = { ...current.activeContextEstimateBySessionId };
+    delete nextEstimates[sessionId];
+    return { activeContextEstimateBySessionId: nextEstimates };
   });
 }
 
@@ -716,25 +778,51 @@ async function upsertAssistantToolCallRecord(
   attachments: ChatToolAttachment[],
   set: StoreSetter,
   privateMode = false,
+  toolDetailPoolKeepLimit?: number,
 ): Promise<void> {
   const applyToolUpdate = (message: ChatMessage): ChatMessage => ({
-    ...message,
+    ...moveMessageToolAttachmentsToRefs(message),
     toolCallRecords: upsertToolCallRecord(message.toolCallRecords, record),
-    toolAttachments: mergeToolAttachments(message.toolAttachments, attachments),
+    toolAttachmentIds: uniqueToolAttachmentIds([...(message.toolAttachmentIds ?? []), ...attachments.map((attachment) => attachment.id)]),
   });
 
   if (privateMode) {
-    set((current) => updatePrivateAssistantMessageInState(current, sessionId, messageId, applyToolUpdate));
+    set((current) => {
+      const session = current.privateChatSession;
+      if (!current.privateModeActive || !session || session.id !== sessionId) {
+        return {};
+      }
+      return {
+        privateChatSession: {
+          ...session,
+          toolAttachmentsById: mergeToolAttachmentsIntoStore(session.toolAttachmentsById, attachments, { detailPoolKeepLimit: toolDetailPoolKeepLimit }),
+          messages: session.messages.map((message) => (message.id === messageId ? applyToolUpdate(message) : message)),
+        },
+      };
+    });
     return;
   }
 
   await updateChatSession(sessionId, (latestSession) => ({
     ...latestSession,
     updatedAt: Date.now(),
+    toolAttachmentsById: mergeToolAttachmentsIntoStore(latestSession.toolAttachmentsById, attachments, { detailPoolKeepLimit: toolDetailPoolKeepLimit }),
     messages: latestSession.messages.map((message) => (message.id === messageId ? applyToolUpdate(message) : message)),
   }));
 
-  set((current) => updateAssistantMessageInState(current, sessionId, messageId, applyToolUpdate));
+  set((current) => {
+    const session = current.chatSessions.find((item) => item.id === sessionId);
+    if (!session) {
+      return {};
+    }
+    return {
+      chatSessions: upsertSession(current.chatSessions, {
+        ...session,
+        toolAttachmentsById: mergeToolAttachmentsIntoStore(session.toolAttachmentsById, attachments, { detailPoolKeepLimit: toolDetailPoolKeepLimit }),
+        messages: session.messages.map((message) => (message.id === messageId ? applyToolUpdate(message) : message)),
+      }),
+    };
+  });
 }
 
 function upsertToolCallRecord(records: ChatToolCallRecord[] | undefined, record: ChatToolCallRecord): ChatToolCallRecord[] {
@@ -779,17 +867,18 @@ async function finalizeAssistantMessage(
   set: StoreSetter,
   privateMode = false,
   options: FinalizeAssistantOptions = {},
+  toolDetailPoolKeepLimit?: number,
 ): Promise<void> {
   const nextTokenUsageEntryIds = options.tokenUsageEntries?.map((entry) => entry.id);
   if (privateMode) {
     set((current) => {
       const updated = updatePrivateAssistantMessageInState(current, sessionId, messageId, (message) => ({
-        ...message,
+        ...moveMessageToolAttachmentsToRefs(message),
         content,
         thinking,
         reasoningContent: options.reasoningContent ?? message.reasoningContent,
         toolCallRecords: options.toolCallRecords ?? message.toolCallRecords,
-        toolAttachments: mergeToolAttachments(message.toolAttachments, options.toolAttachments),
+        toolAttachmentIds: uniqueToolAttachmentIds([...(message.toolAttachmentIds ?? []), ...(options.toolAttachments ?? []).map((attachment) => attachment.id)]),
         tokenUsageEntryIds: nextTokenUsageEntryIds ?? message.tokenUsageEntryIds,
         streaming: false,
       }));
@@ -800,6 +889,7 @@ async function finalizeAssistantMessage(
         ...updated,
         privateChatSession: {
           ...updated.privateChatSession,
+          toolAttachmentsById: mergeToolAttachmentsIntoStore(updated.privateChatSession.toolAttachmentsById, options.toolAttachments, { detailPoolKeepLimit: toolDetailPoolKeepLimit }),
           tokenUsageEntries: mergeTokenUsageEntries(updated.privateChatSession.tokenUsageEntries, options.tokenUsageEntries),
         },
       };
@@ -811,15 +901,16 @@ async function finalizeAssistantMessage(
     ...latestSession,
     updatedAt: Date.now(),
     tokenUsageEntries: mergeTokenUsageEntries(latestSession.tokenUsageEntries, options.tokenUsageEntries),
+    toolAttachmentsById: mergeToolAttachmentsIntoStore(latestSession.toolAttachmentsById, options.toolAttachments, { detailPoolKeepLimit: toolDetailPoolKeepLimit }),
     messages: latestSession.messages.map((message) =>
       message.id === messageId
         ? {
-            ...message,
+            ...moveMessageToolAttachmentsToRefs(message),
             content,
             thinking,
             reasoningContent: options.reasoningContent ?? message.reasoningContent,
             toolCallRecords: options.toolCallRecords ?? message.toolCallRecords,
-            toolAttachments: mergeToolAttachments(message.toolAttachments, options.toolAttachments),
+            toolAttachmentIds: uniqueToolAttachmentIds([...(message.toolAttachmentIds ?? []), ...(options.toolAttachments ?? []).map((attachment) => attachment.id)]),
             tokenUsageEntryIds: nextTokenUsageEntryIds ?? message.tokenUsageEntryIds,
             streaming: false,
           }
@@ -833,16 +924,18 @@ async function finalizeAssistantMessage(
       sessionId,
       messageId,
       (message) => ({
-        ...message,
+        ...moveMessageToolAttachmentsToRefs(message),
         content,
         thinking,
         reasoningContent: options.reasoningContent ?? message.reasoningContent,
         toolCallRecords: options.toolCallRecords ?? message.toolCallRecords,
-        toolAttachments: mergeToolAttachments(message.toolAttachments, options.toolAttachments),
+        toolAttachmentIds: uniqueToolAttachmentIds([...(message.toolAttachmentIds ?? []), ...(options.toolAttachments ?? []).map((attachment) => attachment.id)]),
         tokenUsageEntryIds: nextTokenUsageEntryIds ?? message.tokenUsageEntryIds,
         streaming: false,
       }),
       options.tokenUsageEntries,
+      options.toolAttachments,
+      toolDetailPoolKeepLimit,
     ),
   );
 }
@@ -853,6 +946,8 @@ function updateAssistantMessageInState(
   messageId: string,
   updater: (message: ChatMessage) => ChatMessage,
   tokenUsageEntries?: ChatTokenUsageEntry[],
+  toolAttachments?: ChatToolAttachment[],
+  toolDetailPoolKeepLimit?: number,
 ): Partial<AppState> {
   const session = state.chatSessions.find((item) => item.id === sessionId);
   if (!session) {
@@ -864,6 +959,7 @@ function updateAssistantMessageInState(
       ...session,
       messages: session.messages.map((message) => (message.id === messageId ? updater(message) : message)),
       tokenUsageEntries: mergeTokenUsageEntries(session.tokenUsageEntries, tokenUsageEntries),
+      toolAttachmentsById: mergeToolAttachmentsIntoStore(session.toolAttachmentsById, toolAttachments, { detailPoolKeepLimit: toolDetailPoolKeepLimit }),
     }),
   };
 }

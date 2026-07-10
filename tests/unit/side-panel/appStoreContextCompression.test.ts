@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAppStore } from "../../../src/side-panel/state/appStore";
 import { clearDatabase, saveChatSession } from "../../../src/shared/storage/repositories";
-import type { ChatMessage, ChatSession, ChatTokenUsageEntry, ModelProvider, ProviderModel } from "../../../src/shared/types";
+import type { ChatContextEstimate, ChatMessage, ChatSession, ChatTokenUsageEntry, ChatToolAttachment, ModelProvider, ProviderModel } from "../../../src/shared/types";
 
 function createProvider(): ModelProvider {
   return {
@@ -123,6 +123,160 @@ describe("appStore 聊天上下文压缩", () => {
     await clearDatabase();
   });
 
+  it("最大聊天上下文 100k 且阈值 90% 时 20k 上下文不会触发压缩", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const oldUsage: ChatTokenUsageEntry = {
+      ...createUsage("usage-old", 500),
+      inputTokens: 20000,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    };
+    const session: ChatSession = {
+      id: "session-large-context-budget",
+      title: "大上下文预算会话",
+      archived: false,
+      sortOrder: 1,
+      createdAt: 1,
+      updatedAt: 1,
+      selectedModelId: model.id,
+      messages: [
+        createMessage("message-user-old", "user", "旧问题"),
+        createMessage("message-assistant-old", "assistant", "旧回答", { tokenUsageEntryIds: [oldUsage.id] }),
+      ],
+      tokenUsageEntries: [oldUsage],
+    };
+    const chatRequests: Array<{ tokenUsageSource?: string; messages?: ChatMessage[] }> = [];
+    const sendMessage = vi.fn((message: { type: string; tokenUsageSource?: string; messages?: ChatMessage[] }, callback: (response: unknown) => void) => {
+      if (message.type === "chat.send") {
+        chatRequests.push(message);
+      }
+      callback({
+        ok: true,
+        content: "正式回答",
+        tokenUsageEntries: [createUsage("usage-final", 6)],
+      });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+    await saveChatSession(session);
+    const currentPreferences = useAppStore.getState().chatPreferences;
+    useAppStore.setState({
+      providers: [provider],
+      models: [model],
+      selectedModelId: model.id,
+      activeSessionId: session.id,
+      chatSessions: [session],
+      streamMode: false,
+      chatPreferences: {
+        ...currentPreferences,
+        maxTokens: 100000,
+        contextCompressionThresholdPercent: 90,
+      },
+    });
+
+    await useAppStore.getState().sendChatMessage("继续问题");
+
+    expect(chatRequests).toHaveLength(1);
+    expect(chatRequests[0].tokenUsageSource).not.toBe("context_compression");
+    expect(chatRequests[0].messages?.map((message) => message.content)).toEqual([
+      "你是网页助手",
+      "旧问题",
+      "旧回答",
+      "继续问题",
+    ]);
+  });
+
+  it("发送前压缩判断会计入正式请求中展开的历史工具附件", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const oldUsage: ChatTokenUsageEntry = {
+      ...createUsage("usage-old", 5),
+      inputTokens: 10,
+      outputTokens: 5,
+    };
+    const largeToolAttachment: ChatToolAttachment = {
+      id: "tool-attachment-large",
+      kind: "generic",
+      title: "Network 请求详情",
+      summary: "请求摘要".repeat(300),
+      details: "完整请求详情".repeat(80),
+      createdAt: 1,
+      redacted: true,
+      truncated: false,
+    } as ChatToolAttachment;
+    const session: ChatSession = {
+      id: "session-expanded-attachment-compression",
+      title: "附件展开压缩",
+      archived: false,
+      sortOrder: 1,
+      createdAt: 1,
+      updatedAt: 1,
+      selectedModelId: model.id,
+      messages: [
+        createMessage("message-user-old", "user", "旧问题"),
+        createMessage("message-assistant-old", "assistant", "旧回答", {
+          tokenUsageEntryIds: [oldUsage.id],
+          toolAttachments: [largeToolAttachment],
+        }),
+      ],
+      tokenUsageEntries: [oldUsage],
+    };
+    const chatRequests: Array<{ type: string; tokenUsageSource?: string; messages?: ChatMessage[] }> = [];
+    const sendMessage = vi.fn((message: { type: string; tokenUsageSource?: string; messages?: ChatMessage[] }, callback: (response: unknown) => void) => {
+      if (message.type !== "chat.send") {
+        callback(undefined);
+        return undefined;
+      }
+
+      chatRequests.push(message);
+      if (message.tokenUsageSource === "context_compression") {
+        callback({
+          ok: true,
+          content: "压缩后的附件摘要",
+          tokenUsageEntries: [createUsage("usage-compression", 5, "context_compression")],
+        });
+        return undefined;
+      }
+
+      callback({
+        ok: true,
+        content: "正式回答",
+        tokenUsageEntries: [createUsage("usage-final", 6)],
+      });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+    await saveChatSession(session);
+    const currentPreferences = useAppStore.getState().chatPreferences;
+    useAppStore.setState({
+      providers: [provider],
+      models: [model],
+      selectedModelId: model.id,
+      activeSessionId: session.id,
+      chatSessions: [session],
+      streamMode: false,
+      chatPreferences: {
+        ...currentPreferences,
+        maxTokens: 100,
+        contextCompressionThresholdPercent: 90,
+        contextCompressionPrompt: "请压缩历史",
+        toolCallingEnabled: false,
+        enabledToolIds: [],
+      },
+    });
+
+    await useAppStore.getState().sendChatMessage("为什么会出现模型响应没有可用内容？具体请求详情给我看一下。");
+
+    expect(chatRequests).toHaveLength(2);
+    expect(chatRequests[0].tokenUsageSource).toBe("context_compression");
+    expect(chatRequests[1].messages?.map((message) => message.content)).toEqual([
+      "你是网页助手",
+      "压缩后的附件摘要",
+      "为什么会出现模型响应没有可用内容？具体请求详情给我看一下。",
+    ]);
+  });
+
   it("达到最大聊天上下文 90% 时先压缩历史，再只带摘要和当前消息发起正式请求", async () => {
     const provider = createProvider();
     const model = createModel();
@@ -177,7 +331,7 @@ describe("appStore 聊天上下文压缩", () => {
       streamMode: false,
       chatPreferences: {
         ...currentPreferences,
-        maxTokens: 100,
+        maxTokens: 10,
         contextCompressionPrompt: "请压缩历史",
         toolCallingEnabled: false,
         enabledToolIds: [],
@@ -249,7 +403,7 @@ describe("appStore 聊天上下文压缩", () => {
       streamMode: false,
       chatPreferences: {
         ...currentPreferences,
-        maxTokens: 100,
+        maxTokens: 10,
         contextCompressionPrompt: "请压缩历史",
         toolCallingEnabled: false,
         enabledToolIds: [],
@@ -306,7 +460,7 @@ describe("appStore 聊天上下文压缩", () => {
       streamMode: false,
       chatPreferences: {
         ...currentPreferences,
-        maxTokens: 100,
+        maxTokens: 10,
         contextCompressionPrompt: "请压缩历史",
         toolCallingEnabled: false,
         enabledToolIds: [],
@@ -386,7 +540,7 @@ describe("appStore 聊天上下文压缩", () => {
       streamMode: true,
       chatPreferences: {
         ...currentPreferences,
-        maxTokens: 100,
+        maxTokens: 10,
         contextCompressionPrompt: "请压缩历史",
         toolCallingEnabled: false,
         enabledToolIds: [],
@@ -465,7 +619,7 @@ describe("appStore 聊天上下文压缩", () => {
       streamMode: false,
       chatPreferences: {
         ...currentPreferences,
-        maxTokens: 100,
+        maxTokens: 10,
         contextCompressionPrompt: "请压缩历史",
         toolCallingEnabled: false,
         enabledToolIds: [],
@@ -540,7 +694,7 @@ describe("appStore 聊天上下文压缩", () => {
       streamMode: false,
       chatPreferences: {
         ...currentPreferences,
-        maxTokens: 100,
+        maxTokens: 12,
         contextCompressionPrompt: "请压缩历史",
         toolCallingEnabled: false,
         enabledToolIds: [],
@@ -642,7 +796,7 @@ describe("appStore 聊天上下文压缩", () => {
       streamMode: false,
       chatPreferences: {
         ...currentPreferences,
-        maxTokens: 100,
+        maxTokens: 12,
         contextCompressionPrompt: "请压缩历史",
         toolCallingEnabled: false,
         enabledToolIds: [],
@@ -672,5 +826,174 @@ describe("appStore 聊天上下文压缩", () => {
     const updatedSession = useAppStore.getState().chatSessions.find((item) => item.id === session.id);
     expect(updatedSession?.messages.filter((message) => message.content === "第二问")).toHaveLength(1);
     expect(updatedSession?.messages.some((message) => message.assistantMessageKind === "context_summary" && message.content === "排队压缩摘要")).toBe(true);
+  });
+
+  it("流式工具循环内压缩摘要会落库并成为后续请求上下文边界", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const session: ChatSession = {
+      id: "session-stream-tool-compression",
+      title: "工具内压缩会话",
+      archived: false,
+      sortOrder: 1,
+      createdAt: 1,
+      updatedAt: 1,
+      selectedModelId: model.id,
+      messages: [
+        createMessage("message-user-old", "user", "旧问题"),
+        createMessage("message-assistant-old", "assistant", "旧回答"),
+      ],
+      tokenUsageEntries: [],
+    };
+    const payloads: Array<{ messages?: ChatMessage[]; contextCompression?: { maxContextTokens: number; thresholdPercent?: number } }> = [];
+    const activeEstimatesDuringStream: Array<ChatContextEstimate | undefined> = [];
+    const firstPortController = createRuntimePort({
+      onStart(payload) {
+        payloads.push(payload as { messages?: ChatMessage[]; contextCompression?: { maxContextTokens: number; thresholdPercent?: number } });
+        firstPortController.emitMessage({
+          type: "context:estimate",
+          estimate: {
+            scope: "tool_loop",
+            phase: "decision",
+            estimatedContextTokens: 420,
+            maxContextTokens: 512,
+            thresholdPercent: 80,
+            triggerThresholdTokens: 409,
+          },
+        });
+        activeEstimatesDuringStream.push(useAppStore.getState().activeContextEstimateBySessionId[session.id]);
+        const summaryMessage = createMessage("message-tool-summary", "assistant", "工具循环压缩摘要", {
+          assistantMessageKind: "context_summary",
+          tokenUsageEntryIds: ["usage-tool-compression"],
+        });
+        firstPortController.emitMessage({
+          type: "assistant:tool-turn",
+          message: createMessage("message-tool-compression", "assistant", "", {
+            assistantMessageKind: "tool_call_turn",
+            toolCallRecords: [
+              {
+                id: "tool-call-compression",
+                toolId: "chat.context_compression",
+                name: "context_compression",
+                displayName: "上下文压缩",
+                arguments: {},
+                status: "running",
+                startedAt: 2,
+              },
+            ],
+          }),
+        });
+        firstPortController.emitMessage({
+          type: "tool:complete",
+          record: {
+            id: "tool-call-compression",
+            toolId: "chat.context_compression",
+            name: "context_compression",
+            displayName: "上下文压缩",
+            arguments: {},
+            status: "success",
+            startedAt: 2,
+            completedAt: 3,
+            resultSummary: "工具循环压缩摘要",
+          },
+        });
+        firstPortController.emitMessage({ type: "assistant:context-summary", message: summaryMessage });
+        firstPortController.emitMessage({
+          type: "assistant:tool-turn",
+          message: createMessage("message-normal-tool-turn", "assistant", "", {
+            assistantMessageKind: "tool_call_turn",
+            toolCallRecords: [],
+          }),
+        });
+        firstPortController.emitMessage({
+          type: "tool:start",
+          record: {
+            id: "tool-call-after-compression",
+            toolId: "page.read_context",
+            name: "read_page_context",
+            displayName: "读取页面上下文",
+            arguments: {},
+            status: "running",
+            startedAt: 4,
+          },
+        });
+        firstPortController.emitMessage({
+          type: "tool:complete",
+          record: {
+            id: "tool-call-after-compression",
+            toolId: "page.read_context",
+            name: "read_page_context",
+            displayName: "读取页面上下文",
+            arguments: {},
+            status: "success",
+            startedAt: 4,
+            completedAt: 5,
+            resultSummary: "页面上下文",
+          },
+        });
+        firstPortController.emitMessage({
+          type: "complete",
+          content: "第一答",
+          tokenUsageEntries: [createUsage("usage-tool-compression", 5, "context_compression")],
+        });
+      },
+    });
+    const secondPortController = createRuntimePort({
+      onStart(payload) {
+        payloads.push(payload as { messages?: ChatMessage[]; contextCompression?: { maxContextTokens: number; thresholdPercent?: number } });
+        secondPortController.emitMessage({ type: "complete", content: "第二答" });
+      },
+    });
+    const connect = vi.fn()
+      .mockImplementationOnce(() => firstPortController.port)
+      .mockImplementationOnce(() => secondPortController.port);
+    vi.stubGlobal("chrome", { runtime: { connect } });
+    await saveChatSession(session);
+    const currentPreferences = useAppStore.getState().chatPreferences;
+    useAppStore.setState({
+      providers: [provider],
+      models: [model],
+      selectedModelId: model.id,
+      activeSessionId: session.id,
+      chatSessions: [session],
+      streamMode: true,
+      chatPreferences: {
+        ...currentPreferences,
+        maxTokens: 512,
+        contextCompressionThresholdPercent: 80,
+        contextCompressionPrompt: "请压缩历史",
+        toolCallingEnabled: false,
+        enabledToolIds: [],
+      },
+    });
+
+    await useAppStore.getState().sendChatMessage("第一问");
+    await waitUntil(() => expect(useAppStore.getState().chatSessions.find((item) => item.id === session.id)?.messages.some((message) => message.assistantMessageKind === "context_summary" && message.content === "工具循环压缩摘要")).toBe(true));
+    expect(activeEstimatesDuringStream[0]).toMatchObject({
+      scope: "tool_loop",
+      phase: "decision",
+      estimatedContextTokens: 420,
+      maxContextTokens: 512,
+    });
+    expect(useAppStore.getState().activeContextEstimateBySessionId[session.id]).toBeUndefined();
+    const compressedSession = useAppStore.getState().chatSessions.find((item) => item.id === session.id);
+    const compressionTurn = compressedSession?.messages.find((message) => message.id === "message-tool-compression");
+    const normalToolTurn = compressedSession?.messages.find((message) => message.id === "message-normal-tool-turn");
+    expect(compressionTurn?.toolCallRecords).toEqual([
+      expect.objectContaining({ id: "tool-call-compression", status: "success", resultSummary: "工具循环压缩摘要" }),
+    ]);
+    expect(normalToolTurn?.toolCallRecords).toEqual([
+      expect.objectContaining({ id: "tool-call-after-compression", status: "success", resultSummary: "页面上下文" }),
+    ]);
+    await useAppStore.getState().sendChatMessage("第二问");
+
+    expect(payloads[0].contextCompression).toMatchObject({ maxContextTokens: 512, thresholdPercent: 80 });
+    expect(payloads[1].messages?.map((message) => message.content)).toEqual([
+      "你是网页助手",
+      "工具循环压缩摘要",
+      "",
+      "第二问",
+    ]);
+    expect(payloads[1].messages?.some((message) => message.content === "旧回答")).toBe(false);
   });
 });

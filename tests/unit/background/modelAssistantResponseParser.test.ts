@@ -100,6 +100,17 @@ describe("模型 assistant 响应抽取", () => {
     });
   });
 
+  it("抽取 OpenAI-compatible finish_reason 供上层识别截断", () => {
+    const result = extractAssistantResponseData({
+      choices: [{ finish_reason: "length", message: { content: "半截回答" } }],
+    });
+
+    expect(result).toEqual({
+      content: "半截回答",
+      stopReason: "length",
+    });
+  });
+
   it("结构化输出模式兼容空字符串 content 与 tool_calls 同时存在", () => {
     const structuredOutput: OpenAIStructuredOutputFormat = {
       type: "tool",
@@ -148,6 +159,18 @@ describe("模型 assistant 响应抽取", () => {
     expect(result).toEqual({
       content: "需要点击按钮。",
       toolCalls: [{ id: "tool-1", name: "click", arguments: { uid: "6_99" } }],
+    });
+  });
+
+  it("抽取 Anthropic stop_reason 供上层识别输出上限截断", () => {
+    const result = extractAssistantResponseData({
+      stop_reason: "max_tokens",
+      content: [{ type: "text", text: "半截回答" }],
+    });
+
+    expect(result).toEqual({
+      content: "半截回答",
+      stopReason: "max_tokens",
     });
   });
 

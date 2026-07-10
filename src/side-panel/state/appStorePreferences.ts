@@ -19,6 +19,7 @@ export function createDefaultChatPreferences(): ChatPreferenceValues {
     systemPrompt: "你是网页助手",
     contextCompressionPrompt: DEFAULT_CONTEXT_COMPRESSION_PROMPT,
     contextCompressionThresholdPercent: DEFAULT_CONTEXT_COMPRESSION_THRESHOLD_PERCENT,
+    toolDetailPoolKeepLimit: 500,
     aiRequestRetryCount: DEFAULT_MODEL_REQUEST_RETRY_COUNT,
     browserAutomationMaxToolIterations: 32,
     defaultBrowserAutomationMode: "normal_restricted",
@@ -45,6 +46,7 @@ export type EffectiveChatPreferences = Required<
     | "systemPrompt"
     | "contextCompressionPrompt"
     | "contextCompressionThresholdPercent"
+    | "toolDetailPoolKeepLimit"
     | "aiRequestRetryCount"
     | "browserAutomationMaxToolIterations"
     | "toolCallingEnabled"
@@ -69,6 +71,10 @@ export function normalizeChatPreferences(value?: Partial<ChatPreferenceValues>):
         : defaults.contextCompressionPrompt,
     contextCompressionThresholdPercent: normalizeContextCompressionThresholdPercent(
       value?.contextCompressionThresholdPercent ?? defaults.contextCompressionThresholdPercent,
+    ),
+    toolDetailPoolKeepLimit: normalizeIntegerWithoutRange(
+      value?.toolDetailPoolKeepLimit,
+      defaults.toolDetailPoolKeepLimit,
     ),
     aiRequestRetryCount: normalizeModelRequestRetryCount(value?.aiRequestRetryCount, defaults.aiRequestRetryCount),
     browserAutomationMaxToolIterations: normalizeIntegerWithoutRange(
@@ -130,6 +136,12 @@ export function normalizeChatPreferenceOverrides(value?: ChatSessionPreferenceOv
   if (value?.contextCompressionThresholdPercent !== undefined) {
     overrides.contextCompressionThresholdPercent = normalizeContextCompressionThresholdPercent(value.contextCompressionThresholdPercent);
   }
+  if (value?.toolDetailPoolKeepLimit !== undefined) {
+    overrides.toolDetailPoolKeepLimit = normalizeIntegerWithoutRange(
+      value.toolDetailPoolKeepLimit,
+      DEFAULT_CHAT_PREFERENCES.toolDetailPoolKeepLimit,
+    );
+  }
   if (value?.aiRequestRetryCount !== undefined) {
     overrides.aiRequestRetryCount = normalizeModelRequestRetryCount(value.aiRequestRetryCount, DEFAULT_CHAT_PREFERENCES.aiRequestRetryCount);
   }
@@ -166,6 +178,7 @@ export function resolveEffectiveChatPreferences(
     systemPrompt: overrides?.systemPrompt ?? preferences.systemPrompt,
     contextCompressionPrompt: overrides?.contextCompressionPrompt ?? preferences.contextCompressionPrompt,
     contextCompressionThresholdPercent: overrides?.contextCompressionThresholdPercent ?? preferences.contextCompressionThresholdPercent,
+    toolDetailPoolKeepLimit: overrides?.toolDetailPoolKeepLimit ?? preferences.toolDetailPoolKeepLimit,
     aiRequestRetryCount: overrides?.aiRequestRetryCount ?? preferences.aiRequestRetryCount,
     browserAutomationMaxToolIterations: overrides?.browserAutomationMaxToolIterations ?? preferences.browserAutomationMaxToolIterations,
     toolCallingEnabled: overrides?.toolCallingEnabled ?? preferences.toolCallingEnabled,
@@ -179,6 +192,7 @@ export function resolveEffectiveChatPreferences(
     systemPrompt: normalizedOverrides.systemPrompt ?? preferences.systemPrompt,
     contextCompressionPrompt: normalizedOverrides.contextCompressionPrompt ?? preferences.contextCompressionPrompt,
     contextCompressionThresholdPercent: normalizedOverrides.contextCompressionThresholdPercent ?? preferences.contextCompressionThresholdPercent,
+    toolDetailPoolKeepLimit: normalizedOverrides.toolDetailPoolKeepLimit ?? preferences.toolDetailPoolKeepLimit,
     aiRequestRetryCount: normalizedOverrides.aiRequestRetryCount ?? preferences.aiRequestRetryCount,
     browserAutomationMaxToolIterations: normalizedOverrides.browserAutomationMaxToolIterations ?? preferences.browserAutomationMaxToolIterations,
     toolCallingEnabled: normalizedOverrides.toolCallingEnabled ?? preferences.toolCallingEnabled,
@@ -212,13 +226,16 @@ function normalizeNumber(value: unknown, fallback: number, min: number, max: num
 }
 
 function normalizeIntegerWithoutRange(value: unknown, fallback: number): number {
+  if (value === null || value === undefined || value === "") {
+    return fallback;
+  }
   const numberValue = typeof value === "number" ? value : Number(value);
 
   if (!Number.isFinite(numberValue)) {
     return fallback;
   }
 
-  return Math.round(numberValue);
+  return Math.max(0, Math.round(numberValue));
 }
 
 function normalizeOptionalInteger(value: unknown, min: number, max: number): number | undefined {

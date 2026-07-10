@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { KeyboardEvent } from "react";
+import { DEFAULT_MODEL_OUTPUT_MAX_TOKENS, MAX_MODEL_OUTPUT_MAX_TOKENS, normalizeModelOutputMaxTokens } from "../../../shared/models/modelCatalog";
 import type { ModelProvider, ProviderModel } from "../../../shared/types";
 import { parseTavilyIncludeAnswerInput, parseTavilyIncludeRawContentInput } from "../../../shared/webSearch/settings";
 import { useAppStore } from "../../state/appStore";
@@ -24,7 +25,7 @@ const draftModel: ProviderModel = {
   displayName: "默认模型",
   modelId: "gpt-4.1-mini",
   temperature: 0.7,
-  maxTokens: 1024,
+  maxTokens: DEFAULT_MODEL_OUTPUT_MAX_TOKENS,
   systemPrompt: "你是网页助手",
   isTitleModel: false,
   supportsVision: false,
@@ -540,6 +541,7 @@ export function ChannelManagement() {
           model={settingsModel}
           onClose={() => setSettingsModelId(undefined)}
           onChangeModelId={(modelId) => updateModel(settingsModel.id, { modelId })}
+          onChangeMaxTokens={(maxTokens) => updateModel(settingsModel.id, { maxTokens })}
           onChangeSupportsVision={(supportsVision) => updateModel(settingsModel.id, { supportsVision })}
         />
       ) : null}
@@ -551,10 +553,11 @@ interface ModelSettingsDialogProps {
   model: ProviderModel;
   onClose: () => void;
   onChangeModelId: (modelId: string) => void;
+  onChangeMaxTokens: (maxTokens: number) => void;
   onChangeSupportsVision: (supportsVision: boolean) => void;
 }
 
-function ModelSettingsDialog({ model, onClose, onChangeModelId, onChangeSupportsVision }: ModelSettingsDialogProps) {
+function ModelSettingsDialog({ model, onClose, onChangeModelId, onChangeMaxTokens, onChangeSupportsVision }: ModelSettingsDialogProps) {
   const [modelIdError, setModelIdError] = useState("");
   const supportsVision = Boolean(model.supportsVision);
   const modelIdInput = useComposedTextInput(model.modelId, (modelId) => {
@@ -589,6 +592,19 @@ function ModelSettingsDialog({ model, onClose, onChangeModelId, onChangeSupports
             {...modelIdInput}
           />
           {modelIdError ? <span className="text-xs text-[var(--color-error)]">{modelIdError}</span> : null}
+        </label>
+        <label className="grid gap-1 text-sm">
+          模型输出上限 max_tokens
+          <input
+            className="ui-input"
+            aria-label="模型输出上限 max_tokens"
+            type="number"
+            min={1}
+            max={MAX_MODEL_OUTPUT_MAX_TOKENS}
+            step={1}
+            value={normalizeModelOutputMaxTokens(model.maxTokens)}
+            onChange={(event) => onChangeMaxTokens(normalizeModelOutputMaxTokens(Number(event.target.value)))}
+          />
         </label>
         <label className="chat-preference-switch">
           <input

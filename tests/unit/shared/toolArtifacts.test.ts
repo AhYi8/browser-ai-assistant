@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { collectMessageToolAttachments, collectRawMessageToolAttachments, createAutomationReportToolAttachment, formatToolAttachmentForExport, formatToolAttachmentForPrompt, normalizeToolAttachment } from "../../../src/shared/toolArtifacts";
+import { collectMessageToolAttachments, collectRawMessageToolAttachments, createAutomationReportToolAttachment, formatToolAttachmentForExport, formatToolAttachmentForPrompt, formatToolAttachmentForPromptSummary, normalizeToolAttachment, prepareToolAttachmentsForPersistence } from "../../../src/shared/toolArtifacts";
 import type { ChatMessage, ChatToolCallRecord } from "../../../src/shared/types";
 
 function createAssistantMessage(partial: Partial<ChatMessage>): ChatMessage {
@@ -1046,5 +1046,135 @@ describe("通用工具附件聚合", () => {
     expect(formatToolAttachmentForExport(attachment)).toContain("src/app.ts");
     expect(formatToolAttachmentForExport(attachment)).toContain("[已脱敏]");
     expect(formatToolAttachmentForExport(attachment)).not.toContain("app.js.map?token=secret");
+  });
+  it("持久化 Network 附件时会丢弃明显无关的静态噪音", () => {
+    const [attachment] = prepareToolAttachmentsForPersistence([
+      {
+        id: "attachment-network-noise",
+        kind: "network",
+        title: "Network 请求详情",
+        summary: "2 条请求",
+        createdAt: 1,
+        redacted: true,
+        truncated: false,
+        requests: [
+          {
+            id: "image-1",
+            url: "https://static.example.com/logo.png",
+            method: "GET",
+            status: 200,
+            resourceType: "image",
+            mimeType: "image/png",
+            redacted: true,
+            truncated: false,
+          },
+          {
+            id: "api-1",
+            url: "https://api.example.com/conversation/list?page=1",
+            method: "POST",
+            status: 200,
+            resourceType: "xhr",
+            mimeType: "application/json",
+            requestHeaders: [{ name: "x-trace-id", value: "trace-123" }],
+            requestBody: "{\"page\":1,\"token\":\"secret\"}",
+            responseBody: "{\"items\":[{\"id\":\"conv-1\",\"title\":\"demo\"}]}",
+            redacted: true,
+            truncated: false,
+          },
+        ],
+      },
+    ]);
+
+    expect(attachment).toMatchObject({
+      kind: "network",
+      retentionMode: "detail_pool",
+      requests: [expect.objectContaining({ id: "api-1" })],
+    });
+    expect(attachment && "requests" in attachment && attachment.requests).toHaveLength(1);
+  });
+
+  it("Network 后续上下文摘要只保留字段名和 ID，不展开 header/body value", () => {
+    const [attachment] = prepareToolAttachmentsForPersistence([
+      {
+        id: "attachment-network-detail",
+        kind: "network",
+        title: "Network 请求详情",
+        summary: "1 条请求",
+        createdAt: 1,
+        redacted: true,
+        truncated: false,
+        requests: [
+          {
+            id: "req-login",
+            url: "https://api.example.com/login?redirect=/home&token=secret",
+            method: "POST",
+            status: 200,
+            resourceType: "xhr",
+            mimeType: "application/json",
+            requestHeaders: [{ name: "authorization", value: "Bearer secret-token" }],
+            responseHeaders: [{ name: "content-type", value: "application/json" }],
+            requestBody: "{\"username\":\"alice\",\"password\":\"123456\"}",
+            responseBody: "{\"token\":\"server-secret\",\"user\":{\"id\":\"u1\"}}",
+            redacted: true,
+            truncated: false,
+          },
+        ],
+      },
+    ]);
+
+    const prompt = attachment ? formatToolAttachmentForPromptSummary(attachment) ?? "" : "";
+
+    expect(prompt).toContain("req-login");
+    expect(prompt).toContain("requestHeaders[authorization]");
+    expect(prompt).toContain("requestBody[username, password]");
+    expect(prompt).toContain("responseBody[token, user, user.id]");
+    expect(prompt).not.toContain("Bearer secret-token");
+    expect(prompt).not.toContain("123456");
+    expect(prompt).not.toContain("server-secret");
+  });
+
+  it("Network 详情池会按配置上限裁剪，0 表示仅保留摘要形态", () => {
+    const requests = Array.from({ length: 3 }, (_, index) => ({
+      id: `api-${index + 1}`,
+      url: `https://api.example.com/items/${index + 1}`,
+      method: "GET",
+      status: 200,
+      resourceType: "xhr",
+      requestHeaders: [{ name: "x-id", value: `trace-${index + 1}` }],
+      responseBody: `{"id":${index + 1},"name":"item-${index + 1}"}`,
+      redacted: true,
+      truncated: false,
+    }));
+
+    const [limited] = prepareToolAttachmentsForPersistence([
+      {
+        id: "attachment-network-limit",
+        kind: "network",
+        title: "Network 请求详情",
+        summary: "3 条请求",
+        createdAt: 1,
+        redacted: true,
+        truncated: false,
+        requests,
+      },
+    ], { detailPoolKeepLimit: 2 });
+    const [summaryOnly] = prepareToolAttachmentsForPersistence([
+      {
+        id: "attachment-network-summary",
+        kind: "network",
+        title: "Network 请求详情",
+        summary: "3 条请求",
+        createdAt: 1,
+        redacted: true,
+        truncated: false,
+        requests,
+      },
+    ], { detailPoolKeepLimit: 0 });
+
+    expect(limited).toMatchObject({ kind: "network", retentionMode: "detail_pool", truncated: true });
+    expect(limited && "requests" in limited && limited.requests).toHaveLength(2);
+    expect(summaryOnly).toMatchObject({ kind: "network", retentionMode: "summary" });
+    expect(summaryOnly && "requests" in summaryOnly && summaryOnly.requests[0]).not.toHaveProperty("responseBody");
+    expect(summaryOnly && "requests" in summaryOnly && summaryOnly.requests[0]).not.toHaveProperty("requestHeaders");
   });
 });

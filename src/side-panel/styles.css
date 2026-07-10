@@ -1223,6 +1223,11 @@ body {
     @apply mb-2 mt-2 whitespace-pre-wrap;
   }
 
+  .message-tool-attachment-context-status {
+    @apply mb-2 mt-1 text-xs;
+    color: var(--color-muted);
+  }
+
   .message-tool-attachment pre {
     @apply m-0 max-w-full overflow-x-auto rounded-md p-2;
     background: var(--color-surface-dark-soft);

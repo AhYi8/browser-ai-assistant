@@ -14,8 +14,15 @@ import type {
   PromptTemplate,
   ProviderModel,
 } from "../types";
-import { createNetworkToolAttachment, mergeCompatibleToolAttachments, normalizeToolAttachment } from "../toolArtifacts";
+import {
+  createNetworkToolAttachment,
+  mergeCompatibleToolAttachments,
+  mergeToolAttachmentsIntoStore,
+  normalizeToolAttachment,
+  uniqueToolAttachmentIds,
+} from "../toolArtifacts";
 import { normalizeTokenUsageEntries } from "../chat/tokenUsage";
+import { normalizeModelOutputMaxTokens } from "../models/modelCatalog";
 
 export async function saveModelConfig(model: ModelConfig): Promise<void> {
   await db.modelConfigs.put(model);
@@ -40,8 +47,15 @@ export async function deleteModelProvider(providerId: string): Promise<void> {
   });
 }
 
+function normalizeProviderModel(model: ProviderModel): ProviderModel {
+  return {
+    ...model,
+    maxTokens: normalizeModelOutputMaxTokens(model.maxTokens),
+  };
+}
+
 export async function saveProviderModel(model: ProviderModel): Promise<void> {
-  await db.providerModels.put(model);
+  await db.providerModels.put(normalizeProviderModel(model));
 }
 
 export async function getProviderModels(providerId?: string): Promise<ProviderModel[]> {
@@ -49,7 +63,7 @@ export async function getProviderModels(providerId?: string): Promise<ProviderMo
     ? await db.providerModels.where("providerId").equals(providerId).sortBy("updatedAt")
     : await db.providerModels.orderBy("updatedAt").toArray();
 
-  return models;
+  return models.map(normalizeProviderModel);
 }
 
 export async function deleteProviderModel(modelId: string): Promise<void> {
@@ -133,7 +147,7 @@ export async function moveExtractionRule(ruleId: string, direction: "up" | "down
 }
 
 export async function saveChatSession(session: ChatSession): Promise<void> {
-  await db.chatSessions.put(session);
+  await db.chatSessions.put(normalizeChatSession(session));
 }
 
 export async function getChatSession(id: string): Promise<ChatSession | undefined> {
@@ -165,8 +179,9 @@ export async function updateChatSession(
       return undefined;
     }
 
-    await db.chatSessions.put(nextSession);
-    return nextSession;
+    const normalizedNextSession = normalizeChatSession(nextSession);
+    await db.chatSessions.put(normalizedNextSession);
+    return normalizedNextSession;
   });
 }
 
@@ -237,7 +252,7 @@ export async function exportAllDataForSync(): Promise<SyncDataSnapshot> {
     version: 1,
     modelConfigs,
     modelProviders,
-    providerModels,
+    providerModels: providerModels.map(normalizeProviderModel),
     extractionRules,
     promptTemplates,
     chatSessions: chatSessions.map(normalizeChatSession),
@@ -273,10 +288,10 @@ export async function replaceAllDataFromSync(snapshot: SyncDataSnapshot): Promis
       await Promise.all([
         db.modelConfigs.bulkPut(snapshot.modelConfigs),
         db.modelProviders.bulkPut(snapshot.modelProviders),
-        db.providerModels.bulkPut(snapshot.providerModels),
+        db.providerModels.bulkPut(snapshot.providerModels.map(normalizeProviderModel)),
         db.extractionRules.bulkPut(snapshot.extractionRules),
         db.promptTemplates.bulkPut(snapshot.promptTemplates ?? []),
-        db.chatSessions.bulkPut(snapshot.chatSessions),
+        db.chatSessions.bulkPut(snapshot.chatSessions.map(normalizeChatSession)),
         db.chatFolders.bulkPut(snapshot.chatFolders),
         db.appSettings.bulkPut(snapshot.appSettings),
       ]);
@@ -285,11 +300,31 @@ export async function replaceAllDataFromSync(snapshot: SyncDataSnapshot): Promis
 }
 
 function normalizeChatSession(session: ChatSession): ChatSession {
+  let toolAttachmentsById = normalizeChatToolAttachmentsById(session.toolAttachmentsById);
+  const messages = session.messages.map(normalizeChatMessage).map((message) => {
+    const attachmentIds = uniqueToolAttachmentIds([
+      ...(message.toolAttachmentIds ?? []),
+      ...(message.toolCallRecords ?? []).flatMap((record) => record.attachmentIds ?? []),
+      ...(message.toolAttachments ?? []).map((attachment) => attachment.id),
+    ]);
+    toolAttachmentsById = mergeToolAttachmentsIntoStore(toolAttachmentsById, message.toolAttachments) ?? toolAttachmentsById;
+    const {
+      toolAttachments: _messageToolAttachments,
+      networkContextAttachment: _legacyNetworkContextAttachment,
+      ...messageWithoutInlineToolAttachments
+    } = message;
+    return {
+      ...messageWithoutInlineToolAttachments,
+      toolAttachmentIds: attachmentIds,
+    };
+  });
+
   return {
     ...session,
     archived: session.archived ?? false,
     chatPreferenceOverrides: normalizeChatPreferenceOverrides(session.chatPreferenceOverrides),
-    messages: session.messages.map(normalizeChatMessage),
+    messages,
+    toolAttachmentsById,
     tokenUsageEntries: normalizeTokenUsageEntries(session.tokenUsageEntries),
   };
 }
@@ -309,6 +344,9 @@ function normalizeChatPreferenceOverrides(value: unknown): ChatSessionPreference
   }
   if (typeof source.contextCompressionThresholdPercent === "number" && Number.isFinite(source.contextCompressionThresholdPercent)) {
     overrides.contextCompressionThresholdPercent = source.contextCompressionThresholdPercent;
+  }
+  if (typeof source.toolDetailPoolKeepLimit === "number" && Number.isFinite(source.toolDetailPoolKeepLimit)) {
+    overrides.toolDetailPoolKeepLimit = source.toolDetailPoolKeepLimit;
   }
   if (typeof source.browserAutomationMaxToolIterations === "number" && Number.isFinite(source.browserAutomationMaxToolIterations)) {
     overrides.browserAutomationMaxToolIterations = source.browserAutomationMaxToolIterations;
@@ -349,6 +387,7 @@ function normalizeChatMessage(message: ChatMessage): ChatMessage {
     contextMode: message.contextMode ?? "text",
     reasoningContent: typeof message.reasoningContent === "string" ? message.reasoningContent : undefined,
     toolCallRecords: normalizeChatToolCallRecords(message.toolCallRecords),
+    toolAttachmentIds: uniqueToolAttachmentIds(message.toolAttachmentIds),
     toolAttachments: toolAttachments.length ? toolAttachments : undefined,
     tokenUsageEntryIds: Array.isArray(message.tokenUsageEntryIds)
       ? message.tokenUsageEntryIds.filter((id): id is string => typeof id === "string" && Boolean(id.trim()))
@@ -410,4 +449,15 @@ function normalizeChatToolAttachments(value: unknown): ChatToolAttachment[] {
   }
 
   return value.map(normalizeToolAttachment).filter((item): item is ChatToolAttachment => Boolean(item));
+}
+
+function normalizeChatToolAttachmentsById(value: unknown): Record<string, ChatToolAttachment> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const attachments = Object.values(value as Record<string, unknown>)
+    .map(normalizeToolAttachment)
+    .filter((item): item is ChatToolAttachment => Boolean(item));
+  return mergeToolAttachmentsIntoStore(undefined, attachments);
 }

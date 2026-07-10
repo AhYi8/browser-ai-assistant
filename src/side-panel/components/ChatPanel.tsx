@@ -151,6 +151,7 @@ export function ChatPanel({ historyPanelOpen, onToggleHistoryPanel }: ChatPanelP
       </div>
       <MessageList
         messages={activeSession?.messages ?? []}
+        toolAttachmentsById={activeSession?.toolAttachmentsById}
         retryProgressByMessageId={chatRetryProgressByMessageId}
         toolCallDisplayMode={toolCallDisplayMode}
         showToolCallProcessInAssistantMode={showToolCallProcessInAssistantMode}

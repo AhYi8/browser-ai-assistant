@@ -1,5 +1,6 @@
 import type { ChatMessage, ModelConfig } from "../types";
-import { collectMessageToolAttachments, formatToolAttachmentForPrompt } from "../toolArtifacts";
+import type { ChatToolAttachmentsById } from "../toolArtifacts";
+import { collectMessageToolAttachments, formatToolAttachmentForPromptSummary } from "../toolArtifacts";
 import { truncateText } from "../utils/text";
 import { APPROX_CHARS_PER_TOKEN, estimateImageAttachmentTokens, getMessagesFromLatestContextSummary } from "./contextCompression";
 
@@ -11,12 +12,16 @@ interface BuildChatRequestMessagesInput {
   systemPrompt?: string;
   appendPageContextToSystemPrompt?: boolean;
   maxContextTokens?: number;
+  toolAttachmentsById?: ChatToolAttachmentsById;
 }
 
 export function buildChatRequestMessages(input: BuildChatRequestMessagesInput): ChatMessage[] {
   const effectiveSystemPrompt = input.systemPrompt ?? input.model.systemPrompt;
   const shouldAppendPageContext = input.appendPageContextToSystemPrompt ?? true;
-  const existingMessages = getMessagesFromLatestContextSummary(input.existingMessages).map(expandAssistantContextAttachments);
+  const expandedAttachmentIds = new Set<string>();
+  const existingMessages = getMessagesFromLatestContextSummary(input.existingMessages).map((message) =>
+    expandAssistantContextAttachments(message, input.toolAttachmentsById, expandedAttachmentIds),
+  );
   const pageContext = shouldAppendPageContext
     ? fitPageContextToModelBudget({
         systemPrompt: effectiveSystemPrompt,
@@ -45,13 +50,24 @@ export function buildChatRequestMessages(input: BuildChatRequestMessagesInput): 
   return [systemMessage, ...existingMessages, expandUserMessagePromptInvocations(input.userMessage)];
 }
 
-function expandAssistantContextAttachments(message: ChatMessage): ChatMessage {
+function expandAssistantContextAttachments(
+  message: ChatMessage,
+  toolAttachmentsById: ChatToolAttachmentsById | undefined,
+  expandedAttachmentIds: Set<string>,
+): ChatMessage {
   if (message.role !== "assistant") {
     return message;
   }
 
-  const attachmentPrompts = collectMessageToolAttachments(message)
-    .map(formatToolAttachmentForPrompt)
+  const attachmentPrompts = collectMessageToolAttachments(message, toolAttachmentsById)
+    .filter((attachment) => {
+      if (expandedAttachmentIds.has(attachment.id)) {
+        return false;
+      }
+      expandedAttachmentIds.add(attachment.id);
+      return true;
+    })
+    .map((attachment) => formatToolAttachmentForPromptSummary(attachment))
     .filter((item): item is string => Boolean(item?.trim()));
   if (attachmentPrompts.length === 0) {
     return message;
@@ -123,7 +139,7 @@ function fitPageContextToModelBudget(input: FitPageContextInput): string {
     getMessageBudgetLength(input.userMessage);
   const availablePageContextLength = requestBudget - fixedContentLength;
 
-  // 当前 maxTokens 同时参与请求预算估算；没有真实 tokenizer 时使用偏向中文场景的保守字符预算。
+  // 聊天偏好里的 maxTokens 表示最大聊天上下文预算；没有真实 tokenizer 时使用偏向中文场景的保守字符预算。
   if (availablePageContextLength <= 0) {
     return "";
   }

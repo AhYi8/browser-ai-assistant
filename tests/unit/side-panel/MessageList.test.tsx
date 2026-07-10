@@ -172,7 +172,13 @@ describe("MessageList 滚动跟随", () => {
             toolId: CONTEXT_COMPRESSION_TOOL_ID,
             name: "context_compression",
             displayName: "上下文压缩",
-            arguments: {},
+            arguments: {
+              maxContextTokens: 100000,
+              thresholdPercent: 90,
+              triggerThresholdTokens: 90000,
+              estimatedContextTokens: 36000,
+              scopedMessageCount: 6,
+            },
             status: "running",
             startedAt: 1,
           },
@@ -181,7 +187,63 @@ describe("MessageList 滚动跟随", () => {
       createContextSummaryMessage("message-summary"),
     ]);
 
-    expect(screen.getByRole("button", { name: "正在进行上下文压缩" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "正在进行上下文压缩（实际请求上下文 36k/100k，阈值 90k）" })).toBeInTheDocument();
     expect(screen.queryByText("压缩后的摘要")).not.toBeInTheDocument();
+  });
+
+  it("工具循环内上下文压缩会标出运行中上下文估算", () => {
+    renderMessageList([
+      {
+        ...createChatMessage("message-compress", ""),
+        assistantMessageKind: "tool_call_turn",
+        toolCallRecords: [
+          {
+            id: "tool-compress",
+            toolId: CONTEXT_COMPRESSION_TOOL_ID,
+            name: "context_compression",
+            displayName: "上下文压缩",
+            arguments: {
+              maxContextTokens: 100000,
+              thresholdPercent: 90,
+              triggerThresholdTokens: 90000,
+              estimatedContextTokens: 92000,
+              temporaryMessageCount: 12,
+            },
+            status: "success",
+            startedAt: 1,
+            completedAt: 2,
+          },
+        ],
+      },
+    ]);
+
+    expect(screen.getByRole("button", { name: "上下文压缩（运行中上下文 92k/100k，阈值 90k）" })).toBeInTheDocument();
+  });
+
+  it("上下文压缩不受工具过程开关控制且不显示已调用前缀", () => {
+    renderMessageList(
+      [
+        {
+          ...createChatMessage("message-compress-legacy", ""),
+          assistantMessageKind: "tool_call_turn",
+          toolCallRecords: [
+            {
+              id: "tool-compress-legacy",
+              toolId: "context_compression",
+              name: "context_compression",
+              displayName: "上下文压缩",
+              arguments: {},
+              status: "success",
+              startedAt: 1,
+              completedAt: 2,
+            },
+          ],
+        },
+      ],
+      { showToolCallProcessInAssistantMode: false },
+    );
+
+    expect(screen.getByRole("button", { name: "上下文压缩" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "已调用 上下文压缩" })).not.toBeInTheDocument();
   });
 });

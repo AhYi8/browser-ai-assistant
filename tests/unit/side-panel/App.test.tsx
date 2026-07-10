@@ -9,6 +9,7 @@ import { App } from "../../../src/side-panel/App";
 import { useAppStore } from "../../../src/side-panel/state/appStore";
 import { registerChatTaskFollowUpHandle } from "../../../src/side-panel/state/appStoreChatTasks";
 import { MCP_SETTINGS_KEY } from "../../../src/shared/mcp/settings";
+import { DEFAULT_MODEL_OUTPUT_MAX_TOKENS } from "../../../src/shared/models/modelCatalog";
 import type { ModelToolRegistryEntry } from "../../../src/shared/models/types";
 import {
   clearDatabase,
@@ -1279,6 +1280,7 @@ describe("App", () => {
         aiRequestRetryCount: 5,
         browserAutomationMaxToolIterations: 32,
         contextCompressionThresholdPercent: 90,
+        toolDetailPoolKeepLimit: 500,
         toolCallingEnabled: false,
         enabledToolIds: [],
         temperature: 0.7,
@@ -1313,6 +1315,7 @@ describe("App", () => {
         aiRequestRetryCount: 5,
         browserAutomationMaxToolIterations: 32,
         contextCompressionThresholdPercent: 90,
+        toolDetailPoolKeepLimit: 500,
         toolCallingEnabled: false,
         enabledToolIds: [],
         temperature: 0.7,
@@ -1347,6 +1350,7 @@ describe("App", () => {
         aiRequestRetryCount: 5,
         browserAutomationMaxToolIterations: 32,
         contextCompressionThresholdPercent: 90,
+        toolDetailPoolKeepLimit: 500,
         defaultBrowserAutomationMode: "normal_restricted",
         toolCallingEnabled: false,
         enabledToolIds: [],
@@ -1382,6 +1386,7 @@ describe("App", () => {
         aiRequestRetryCount: 5,
         browserAutomationMaxToolIterations: 32,
         contextCompressionThresholdPercent: 90,
+        toolDetailPoolKeepLimit: 500,
         toolCallingEnabled: false,
         enabledToolIds: [],
         temperature: 0.7,
@@ -1694,7 +1699,7 @@ describe("App", () => {
     expect(updateChatPreferences).toHaveBeenCalledWith({ showToolCallProcessInAssistantMode: true });
   });
 
-  it("聊天偏好可以保存浏览器自动化最大工具轮次", async () => {
+  it("聊天偏好可以保存最大工具决策轮次", async () => {
     const user = userEvent.setup();
     const updateChatPreferences = vi.fn(async () => undefined);
     useAppStore.setState({
@@ -1704,6 +1709,7 @@ describe("App", () => {
         aiRequestRetryCount: 5,
         browserAutomationMaxToolIterations: 32,
         contextCompressionThresholdPercent: 90,
+        toolDetailPoolKeepLimit: 500,
         toolCallingEnabled: false,
         enabledToolIds: [],
         temperature: 0.7,
@@ -1723,7 +1729,7 @@ describe("App", () => {
 
     await user.click(screen.getByRole("button", { name: "设置" }));
     await user.click(screen.getByRole("tab", { name: "聊天偏好" }));
-    const input = screen.getByRole("spinbutton", { name: "全局 浏览器自动化最大工具轮次" });
+    const input = screen.getByRole("spinbutton", { name: "全局 最大工具决策轮次" });
     expect(input).not.toHaveAttribute("min");
     expect(input).not.toHaveAttribute("max");
 
@@ -1742,6 +1748,7 @@ describe("App", () => {
         aiRequestRetryCount: 5,
         browserAutomationMaxToolIterations: 32,
         contextCompressionThresholdPercent: 90,
+        toolDetailPoolKeepLimit: 500,
         toolCallingEnabled: false,
         enabledToolIds: [],
         temperature: 0.7,
@@ -1776,6 +1783,7 @@ describe("App", () => {
         aiRequestRetryCount: 5,
         browserAutomationMaxToolIterations: 32,
         contextCompressionThresholdPercent: 90,
+        toolDetailPoolKeepLimit: 500,
         toolCallingEnabled: false,
         enabledToolIds: [],
         temperature: 0.7,
@@ -4142,7 +4150,7 @@ describe("App", () => {
     confirmSpy.mockRestore();
   });
 
-  it("模型设置弹窗可以修改模型 ID", async () => {
+  it("模型设置弹窗可以修改模型 ID 和模型输出上限", async () => {
     const user = userEvent.setup();
     render(<App />);
 
@@ -4156,6 +4164,11 @@ describe("App", () => {
 
     expect(screen.getByRole("button", { name: "测试模型连通性 qwen-plus" })).toBeInTheDocument();
     expect(useAppStore.getState().models[0].modelId).toBe("qwen-plus");
+    const maxTokensInput = screen.getByRole("spinbutton", { name: "模型输出上限 max_tokens" });
+    expect(maxTokensInput).toHaveDisplayValue(String(DEFAULT_MODEL_OUTPUT_MAX_TOKENS));
+    fireEvent.change(maxTokensInput, { target: { value: "65536" } });
+
+    expect(useAppStore.getState().models[0].maxTokens).toBe(65536);
   });
 
   it("模型 ID 使用中文输入法组合输入时只保存最终文本", async () => {

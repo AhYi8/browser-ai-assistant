@@ -79,6 +79,13 @@ export function ChatPreferenceDrawer({ open, onOpenChange }: ChatPreferenceDrawe
                 onChange={(value) => void updateActiveSessionChatPreferences({ contextCompressionThresholdPercent: value })}
               />
               <PreferenceNumberInput
+                label="Network/JS 详情池保留上限"
+                value={overrides.toolDetailPoolKeepLimit}
+                placeholder={chatPreferences.toolDetailPoolKeepLimit}
+                step={1}
+                onChange={(value) => void updateActiveSessionChatPreferences({ toolDetailPoolKeepLimit: value })}
+              />
+              <PreferenceNumberInput
                 label="top_k"
                 value={overrides.topK}
                 placeholder={chatPreferences.topK ?? "不发送"}
@@ -96,7 +103,7 @@ export function ChatPreferenceDrawer({ open, onOpenChange }: ChatPreferenceDrawe
                 onChange={(value) => void updateActiveSessionChatPreferences({ aiRequestRetryCount: value })}
               />
               <PreferenceNumberInput
-                label="浏览器自动化最大工具轮次"
+                label="最大工具决策轮次"
                 value={overrides.browserAutomationMaxToolIterations}
                 placeholder={chatPreferences.browserAutomationMaxToolIterations}
                 step={1}

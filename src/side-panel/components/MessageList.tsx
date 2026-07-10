@@ -3,7 +3,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { formatNetworkAttachmentSummary, redactNetworkRequestDetail } from "../../shared/networkContext";
 import { formatTavilySearchAttachmentSummary } from "../../shared/webSearch/tavily";
-import { CONTEXT_COMPRESSION_TOOL_ID } from "../../shared/chat/contextCompression";
+import { CONTEXT_COMPRESSION_TOOL_DISPLAY_NAME, CONTEXT_COMPRESSION_TOOL_ID, CONTEXT_COMPRESSION_TOOL_NAME } from "../../shared/chat/contextCompression";
 import {
   aggregateToolAttachmentGroupByKind,
   collectMessageToolAttachments,
@@ -19,6 +19,7 @@ import {
 import { createChatMessageMarkdown } from "../utils/chatMarkdownExport";
 import { copyOrDownloadMessageImage, copyTextToClipboard } from "../utils/messageClipboard";
 import type { ChatImageAttachment, ChatMessage, ChatPromptInvocation, ChatToolAttachment, ChatToolCallRecord, ToolCallDisplayMode } from "../../shared/types";
+import type { ChatToolAttachmentsById } from "../../shared/toolArtifacts";
 import { MarkdownCodeBlock, MarkdownCodePre } from "./MarkdownCodeBlock";
 import { MarkdownTableBlock } from "./MarkdownTableBlock";
 import { CopyMessageIcon, ExportImageIcon } from "./MessageActionIcons";
@@ -28,6 +29,7 @@ import type { ChatRetryProgress } from "../state/appStore";
 const MESSAGE_LIST_BOTTOM_THRESHOLD = 8;
 interface MessageListProps {
   messages: ChatMessage[];
+  toolAttachmentsById?: ChatToolAttachmentsById;
   retryProgressByMessageId: Record<string, ChatRetryProgress>;
   toolCallDisplayMode: ToolCallDisplayMode;
   showToolCallProcessInAssistantMode: boolean;
@@ -38,6 +40,7 @@ interface MessageListProps {
 
 export function MessageList({
   messages,
+  toolAttachmentsById,
   retryProgressByMessageId,
   toolCallDisplayMode,
   showToolCallProcessInAssistantMode,
@@ -58,8 +61,8 @@ export function MessageList({
   const regeneratePopoverRef = useRef<HTMLDivElement>(null);
   const toolCallPopoverRef = useRef<HTMLDivElement>(null);
   const displayAttachmentGroups = useMemo(
-    () => createDisplayAttachmentGroups(messages, toolCallDisplayMode),
-    [messages, toolCallDisplayMode],
+    () => createDisplayAttachmentGroups(messages, toolCallDisplayMode, toolAttachmentsById),
+    [messages, toolCallDisplayMode, toolAttachmentsById],
   );
 
   const handleMessageListScroll = () => {
@@ -132,7 +135,7 @@ export function MessageList({
 
   const handleCopyMessage = async (message: ChatMessage) => {
     try {
-      await copyTextToClipboard(createChatMessageMarkdown(message));
+      await copyTextToClipboard(createChatMessageMarkdown(message, toolAttachmentsById));
       setMessageActionFeedback({ messageId: message.id, text: "已复制", tone: "success" });
     } catch (error) {
       setMessageActionFeedback({ messageId: message.id, text: error instanceof Error ? error.message : "复制失败，请重试", tone: "error" });
@@ -141,7 +144,7 @@ export function MessageList({
 
   const handleExportMessageImage = async (message: ChatMessage) => {
     try {
-      const result = await copyOrDownloadMessageImage(createChatMessageMarkdown(message));
+      const result = await copyOrDownloadMessageImage(createChatMessageMarkdown(message, toolAttachmentsById));
       setMessageActionFeedback({ messageId: message.id, text: result === "copied" ? "图片已复制" : "图片已下载", tone: "success" });
     } catch {
       setMessageActionFeedback({ messageId: message.id, text: "导出图片失败，请重试", tone: "error" });
@@ -193,7 +196,7 @@ export function MessageList({
           {shouldShowPreArticleToolTimeline ? (
             <ToolCallTimeline
               records={toolCallRecords}
-              attachments={collectRawMessageToolAttachments(message)}
+              attachments={collectRawMessageToolAttachments(message, toolAttachmentsById)}
               activeToolCallId={activeToolCallId}
               popoverRef={toolCallPopoverRef}
               panelCentered
@@ -371,7 +374,7 @@ export function MessageList({
         {shouldShowToolCallTimeline ? (
             <ToolCallTimeline
               records={toolCallRecords}
-              attachments={collectRawMessageToolAttachments(message)}
+              attachments={collectRawMessageToolAttachments(message, toolAttachmentsById)}
               activeToolCallId={activeToolCallId}
               popoverRef={toolCallPopoverRef}
             panelCentered
@@ -505,7 +508,11 @@ function ToolAttachmentList({ attachments, onPreviewImage }: { attachments: Chat
   );
 }
 
-function createDisplayAttachmentGroups(messages: ChatMessage[], toolCallDisplayMode: ToolCallDisplayMode): Map<string, ChatToolAttachment[]> {
+function createDisplayAttachmentGroups(
+  messages: ChatMessage[],
+  toolCallDisplayMode: ToolCallDisplayMode,
+  toolAttachmentsById?: ChatToolAttachmentsById,
+): Map<string, ChatToolAttachment[]> {
   const groups = new Map<string, ChatToolAttachment[]>();
   let lastAssistantBubbleMessageId: string | undefined;
   for (const message of messages) {
@@ -513,7 +520,7 @@ function createDisplayAttachmentGroups(messages: ChatMessage[], toolCallDisplayM
     const isToolCallTurn = isAssistant && message.assistantMessageKind === "tool_call_turn";
     const hideToolTurnContent = shouldHideToolTurnContent(message, toolCallDisplayMode);
     const hasVisibleAssistantBubble = isAssistant && Boolean(message.content.trim()) && !hideToolTurnContent;
-    const attachments = isAssistant ? collectRawMessageToolAttachments(message) : [];
+    const attachments = isAssistant ? collectRawMessageToolAttachments(message, toolAttachmentsById) : [];
     const targetMessageId = isToolCallTurn && !hasVisibleAssistantBubble && attachments.length > 0 && lastAssistantBubbleMessageId ? lastAssistantBubbleMessageId : message.id;
 
     if (attachments.length > 0) {
@@ -774,6 +781,7 @@ function BrowserScreenshotToolAttachmentView({ attachment, onPreviewImage }: { a
       <summary>
         <span>{attachment.title || "浏览器截图"}</span>
       </summary>
+      <ToolAttachmentContextStatus attachment={attachment} />
       <p className="message-tool-attachment-summary">{attachment.summary}</p>
       <button
         className="message-browser-screenshot-preview"
@@ -792,6 +800,15 @@ function BrowserScreenshotToolAttachmentView({ attachment, onPreviewImage }: { a
   );
 }
 
+function ToolAttachmentContextStatus({ attachment }: { attachment: ChatToolAttachment }) {
+  const text = isNetworkToolAttachment(attachment) || isJsSourceToolAttachment(attachment) || isSourceMapToolAttachment(attachment)
+    ? "仅附件保存 · 已摘要化"
+    : isBrowserScreenshotToolAttachment(attachment)
+      ? "仅附件保存"
+      : "已进入上下文";
+  return <p className="message-tool-attachment-context-status">{text}</p>;
+}
+
 function NetworkToolAttachmentView({ attachment }: { attachment: ChatToolAttachment }) {
   if (!isNetworkToolAttachment(attachment)) {
     return null;
@@ -806,6 +823,7 @@ function NetworkToolAttachmentView({ attachment }: { attachment: ChatToolAttachm
         <span>Network 请求详情</span>
         <span className="message-network-count">{requests.length}</span>
       </summary>
+      <ToolAttachmentContextStatus attachment={attachment} />
       <p className="message-network-summary">{summary}</p>
       <ul className="message-network-request-list">
         {requests.map((request) => (
@@ -840,6 +858,7 @@ function WebSearchToolAttachmentView({ attachment }: { attachment: ChatToolAttac
         <span>网络搜索结果</span>
         <span className="message-web-search-count">{attachment.results.length}</span>
       </summary>
+      <ToolAttachmentContextStatus attachment={attachment} />
       <p className="message-web-search-summary">{formatTavilySearchAttachmentSummary(attachment)}</p>
       <ul className="message-web-search-result-list">
         {attachment.results.map((result, index) => (
@@ -869,6 +888,7 @@ function JsSourceToolAttachmentView({ attachment }: { attachment: ChatToolAttach
         <span>JS 源码片段</span>
         <span className="message-js-source-count">{getJsSourceAttachmentDisplayCount(attachment)}</span>
       </summary>
+      <ToolAttachmentContextStatus attachment={attachment} />
       <p className="message-tool-attachment-summary">{attachment.summary}</p>
       {attachment.resources.length ? (
         <ul className="message-js-source-resource-list">
@@ -915,6 +935,7 @@ function SourceMapToolAttachmentView({ attachment }: { attachment: ChatToolAttac
         <span>Source Map 解析结果</span>
         <span className="message-js-source-count">{getSourceMapAttachmentDisplayCount(attachment)}</span>
       </summary>
+      <ToolAttachmentContextStatus attachment={attachment} />
       <p className="message-tool-attachment-summary">{attachment.summary}</p>
       {attachment.candidates.length ? (
         <ul className="message-js-source-resource-list">
@@ -1000,11 +1021,8 @@ export function getJsSourceAttachmentDisplayCount(attachment: ChatToolAttachment
 
 function formatToolCallLine(record: ChatToolCallRecord): string {
   const query = typeof record.arguments.query === "string" && record.arguments.query.trim() ? `：${record.arguments.query.trim()}` : "";
-  if (record.toolId === CONTEXT_COMPRESSION_TOOL_ID) {
-    if (record.status === "running") {
-      return "正在进行上下文压缩";
-    }
-    return record.status === "error" ? "上下文压缩失败" : "上下文压缩";
+  if (isContextCompressionToolRecord(record)) {
+    return formatContextCompressionToolCallLine(record);
   }
   if (record.toolId === "chat.follow_up_guidance") {
     return `${record.displayName}${query}`;
@@ -1016,6 +1034,53 @@ function formatToolCallLine(record: ChatToolCallRecord): string {
     return `${record.displayName} 调用失败${query}`;
   }
   return `已调用 ${record.displayName}${query}`;
+}
+
+function formatContextCompressionToolCallLine(record: ChatToolCallRecord): string {
+  const detail = formatContextCompressionTriggerDetail(record.arguments);
+  const suffix = detail ? `（${detail}）` : "";
+  if (record.status === "running") {
+    return `正在进行上下文压缩${suffix}`;
+  }
+  return `${record.status === "error" ? "上下文压缩失败" : "上下文压缩"}${suffix}`;
+}
+
+function formatContextCompressionTriggerDetail(args: Record<string, unknown>): string {
+  const estimatedContextTokens = readNumberArgument(args.estimatedContextTokens);
+  const maxContextTokens = readNumberArgument(args.maxContextTokens);
+  const triggerThresholdTokens = readNumberArgument(args.triggerThresholdTokens);
+  const thresholdPercent = readNumberArgument(args.thresholdPercent);
+  const scopeLabel = typeof args.temporaryMessageCount === "number" ? "运行中上下文" : "实际请求上下文";
+  if (estimatedContextTokens === undefined || maxContextTokens === undefined) {
+    return "";
+  }
+
+  const parts = [`${scopeLabel} ${formatCompactTokenCount(estimatedContextTokens)}/${formatCompactTokenCount(maxContextTokens)}`];
+  if (triggerThresholdTokens !== undefined) {
+    parts.push(`阈值 ${formatCompactTokenCount(triggerThresholdTokens)}`);
+  } else if (thresholdPercent !== undefined) {
+    parts.push(`阈值 ${thresholdPercent}%`);
+  }
+  return parts.join("，");
+}
+
+function readNumberArgument(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function formatCompactTokenCount(value: number): string {
+  const abs = Math.abs(value);
+  if (abs >= 1_000_000) {
+    return `${trimTrailingZero((value / 1_000_000).toFixed(1))}M`;
+  }
+  if (abs >= 1_000) {
+    return `${trimTrailingZero((value / 1_000).toFixed(1))}k`;
+  }
+  return String(Math.round(value));
+}
+
+function trimTrailingZero(value: string): string {
+  return value.endsWith(".0") ? value.slice(0, -2) : value;
 }
 
 function formatToolDuration(record: ChatToolCallRecord): string {
@@ -1108,5 +1173,14 @@ function isGuidanceToolTurnMessage(message: ChatMessage): boolean {
 }
 
 function isContextCompressionToolTurnMessage(message: ChatMessage): boolean {
-  return Boolean(message.toolCallRecords?.some((record) => record.toolId === CONTEXT_COMPRESSION_TOOL_ID));
+  return Boolean(message.toolCallRecords?.some(isContextCompressionToolRecord));
+}
+
+function isContextCompressionToolRecord(record: ChatToolCallRecord): boolean {
+  return (
+    record.toolId === CONTEXT_COMPRESSION_TOOL_ID ||
+    record.toolId === CONTEXT_COMPRESSION_TOOL_NAME ||
+    record.name === CONTEXT_COMPRESSION_TOOL_NAME ||
+    record.displayName === CONTEXT_COMPRESSION_TOOL_DISPLAY_NAME
+  );
 }

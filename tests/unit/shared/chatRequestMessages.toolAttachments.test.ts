@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildChatRequestMessages } from "../../../src/shared/chat/buildChatRequestMessages";
 import { createModelConfig } from "../../../src/shared/chat/modelConfig";
-import type { ChatMessage, ModelProvider, ProviderModel } from "../../../src/shared/types";
+import type { ChatMessage, ChatToolAttachment, ModelProvider, ProviderModel } from "../../../src/shared/types";
 
 function createProvider(): ModelProvider {
   return {
@@ -122,9 +122,81 @@ describe("聊天请求历史工具附件", () => {
       userMessage,
     });
 
-    expect(result[1].content.match(/网络搜索上下文/g)).toHaveLength(1);
+    expect(result[1].content.match(/历史网络搜索摘要/g)).toHaveLength(1);
     expect(result[1].content.match(/https:\/\/docs\.tavily\.com\/search/g)).toHaveLength(1);
     expect(result[1].content).toContain("https://developer.chrome.com/docs/extensions");
     expect(result[1].content).toContain("Tavily API；Chrome 扩展");
+  });
+
+  it("同一工具附件被多条历史消息引用时只向请求上下文展开一次，并使用 Network 摘要", () => {
+    const model = createModelConfig(createProvider(), createModel());
+    const networkAttachment: ChatToolAttachment = {
+      id: "attachment-network-1",
+      kind: "network",
+      title: "Network 请求详情",
+      summary: "共 1 条请求，已脱敏。",
+      sourceToolCallId: "call-network-1",
+      createdAt: 2,
+      redacted: true,
+      truncated: false,
+      requests: [
+        {
+          id: "req-1",
+          url: "https://example.com/api/data",
+          method: "POST",
+          status: 200,
+          statusText: "OK",
+          resourceType: "xhr",
+          mimeType: "application/json",
+          responseBody: "这是很长的响应正文，不应作为历史上下文原文再次注入模型。",
+          truncated: false,
+          redacted: true,
+        },
+      ],
+    };
+    const toolTurnMessage = createMessage({
+      id: "message-tool-turn",
+      assistantMessageKind: "tool_call_turn",
+      content: "",
+      toolCallRecords: [
+        {
+          id: "call-network-1",
+          toolId: "network.get_request_details",
+          name: "network_get_request_details",
+          displayName: "获取 Network 详情",
+          arguments: { requestIds: ["req-1"] },
+          status: "success",
+          startedAt: 1,
+          completedAt: 2,
+          attachmentIds: ["attachment-network-1"],
+        },
+      ],
+      toolAttachmentIds: ["attachment-network-1"],
+    });
+    const finalAssistantMessage = createMessage({
+      id: "message-final",
+      content: "已根据 req-1 完成分析。",
+      toolAttachmentIds: ["attachment-network-1"],
+    });
+    const userMessage = createMessage({
+      id: "message-user",
+      role: "user",
+      content: "继续分析",
+      createdAt: 4,
+    });
+
+    const result = buildChatRequestMessages({
+      model,
+      pageContext: "",
+      existingMessages: [toolTurnMessage, finalAssistantMessage],
+      userMessage,
+      toolAttachmentsById: { "attachment-network-1": networkAttachment },
+    });
+
+    const serialized = result.map((message) => message.content).join("\n\n");
+    expect(serialized.match(/历史 Network 请求摘要/g)).toHaveLength(1);
+    expect(serialized).toContain("- req-1");
+    expect(serialized).toContain("https://example.com/api/data");
+    expect(serialized).not.toContain("这是很长的响应正文，不应作为历史上下文原文再次注入模型。");
   });
 });

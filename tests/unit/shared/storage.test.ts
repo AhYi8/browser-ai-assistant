@@ -1,6 +1,7 @@
 import Dexie from "dexie";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DATABASE_NAME } from "../../../src/shared/constants";
+import { DEFAULT_MODEL_OUTPUT_MAX_TOKENS, LEGACY_MODEL_OUTPUT_MAX_TOKENS } from "../../../src/shared/models/modelCatalog";
 import {
   clearDatabase,
   deleteChatFolder,
@@ -58,7 +59,7 @@ function createModel(): ProviderModel {
     displayName: "默认 OpenAI",
     modelId: "gpt-test",
     temperature: 0.7,
-    maxTokens: 1024,
+    maxTokens: DEFAULT_MODEL_OUTPUT_MAX_TOKENS,
     systemPrompt: "你是网页助手",
     isTitleModel: false,
     enabled: true,
@@ -91,6 +92,19 @@ describe("存储仓库", () => {
 
     expect(await getModelProviders()).toEqual([provider]);
     expect(await getProviderModels("provider-1")).toEqual([model]);
+  });
+
+  it("读取旧模型时会把历史 1024 输出上限迁移为 32768，其他自定义值保持不变", async () => {
+    const legacyModel = { ...createModel(), id: "legacy-model", maxTokens: LEGACY_MODEL_OUTPUT_MAX_TOKENS };
+    const customModel = { ...createModel(), id: "custom-model", maxTokens: 8192 };
+
+    await saveProviderModel(legacyModel);
+    await saveProviderModel(customModel);
+
+    expect(await getProviderModels("provider-1")).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "legacy-model", maxTokens: DEFAULT_MODEL_OUTPUT_MAX_TOKENS }),
+      expect.objectContaining({ id: "custom-model", maxTokens: 8192 }),
+    ]));
   });
 
   it("删除渠道时同时删除渠道下模型", async () => {
@@ -379,8 +393,66 @@ describe("存储仓库", () => {
 
     await saveChatSession(session);
 
-    const message = (await getChatSession("session-mixed-tool-attachments"))?.messages[0];
-    expect(message?.toolAttachments?.map((attachment) => attachment.kind)).toEqual(["network"]);
+    const normalizedSession = await getChatSession("session-mixed-tool-attachments");
+    const message = normalizedSession?.messages[0];
+    expect(message?.toolAttachments).toBeUndefined();
+    expect(message?.toolAttachmentIds).toEqual(["tool-attachment-network-1"]);
+    expect(Object.values(normalizedSession?.toolAttachmentsById ?? {}).map((attachment) => attachment.kind)).toEqual(["network"]);
+  });
+
+  it("读取聊天会话时会把多条消息重复的工具附件迁移为会话级仓库引用", async () => {
+    const attachment = {
+      id: "tool-attachment-network-shared",
+      kind: "network",
+      title: "Network 请求详情",
+      summary: "1 条请求",
+      createdAt: 1,
+      redacted: true,
+      truncated: false,
+      requests: [
+        {
+          id: "request-shared",
+          url: "https://example.com/api/shared",
+          method: "GET",
+          redacted: true,
+          truncated: false,
+        },
+      ],
+    };
+    const session = {
+      id: "session-shared-tool-attachments",
+      title: "重复附件会话",
+      archived: false,
+      sortOrder: 1,
+      createdAt: 1,
+      updatedAt: 2,
+      messages: [
+        {
+          id: "message-tool-turn",
+          role: "assistant",
+          content: "",
+          createdAt: 1,
+          toolAttachments: [attachment],
+        },
+        {
+          id: "message-final",
+          role: "assistant",
+          content: "最终回答引用 request-shared。",
+          createdAt: 2,
+          toolAttachments: [attachment],
+        },
+      ],
+    } as unknown as ChatSession;
+
+    await saveChatSession(session);
+
+    const normalizedSession = await getChatSession("session-shared-tool-attachments");
+    expect(Object.keys(normalizedSession?.toolAttachmentsById ?? {})).toEqual(["tool-attachment-network-shared"]);
+    expect(normalizedSession?.messages.map((message) => message.toolAttachmentIds)).toEqual([
+      ["tool-attachment-network-shared"],
+      ["tool-attachment-network-shared"],
+    ]);
+    expect(normalizedSession?.messages.some((message) => Boolean(message.toolAttachments?.length))).toBe(false);
   });
 
   it("读取聊天会话时会丢弃旧版 Tavily 当前聊天覆盖字段", async () => {

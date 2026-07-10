@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { MODEL_CONTENT_FILTERED_MESSAGE, MODEL_OUTPUT_TRUNCATED_MESSAGE } from "../../../src/background/modelResponseStopReason";
 import { readModelStreamResponse } from "../../../src/background/modelStreamResponseParser";
 import type { ModelConfig } from "../../../src/shared/types";
 
@@ -260,6 +261,71 @@ describe("模型流式响应解析", () => {
         }),
       ],
     });
+  });
+
+  it("OpenAI-compatible SSE 收到 length 结束原因时不会把半截回答当作成功", async () => {
+    const onContentChunk = vi.fn();
+    const result = await readModelStreamResponse(
+      new Response(
+        createStream([
+          'data: {"choices":[{"delta":{"content":"半截回答"}}]}\n\n',
+          'data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n',
+          "data: [DONE]\n\n",
+        ]),
+      ),
+      createModel(),
+      { onContentChunk },
+    );
+
+    expect(result).toEqual({ ok: false, message: MODEL_OUTPUT_TRUNCATED_MESSAGE });
+    expect(onContentChunk).toHaveBeenCalledWith("半截回答");
+  });
+
+  it("OpenAI-compatible SSE 截断失败前会先输出过滤器缓冲的安全尾段", async () => {
+    const onContentChunk = vi.fn();
+    const result = await readModelStreamResponse(
+      new Response(
+        createStream([
+          'data: {"choices":[{"delta":{"content":"partial<"}}]}\n\n',
+          'data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n',
+          "data: [DONE]\n\n",
+        ]),
+      ),
+      createModel(),
+      { onContentChunk },
+    );
+
+    expect(result).toEqual({ ok: false, message: MODEL_OUTPUT_TRUNCATED_MESSAGE });
+    expect(onContentChunk.mock.calls.map((call) => call[0]).join("")).toBe("partial<");
+  });
+
+  it("OpenAI-compatible SSE 收到 content_filter 结束原因时返回固定中文提示", async () => {
+    await expect(
+      readModelStreamResponse(
+        new Response(
+          createStream([
+            'data: {"choices":[{"delta":{},"finish_reason":"content_filter"}]}\n\n',
+            "data: [DONE]\n\n",
+          ]),
+        ),
+        createModel(),
+      ),
+    ).resolves.toEqual({ ok: false, message: MODEL_CONTENT_FILTERED_MESSAGE });
+  });
+
+  it("Anthropic SSE 收到 max_tokens 结束原因时不会把半截回答当作成功", async () => {
+    const result = await readModelStreamResponse(
+      new Response(
+        createStream([
+          'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"半截回答"}}\n\n',
+          'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"max_tokens"}}\n\n',
+          'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+        ]),
+      ),
+      createModel({ endpointType: "anthropic_messages" }),
+    );
+
+    expect(result).toEqual({ ok: false, message: MODEL_OUTPUT_TRUNCATED_MESSAGE });
   });
 
   it("缺少响应体或没有可用增量时返回中文错误", async () => {

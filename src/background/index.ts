@@ -12,7 +12,7 @@ import {
   type PageContextListTabsMessage,
 } from "./pageContextMessageHandler";
 import type { TabCaptureVisibleMessage } from "../shared/tabCapture";
-import type { ChatImageAttachment, ChatMessage, ChatPromptInvocation, ChatToolAttachment, ChatToolCallRecord } from "../shared/types";
+import type { ChatContextEstimate, ChatImageAttachment, ChatMessage, ChatPromptInvocation, ChatToolAttachment, ChatToolCallRecord } from "../shared/types";
 import { handleSyncAlarm, handleSyncBackupMessage, restoreSyncAlarmFromSettings, type SyncBackupMessage } from "./syncBackupHandler";
 import { handleTabCaptureVisibleMessage } from "./tabCaptureMessageHandler";
 import {
@@ -257,6 +257,8 @@ chrome.runtime.onConnect.addListener((port) => {
       onFinalResponseStart: () => postToPort({ type: "assistant:final-start" }),
       onTokenUsageEntries: (tokenUsageEntries) => postToPort({ type: "token_usage", tokenUsageEntries }),
       onToolTurnMessage: (assistantMessage: ChatMessage) => postToPort({ type: "assistant:tool-turn", message: assistantMessage }),
+      onContextSummaryMessage: (assistantMessage: ChatMessage) => postToPort({ type: "assistant:context-summary", message: assistantMessage }),
+      onContextEstimate: (estimate: ChatContextEstimate) => postToPort({ type: "context:estimate", estimate }),
       onToolCallStart: (record: ChatToolCallRecord) => postToPort({ type: "tool:start", record }),
       onToolCallComplete: (record: ChatToolCallRecord, attachments: ChatToolAttachment[]) => postToPort({ type: "tool:complete", record, attachments }),
       consumeGuidance: () => guidanceQueue.splice(0),

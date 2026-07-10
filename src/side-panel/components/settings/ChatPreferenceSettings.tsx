@@ -130,7 +130,7 @@ export function ChatPreferenceSettings() {
           onChange={(value) => void updateChatPreferences({ aiRequestRetryCount: value })}
         />
         <GlobalPreferenceNumberInput
-          label="浏览器自动化最大工具轮次"
+          label="最大工具决策轮次"
           value={chatPreferences.browserAutomationMaxToolIterations}
           step={1}
           onChange={(value) => void updateChatPreferences({ browserAutomationMaxToolIterations: value })}
@@ -173,6 +173,12 @@ export function ChatPreferenceSettings() {
           max={100}
           step={1}
           onChange={(value) => void updateChatPreferences({ contextCompressionThresholdPercent: value })}
+        />
+        <GlobalPreferenceNumberInput
+          label="Network/JS 详情池保留上限"
+          value={chatPreferences.toolDetailPoolKeepLimit}
+          step={1}
+          onChange={(value) => void updateChatPreferences({ toolDetailPoolKeepLimit: value })}
         />
         <GlobalPreferenceNumberInput
           label="top_k"

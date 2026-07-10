@@ -3,10 +3,18 @@ import type { ChatTokenUsage } from "../shared/types";
 import { normalizeModelTokenUsage } from "../shared/chat/tokenUsage";
 import { extractAnthropicToolCalls, extractDsmlToolCallsFromContent, extractOpenAIToolCalls } from "./modelResponseToolParser";
 
+export interface AssistantResponseData {
+  content: string;
+  reasoningContent?: string;
+  toolCalls?: ModelToolCall[];
+  tokenUsage?: ChatTokenUsage;
+  stopReason?: string;
+}
+
 export function extractAssistantResponseData(
   data: unknown,
   options: { structuredOutput?: OpenAIStructuredOutputFormat; collectToolCalls?: boolean } = {},
-): { content: string; reasoningContent?: string; toolCalls?: ModelToolCall[]; tokenUsage?: ChatTokenUsage } {
+): AssistantResponseData {
   if (isOpenAIResponse(data)) {
     return extractOpenAIAssistantResponse(data, options);
   }
@@ -21,24 +29,25 @@ export function extractAssistantResponseData(
 function extractOpenAIAssistantResponse(
   data: unknown,
   options: { structuredOutput?: OpenAIStructuredOutputFormat; collectToolCalls?: boolean },
-): { content: string; reasoningContent?: string; toolCalls?: ModelToolCall[]; tokenUsage?: ChatTokenUsage } {
+): AssistantResponseData {
   const tokenUsage = normalizeModelTokenUsage(data);
   if (!data || typeof data !== "object" || !("choices" in data) || !Array.isArray(data.choices)) {
     return { content: "", ...(tokenUsage ? { tokenUsage } : {}) };
   }
 
   const firstChoice = data.choices[0];
+  const stopReason = getOpenAIStopReason(firstChoice);
   if (!firstChoice || typeof firstChoice !== "object" || !("message" in firstChoice)) {
-    return { content: "", ...(tokenUsage ? { tokenUsage } : {}) };
+    return { content: "", ...(tokenUsage ? { tokenUsage } : {}), ...(stopReason ? { stopReason } : {}) };
   }
 
   const { message } = firstChoice;
   if (!message || typeof message !== "object") {
-    return { content: "", ...(tokenUsage ? { tokenUsage } : {}) };
+    return { content: "", ...(tokenUsage ? { tokenUsage } : {}), ...(stopReason ? { stopReason } : {}) };
   }
 
   if (options.structuredOutput && "tool_calls" in message && Array.isArray(message.tool_calls)) {
-    return { content: extractFirstOpenAIToolArguments(message.tool_calls), ...(tokenUsage ? { tokenUsage } : {}) };
+    return { content: extractFirstOpenAIToolArguments(message.tool_calls), ...(tokenUsage ? { tokenUsage } : {}), ...(stopReason ? { stopReason } : {}) };
   }
 
   if ("content" in message && typeof message.content === "string") {
@@ -51,11 +60,12 @@ function extractOpenAIAssistantResponse(
       ...(reasoningContent ? { reasoningContent } : {}),
       ...(toolCalls.length ? { toolCalls } : {}),
       ...(tokenUsage ? { tokenUsage } : {}),
+      ...(stopReason ? { stopReason } : {}),
     };
   }
 
   if (!("tool_calls" in message) || !Array.isArray(message.tool_calls)) {
-    return { content: "", ...(tokenUsage ? { tokenUsage } : {}) };
+    return { content: "", ...(tokenUsage ? { tokenUsage } : {}), ...(stopReason ? { stopReason } : {}) };
   }
 
   const toolCalls = options.collectToolCalls ? extractOpenAIToolCalls(message) : [];
@@ -65,7 +75,14 @@ function extractOpenAIAssistantResponse(
     ...(reasoningContent ? { reasoningContent } : {}),
     ...(toolCalls.length ? { toolCalls } : {}),
     ...(tokenUsage ? { tokenUsage } : {}),
+    ...(stopReason ? { stopReason } : {}),
   };
+}
+
+function getOpenAIStopReason(choice: unknown): string | undefined {
+  return choice && typeof choice === "object" && "finish_reason" in choice && typeof choice.finish_reason === "string"
+    ? choice.finish_reason
+    : undefined;
 }
 
 function extractOpenAIReasoningContent(message: object): string | undefined {
@@ -91,11 +108,12 @@ function extractFirstOpenAIToolArguments(toolCalls: unknown[]): string {
 function extractAnthropicAssistantResponse(
   data: unknown,
   options: { collectToolCalls?: boolean } = {},
-): { content: string; toolCalls?: ModelToolCall[]; tokenUsage?: ChatTokenUsage } {
+): AssistantResponseData {
   const tokenUsage = normalizeModelTokenUsage(data);
   if (!isAnthropicResponse(data)) {
     return { content: "", ...(tokenUsage ? { tokenUsage } : {}) };
   }
+  const stopReason = "stop_reason" in data && typeof data.stop_reason === "string" ? data.stop_reason : undefined;
 
   const text = data.content
     .filter((item): item is { type: "text"; text: string } =>
@@ -116,6 +134,7 @@ function extractAnthropicAssistantResponse(
     content: text,
     ...(toolCalls.length ? { toolCalls } : {}),
     ...(tokenUsage ? { tokenUsage } : {}),
+    ...(stopReason ? { stopReason } : {}),
   };
 }
 
