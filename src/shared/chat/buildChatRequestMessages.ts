@@ -1,6 +1,6 @@
 import type { ChatMessage, ModelConfig } from "../types";
 import type { ChatToolAttachmentsById } from "../toolArtifacts";
-import { collectMessageToolAttachments, formatToolAttachmentForPromptSummary } from "../toolArtifacts";
+import { collectMessageToolAttachments, formatToolAttachmentForPromptSummary, shouldExpandMessageToolAttachmentsForModelContext } from "../toolArtifacts";
 import { truncateText } from "../utils/text";
 import { APPROX_CHARS_PER_TOKEN, estimateImageAttachmentTokens, getMessagesFromLatestContextSummary } from "./contextCompression";
 
@@ -55,7 +55,7 @@ function expandAssistantContextAttachments(
   toolAttachmentsById: ChatToolAttachmentsById | undefined,
   expandedAttachmentIds: Set<string>,
 ): ChatMessage {
-  if (message.role !== "assistant") {
+  if (!shouldExpandMessageToolAttachmentsForModelContext(message)) {
     return message;
   }
 

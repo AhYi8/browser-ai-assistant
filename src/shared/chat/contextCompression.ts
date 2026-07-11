@@ -2,7 +2,7 @@ import type { ChatMessage, ChatSession, ChatTokenUsageEntry, ChatToolCallRecord,
 import type { ModelRequestMessage } from "../models/types";
 import { sumTokenUsages } from "./tokenUsage";
 import type { ChatToolAttachmentsById } from "../toolArtifacts";
-import { collectMessageToolAttachments, formatToolAttachmentForPromptSummary } from "../toolArtifacts";
+import { collectMessageToolAttachments, formatToolAttachmentForPromptSummary, shouldExpandMessageToolAttachmentsForModelContext } from "../toolArtifacts";
 import { truncateText } from "../utils/text";
 
 export const DEFAULT_CONTEXT_COMPRESSION_THRESHOLD_PERCENT = 90;
@@ -398,11 +398,13 @@ function formatMessageForBudget(message: ChatMessage, toolAttachmentsById?: Chat
   if (message.promptInvocations?.length) {
     sections.push(...message.promptInvocations.map((prompt) => `${prompt.title}\n${prompt.contentSnapshot}`));
   }
-  sections.push(
-    ...collectMessageToolAttachments(message, toolAttachmentsById)
-      .map((attachment) => formatToolAttachmentForPromptSummary(attachment))
-      .filter((item): item is string => Boolean(item?.trim())),
-  );
+  if (shouldExpandMessageToolAttachmentsForModelContext(message)) {
+    sections.push(
+      ...collectMessageToolAttachments(message, toolAttachmentsById)
+        .map((attachment) => formatToolAttachmentForPromptSummary(attachment))
+        .filter((item): item is string => Boolean(item?.trim())),
+    );
+  }
   return sections.filter((item): item is string => Boolean(item?.trim())).join("\n\n");
 }
 

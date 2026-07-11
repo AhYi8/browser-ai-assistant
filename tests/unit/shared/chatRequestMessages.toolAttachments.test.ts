@@ -52,6 +52,7 @@ describe("聊天请求历史工具附件", () => {
   it("后续追问只注入聚合后的同类工具附件", () => {
     const model = createModelConfig(createProvider(), createModel());
     const assistantMessage = createMessage({
+      assistantMessageKind: "tool_call_turn",
       toolCallRecords: [
         {
           id: "call-search-1",

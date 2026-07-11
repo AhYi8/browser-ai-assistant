@@ -293,6 +293,7 @@ describe("聊天请求消息构造", () => {
     const model = createModelConfig(createProvider(), createModel());
     const assistantMessage = {
       ...createMessage("message-1", "assistant", "登录接口返回 500。", 1),
+      assistantMessageKind: "tool_call_turn",
       networkContextAttachment: {
         id: "network-1",
         title: "Network 请求详情",
@@ -336,6 +337,7 @@ describe("聊天请求消息构造", () => {
     const model = createModelConfig(createProvider(), createModel());
     const assistantMessage = {
       ...createMessage("message-1", "assistant", "旧版本保存的接口分析。", 1),
+      assistantMessageKind: "tool_call_turn",
       networkContextAttachment: {
         id: "network-1",
         title: "Network 请求详情",
@@ -385,6 +387,7 @@ describe("聊天请求消息构造", () => {
     const model = createModelConfig(createProvider(), { ...createModel(), maxTokens: 60 });
     const assistantMessage = {
       ...createMessage("message-1", "assistant", "已分析接口。", 1),
+      assistantMessageKind: "tool_call_turn",
       networkContextAttachment: {
         id: "network-1",
         title: "Network 请求详情",
@@ -442,6 +445,7 @@ describe("网络搜索上下文消息构造", () => {
     const model = createModelConfig(createProvider(), createModel());
     const assistantMessage = {
       ...createMessage("message-search-assistant", "assistant", "根据搜索结果，Tavily 提供 Web 搜索能力。", 1),
+      assistantMessageKind: "tool_call_turn",
       toolAttachments: [
         {
           id: "tool-attachment-search",

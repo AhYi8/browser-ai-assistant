@@ -48,6 +48,13 @@ type ToolAttachmentAggregateGroup = {
   toolDisplayName?: string;
 };
 
+export function shouldExpandMessageToolAttachmentsForModelContext(
+  message: Pick<ChatMessage, "role" | "assistantMessageKind">,
+): boolean {
+  // 最终回答会保留工具附件引用供 UI、导出和排障使用，但后续模型请求只展开工具过程消息，避免压缩后的大附件摘要被最终回答重新带回上下文。
+  return message.role === "assistant" && message.assistantMessageKind === "tool_call_turn";
+}
+
 export function createWebSearchToolAttachment(
   attachment: ChatWebSearchPayload,
   sourceToolCallId?: string,
