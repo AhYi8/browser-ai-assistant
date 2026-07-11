@@ -1424,19 +1424,113 @@ body {
     color: var(--color-body);
   }
 
-  .token-usage-meter {
-    @apply ml-auto inline-flex min-h-8 max-w-full flex-wrap items-center justify-end gap-x-2 gap-y-1 rounded-md px-2 py-1 text-xs font-medium;
-    order: 99;
-    background: var(--color-canvas);
-    border: 1px solid var(--color-hairline);
-    color: var(--color-body-strong);
+  .token-usage-meter-wrap {
+    @apply inline-grid shrink-0 place-items-center;
+    position: relative;
   }
 
-  .token-usage-meter span {
-    @apply whitespace-nowrap;
+  .token-usage-meter {
+    @apply inline-grid h-7 w-7 place-items-center rounded-full;
+    color: var(--color-body-strong);
+    cursor: default;
+  }
+
+  .token-usage-meter:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--color-primary) 45%, transparent);
+    outline-offset: 2px;
   }
 
   .token-usage-meter-empty {
+    color: var(--color-muted);
+  }
+
+  .token-usage-meter-ring {
+    @apply h-5 w-5;
+    display: block;
+  }
+
+  .token-usage-meter-track,
+  .token-usage-meter-progress {
+    fill: none;
+    stroke-linecap: round;
+    stroke-width: 2.6;
+  }
+
+  .token-usage-meter-track {
+    stroke: color-mix(in srgb, var(--color-muted) 35%, transparent);
+  }
+
+  .token-usage-meter-progress {
+    stroke: var(--color-primary);
+    transform: rotate(-90deg);
+    transform-origin: 50% 50%;
+    transition: stroke-dashoffset 180ms ease;
+  }
+
+  .token-usage-meter-empty .token-usage-meter-progress {
+    stroke: color-mix(in srgb, var(--color-muted) 72%, var(--color-primary));
+  }
+
+  .token-usage-meter-tooltip {
+    @apply pointer-events-none absolute bottom-full right-0 z-30 mb-2 grid w-64 gap-2 rounded-lg p-3 text-xs opacity-0 transition;
+    background: var(--color-canvas);
+    border: 1px solid var(--color-hairline);
+    box-shadow: 0 12px 28px color-mix(in srgb, var(--color-surface-dark) 16%, transparent);
+    color: var(--color-body);
+    transform: translateY(4px);
+    visibility: hidden;
+  }
+
+  .token-usage-meter-tooltip::after {
+    content: "";
+    position: absolute;
+    right: 11px;
+    bottom: -5px;
+    width: 8px;
+    height: 8px;
+    transform: rotate(45deg);
+    background: var(--color-canvas);
+    border-bottom: 1px solid var(--color-hairline);
+    border-right: 1px solid var(--color-hairline);
+  }
+
+  .token-usage-meter-wrap:hover .token-usage-meter-tooltip,
+  .token-usage-meter-wrap:focus-within .token-usage-meter-tooltip {
+    opacity: 1;
+    transform: translateY(0);
+    visibility: visible;
+  }
+
+  .token-usage-meter-tooltip-header {
+    @apply flex items-center justify-between gap-3;
+    color: var(--color-muted);
+  }
+
+  .token-usage-meter-tooltip-header strong {
+    @apply font-semibold;
+    color: var(--color-ink);
+  }
+
+  .token-usage-meter-tooltip dl {
+    @apply m-0 grid gap-1.5;
+  }
+
+  .token-usage-meter-tooltip div {
+    @apply flex items-center justify-between gap-3;
+  }
+
+  .token-usage-meter-tooltip dt {
+    @apply font-normal;
+    color: var(--color-muted);
+  }
+
+  .token-usage-meter-tooltip dd {
+    @apply m-0 font-medium;
+    color: var(--color-body-strong);
+  }
+
+  .token-usage-meter-tooltip p {
+    @apply m-0;
     color: var(--color-muted);
   }
 
@@ -1664,6 +1758,10 @@ body {
 
   .composer-switches {
     @apply flex flex-wrap items-center gap-1.5;
+  }
+
+  .composer-submit-group {
+    @apply ml-auto inline-flex shrink-0 items-center gap-2;
   }
 
   .composer-mode-menu-wrap {

@@ -687,13 +687,6 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
         </div>
       ) : null}
       <div className="context-strip">
-        <TokenUsageMeter
-          usage={sessionTokenUsage}
-          contextTokens={currentContextTokens}
-          contextLimit={effectiveChatPreferences.maxTokens}
-          compressionThresholdPercent={effectiveChatPreferences.contextCompressionThresholdPercent}
-          sending={sending}
-        />
         <button
           className="ui-button-secondary context-view-button"
           type="button"
@@ -943,20 +936,29 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
             onToggle={() => setContextMode(contextMode === "all" ? "text" : "all")}
           />
         </div>
-        <button
-          className={sending && !hasDraft ? "ui-button-primary composer-abort-button" : "ui-button-primary"}
-          type="button"
-          disabled={sending ? false : !canSubmit}
-          onClick={() => {
-            if (sending && !hasDraft) {
-              abortActiveChatTask();
-              return;
-            }
-            void (sending ? submitFollowUp() : submit());
-          }}
-        >
-          {submitButtonLabel}
-        </button>
+        <div className="composer-submit-group">
+          <TokenUsageMeter
+            usage={sessionTokenUsage}
+            contextTokens={currentContextTokens}
+            contextLimit={effectiveChatPreferences.maxTokens}
+            compressionThresholdPercent={effectiveChatPreferences.contextCompressionThresholdPercent}
+            sending={sending}
+          />
+          <button
+            className={sending && !hasDraft ? "ui-button-primary composer-abort-button" : "ui-button-primary"}
+            type="button"
+            disabled={sending ? false : !canSubmit}
+            onClick={() => {
+              if (sending && !hasDraft) {
+                abortActiveChatTask();
+                return;
+              }
+              void (sending ? submitFollowUp() : submit());
+            }}
+          >
+            {submitButtonLabel}
+          </button>
+        </div>
       </div>
       {previewAttachment ? (
         <>
@@ -1031,24 +1033,73 @@ function TokenUsageMeter({
   compressionThresholdPercent: number;
   sending: boolean;
 }) {
+  const tooltipId = useId();
   const hasUsage = hasTokenUsage(usage);
-  const contextLabel = `${sending ? "运行中上下文" : "实际请求上下文"} ${formatTokenCount(contextTokens)}/${formatTokenCount(contextLimit)} · 压缩 ${compressionThresholdPercent}%`;
+  const safeContextLimit = Math.max(1, Math.floor(contextLimit));
+  const safeContextTokens = Math.max(0, Math.floor(contextTokens));
+  const contextRatio = Math.min(1, safeContextTokens / safeContextLimit);
+  const circleRadius = 9;
+  const circleCircumference = 2 * Math.PI * circleRadius;
+  const progressOffset = circleCircumference * (1 - contextRatio);
+  const contextScopeLabel = sending ? "运行中上下文" : "实际请求上下文";
+  const compressionThresholdTokens = Math.floor(safeContextLimit * (compressionThresholdPercent / 100));
   return (
-    <div className={`token-usage-meter${hasUsage ? "" : " token-usage-meter-empty"}`} aria-label="Token 用量统计" title="实际请求上下文、最大聊天上下文、自动压缩阈值与当前对话累计 Token 用量">
-      {hasUsage ? (
-        <>
-          <span>{contextLabel}</span>
-          <span>输入 {formatTokenCount(usage.inputTokens)}</span>
-          <span>输出 {formatTokenCount(usage.outputTokens)}</span>
-          <span>写入 {formatTokenCount(usage.cacheWriteTokens)}</span>
-          <span>读取 {formatTokenCount(usage.cacheReadTokens)}</span>
-        </>
-      ) : (
-        <span>
-          {contextLabel}
-          {sending ? " · Token 统计中" : ""}
-        </span>
-      )}
+    <div className="token-usage-meter-wrap">
+      <div
+        className={`token-usage-meter${hasUsage ? "" : " token-usage-meter-empty"}`}
+        role="progressbar"
+        aria-label="Token 用量"
+        aria-describedby={tooltipId}
+        aria-valuemin={0}
+        aria-valuemax={safeContextLimit}
+        aria-valuenow={safeContextTokens}
+        tabIndex={0}
+      >
+        <svg className="token-usage-meter-ring" viewBox="0 0 24 24" aria-hidden="true">
+          <circle className="token-usage-meter-track" cx="12" cy="12" r={circleRadius} />
+          <circle
+            className="token-usage-meter-progress"
+            cx="12"
+            cy="12"
+            r={circleRadius}
+            strokeDasharray={circleCircumference}
+            strokeDashoffset={progressOffset}
+          />
+        </svg>
+      </div>
+      <div className="token-usage-meter-tooltip" id={tooltipId} role="tooltip">
+        <div className="token-usage-meter-tooltip-header">
+          <span>{contextScopeLabel}</span>
+          <strong>{formatTokenCount(safeContextTokens)} / {formatTokenCount(safeContextLimit)}</strong>
+        </div>
+        <dl>
+          <div>
+            <dt>最大上下文</dt>
+            <dd>{formatTokenCount(safeContextLimit)}</dd>
+          </div>
+          <div>
+            <dt>压缩阈值</dt>
+            <dd>{formatTokenCount(compressionThresholdTokens)}（{compressionThresholdPercent}%）</dd>
+          </div>
+          <div>
+            <dt>输入</dt>
+            <dd>{formatTokenCount(usage.inputTokens)}</dd>
+          </div>
+          <div>
+            <dt>输出</dt>
+            <dd>{formatTokenCount(usage.outputTokens)}</dd>
+          </div>
+          <div>
+            <dt>写入</dt>
+            <dd>{formatTokenCount(usage.cacheWriteTokens)}</dd>
+          </div>
+          <div>
+            <dt>读取</dt>
+            <dd>{formatTokenCount(usage.cacheReadTokens)}</dd>
+          </div>
+        </dl>
+        {!hasUsage ? <p>{sending ? "Token 统计中" : "暂无累计 Token 用量"}</p> : null}
+      </div>
     </div>
   );
 }
