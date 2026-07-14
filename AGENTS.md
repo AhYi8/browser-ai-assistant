@@ -266,6 +266,7 @@
 * 发布 GitHub Release 的 tag 和 Release title 不得包含中文或功能说明，只允许使用 `vX.Y.Z` 形式，例如 `v3.4.0`，避免 Release 列表标题混杂中文导致可读性和检索一致性下降。
 * 发布 GitHub Release 时必须上传本地打包好的插件压缩包，例如 `artifacts/browser-ai-assistant-vX.Y.Z.zip`；不得只发布 GitHub 自动生成的源码包。
 * Windows PowerShell 中创建或更新 GitHub Release 正文时，必须优先使用 UTF-8 文件并通过 `--notes-file` 传入，避免中文内容经管道传输后乱码。
+* v3.6.1 发布范围固定为 `v3.6.0` 后的历史会话批量操作；发布资产必须命名为 `artifacts/browser-ai-assistant-v3.6.1.zip`，Release 标题与 tag 均使用 `v3.6.1`。
 * HTML 资源引用校验必须先解析到打包目录内再检查存在性；遇到 `../` 或归一化后会跳出 `artifacts/chrome-extension` 的路径时，必须按缺失资源处理，不能读取项目其他目录来让校验通过。
 * 修改打包脚本、Vite 入口、manifest 运行时路径、HTML 资源引用校验或扩展加载目录文档时，必须运行 `npm run check:package`；该脚本应先执行打包脚本单元测试，再生成真实本地扩展目录，并纳入 `npm run check` 综合验证。
 * `artifacts/` 属于本地生成产物，必须加入 `.gitignore`，不得手动编辑或提交；需要复现问题时应重新运行打包命令生成。
@@ -364,7 +365,7 @@
 * Tavily 网络搜索通过 `tavily_search` 原生工具调用启用；输入区不得再提供独立网络搜索按钮，模型仅在工具调用总开关和 Tavily 工具均启用时自行决定是否搜索。
 * Network 工具调用与 Tavily 搜索均由模型在工具总开关下主动选择，新增工具互斥策略前不得在发送前额外注入平行上下文。
 * Tavily API Key 属于本地密钥配置，不得进入同步快照、导出内容、模型请求 payload 或用户可见错误。
-* 网络搜索结果必须以 assistant 消息附件保存、折叠展示并参与聊天记录导出；后续对话请求需要继续携带历史搜索附件上下文。
+* 网络搜索结果必须以 assistant 消息附件保存、折叠展示并参与聊天记录导出；只有 `assistantMessageKind: "tool_call_turn"` 工具过程消息上的搜索附件允许将摘要带入后续对话，普通最终回答上的搜索附件引用只用于 UI、导出和排障，不得重新展开到模型上下文。
 * 单条 assistant 消息当前只支持一个 Tavily 网络搜索附件；同一轮工具调用出现多次 Tavily 搜索时，必须合并 query、answer 和 results，并按 URL 去重，不能简单以后一次覆盖前一次。
 * 旧版网络搜索开关、搜索时机偏好和对外 `webSearch.search` runtime 入口必须移除；Tavily 只能由 `tavily_search` 工具调用触发，background 仅保留内部 Tavily 执行封装供工具执行器复用。
 * 渠道管理中的“Tavily 搜索工具”配置必须与“渠道模型”配置保持同级 section，不能嵌套在模型渠道详情中。

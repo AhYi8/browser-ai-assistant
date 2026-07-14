@@ -1042,6 +1042,11 @@ describe("聊天模型请求处理", () => {
       expect.arrayContaining([
         expect.objectContaining({ role: "user", content: expect.stringContaining("读取页面") }),
         expect.objectContaining({ role: "assistant", content: "压缩摘要" }),
+        expect.objectContaining({ role: "user", content: expect.stringContaining("当前必须优先处理的最新用户请求是：") }),
+      ]),
+    );
+    expect(decisionBody.messages).not.toEqual(
+      expect.arrayContaining([
         expect.objectContaining({ role: "user", content: "请基于以上压缩上下文继续当前任务。" }),
       ]),
     );

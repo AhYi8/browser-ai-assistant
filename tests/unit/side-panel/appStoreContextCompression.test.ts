@@ -187,7 +187,7 @@ describe("appStore 聊天上下文压缩", () => {
     ]);
   });
 
-  it("发送前压缩判断会计入正式请求中展开的历史工具附件", async () => {
+  it("发送前压缩判断不会计入普通最终回答的 UI 工具附件", async () => {
     const provider = createProvider();
     const model = createModel();
     const oldUsage: ChatTokenUsageEntry = {
@@ -268,11 +268,12 @@ describe("appStore 聊天上下文压缩", () => {
 
     await useAppStore.getState().sendChatMessage("为什么会出现模型响应没有可用内容？具体请求详情给我看一下。");
 
-    expect(chatRequests).toHaveLength(2);
-    expect(chatRequests[0].tokenUsageSource).toBe("context_compression");
-    expect(chatRequests[1].messages?.map((message) => message.content)).toEqual([
+    expect(chatRequests).toHaveLength(1);
+    expect(chatRequests[0].tokenUsageSource).not.toBe("context_compression");
+    expect(chatRequests[0].messages?.map((message) => message.content)).toEqual([
       "你是网页助手",
-      "压缩后的附件摘要",
+      "旧问题",
+      "旧回答",
       "为什么会出现模型响应没有可用内容？具体请求详情给我看一下。",
     ]);
   });
