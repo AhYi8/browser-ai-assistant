@@ -327,12 +327,74 @@ body {
     color: var(--color-ink);
   }
 
+  .session-batch-toggle {
+    @apply min-h-9 min-w-0 whitespace-nowrap px-2 text-xs;
+  }
+
+  .session-batch-toggle[aria-pressed="true"] {
+    background: color-mix(in srgb, var(--color-primary) 8%, var(--color-canvas));
+    border-color: var(--color-primary);
+    color: var(--color-primary);
+  }
+
+  .session-batch-controls {
+    @apply grid min-w-0 py-1.5;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 6px;
+    border-bottom: 1px solid var(--color-hairline-soft);
+    border-top: 1px solid var(--color-hairline-soft);
+  }
+
+  .session-batch-partitions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    min-width: 0;
+    gap: 2px;
+    padding: 2px;
+    border-radius: 6px;
+    background: var(--color-surface-soft);
+  }
+
+  .session-batch-partition {
+    @apply min-h-7 min-w-0 whitespace-nowrap rounded-md px-1.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-60;
+    color: var(--color-muted);
+  }
+
+  .session-batch-partition[aria-pressed="true"] {
+    background: var(--color-canvas);
+    color: var(--color-ink);
+    box-shadow: 0 1px 2px rgba(20, 20, 19, 0.08);
+  }
+
+  .session-batch-action {
+    @apply min-h-8 whitespace-nowrap px-2 text-xs;
+  }
+
+  .session-batch-archive {
+    grid-column: 2;
+  }
+
+  .session-batch-delete {
+    grid-column: 3;
+    color: var(--color-error);
+  }
+
+  .session-batch-action:disabled {
+    @apply cursor-not-allowed opacity-50;
+  }
+
   .session-list-header-actions {
-    @apply grid grid-cols-2 gap-2;
+    @apply grid gap-2;
+    grid-template-columns: minmax(68px, 1fr) minmax(84px, 1.25fr) minmax(56px, 0.8fr);
   }
 
   .session-header-button {
     @apply min-h-9 px-2 text-xs;
+  }
+
+  .session-header-button:disabled {
+    @apply cursor-not-allowed opacity-50;
   }
 
   .session-list-scroll {
@@ -406,6 +468,15 @@ body {
     background: var(--color-surface-soft);
   }
 
+  .session-folder-select-all {
+    @apply min-h-8 shrink-0 rounded-md px-2 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-50;
+    color: var(--color-primary);
+  }
+
+  .session-folder-select-all:hover:not(:disabled) {
+    background: var(--color-surface-soft);
+  }
+
   .session-folder-menu-wrap {
     @apply relative shrink-0;
   }
@@ -441,6 +512,11 @@ body {
     border-color: var(--color-primary);
   }
 
+  .session-item-selected {
+    background: color-mix(in srgb, var(--color-primary) 8%, var(--color-canvas));
+    border-color: color-mix(in srgb, var(--color-primary) 60%, var(--color-hairline));
+  }
+
   .session-title-button {
     @apply min-w-0 flex-1 overflow-hidden text-left text-sm font-medium;
     color: var(--color-ink);
@@ -449,6 +525,43 @@ body {
   .session-item-title {
     @apply block max-w-full truncate;
     text-overflow: ellipsis;
+  }
+
+  .session-item-title-disabled {
+    @apply min-w-0 flex-1 text-sm font-medium;
+    color: var(--color-muted);
+  }
+
+  .session-batch-checkbox-label {
+    @apply flex min-h-8 min-w-0 flex-1 cursor-pointer items-center gap-2 text-sm font-medium;
+    color: var(--color-ink);
+  }
+
+  .session-batch-checkbox {
+    @apply h-4 w-4 shrink-0;
+    accent-color: var(--color-primary);
+  }
+
+  .session-batch-confirm-dialog {
+    @apply fixed left-1/2 top-1/2 z-50 grid -translate-x-1/2 -translate-y-1/2 gap-3 rounded-lg p-4;
+    width: min(360px, calc(100vw - 32px));
+    background: var(--color-canvas);
+    border: 1px solid var(--color-hairline);
+    box-shadow: 0 12px 28px color-mix(in srgb, var(--color-surface-dark) 18%, transparent);
+  }
+
+  .session-batch-confirm-title {
+    @apply text-base font-semibold;
+    color: var(--color-ink);
+  }
+
+  .session-batch-confirm-description {
+    @apply text-sm;
+    color: var(--color-body);
+  }
+
+  .session-batch-confirm-actions {
+    @apply flex flex-wrap justify-end gap-2;
   }
 
   .session-item-row {

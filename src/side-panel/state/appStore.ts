@@ -101,10 +101,13 @@ import {
 } from "./appStoreChatFolders";
 import {
   archiveChatSessionAction,
+  archiveChatSessionsAction,
   clearPendingDeleteSessionAction,
   confirmDeleteChatSessionAction,
+  deleteChatSessionsAction,
   renameChatSessionAction,
   requestDeleteChatSessionAction,
+  type ChatSessionBatchPartition,
 } from "./appStoreChatSessions";
 import {
   deleteRuleAction,
@@ -324,8 +327,10 @@ export interface AppState {
   selectChatSession: (sessionId: string, options?: { discardPrivateSession?: boolean }) => void;
   renameChatSession: (sessionId: string, title: string) => Promise<void>;
   archiveChatSession: (sessionId: string) => Promise<void>;
+  archiveChatSessions: (sessionIds: string[]) => Promise<boolean>;
   requestDeleteChatSession: (sessionId: string) => void;
   confirmDeleteChatSession: (sessionId: string) => Promise<void>;
+  deleteChatSessions: (sessionIds: string[], partition: ChatSessionBatchPartition) => Promise<boolean>;
   clearPendingDeleteSession: () => void;
   createChatFolder: (name: string) => Promise<ChatFolder>;
   renameChatFolder: (folderId: string, name: string) => Promise<void>;
@@ -1080,6 +1085,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
   renameChatSession: (sessionId, title) => renameChatSessionAction({ sessionId, title, get, set }),
   archiveChatSession: (sessionId) => archiveChatSessionAction({ sessionId, get, set }),
+  archiveChatSessions: (sessionIds) => archiveChatSessionsAction({ sessionIds, get, set }),
   requestDeleteChatSession: (sessionId) => requestDeleteChatSessionAction({ sessionId, set }),
   confirmDeleteChatSession: async (sessionId) => {
     get().abortChatTask(sessionId);
@@ -1098,6 +1104,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       };
     });
   },
+  deleteChatSessions: (sessionIds, partition) => deleteChatSessionsAction({ sessionIds, partition, get, set }),
   clearPendingDeleteSession: () => clearPendingDeleteSessionAction({ set }),
   createChatFolder: (name) => createChatFolderAction({ name, set }),
   renameChatFolder: (folderId, name) => renameChatFolderAction({ folderId, name, get, set }),

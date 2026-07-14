@@ -5812,6 +5812,146 @@ describe("App", () => {
     await waitFor(() => expect(screen.queryByText("新对话")).not.toBeInTheDocument());
   });
 
+  it("批量操作按钮位于历史头部操作区最左边", () => {
+    render(<App />);
+
+    const sessionList = screen.getByLabelText("历史会话");
+    const headerActions = sessionList.querySelector(".session-list-header-actions");
+    expect(headerActions).toBeInTheDocument();
+    expect(within(headerActions as HTMLElement).getAllByRole("button").map((button) => button.textContent)).toEqual([
+      "批量操作",
+      "新建文件夹",
+      "新建",
+    ]);
+  });
+
+  it("批量操作只能按单个文件夹全选并确认归档", async () => {
+    const user = userEvent.setup();
+    await saveChatFolder(createChatFolder({ id: "folder-batch-archive", name: "批量文件夹" }));
+    await saveChatSession(createChatSession({ id: "session-batch-default", title: "默认批量会话", updatedAt: 20 }));
+    await saveChatSession(createChatSession({
+      id: "session-batch-folder",
+      title: "文件夹批量会话",
+      folderId: "folder-batch-archive",
+      updatedAt: 10,
+    }));
+
+    render(<App />);
+
+    const batchToggle = await screen.findByRole("button", { name: "批量操作" });
+    await user.click(batchToggle);
+    expect(batchToggle).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "新建文件夹" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "新对话" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "未归档" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByText("已选 0 项")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "归档 0" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "删除 0" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "全选" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "全选 默认文件夹" }));
+    expect(screen.getByText("已选 1 项")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "归档 1" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "删除 1" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "全选 批量文件夹" }));
+    expect(screen.getByText("已选 2 项")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "取消全选 默认文件夹" }));
+    expect(screen.getByText("已选 1 项")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "归档 1" }));
+
+    let dialog = screen.getByRole("dialog", { name: "确认批量归档" });
+    expect(dialog).toHaveTextContent("确定归档选中的 1 个会话吗？");
+    await user.click(within(dialog).getByRole("button", { name: "取消" }));
+    expect(screen.getByText("已选 1 项")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "归档 1" }));
+    dialog = screen.getByRole("dialog", { name: "确认批量归档" });
+    await user.click(within(dialog).getByRole("button", { name: "确认归档" }));
+
+    await waitFor(() => expect(batchToggle).toHaveAttribute("aria-pressed", "false"));
+    expect(useAppStore.getState().chatSessions.filter((session) => session.archived)).toHaveLength(1);
+    expect(useAppStore.getState().chatSessions.find((session) => session.id === "session-batch-default")?.archived).toBe(false);
+  });
+
+  it("批量管理切换到已归档分区时清空选择且只提供删除", async () => {
+    const user = userEvent.setup();
+    await saveChatSession(createChatSession({ id: "session-batch-active", title: "普通批量会话", archived: false, updatedAt: 30 }));
+    await saveChatSession(createChatSession({ id: "session-batch-archived-first", title: "归档批量一", archived: true, updatedAt: 20 }));
+    await saveChatSession(createChatSession({ id: "session-batch-archived-second", title: "归档批量二", archived: true, updatedAt: 10 }));
+
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "批量操作" }));
+    await user.click(screen.getByRole("button", { name: "全选 默认文件夹" }));
+    expect(screen.getByText("已选 1 项")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "已归档" }));
+    expect(screen.getByText("已选 0 项")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "归档 0" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "删除 0" })).toBeDisabled();
+    expect(screen.getByRole("checkbox", { name: "选择会话 归档批量一" })).not.toBeChecked();
+
+    await user.click(screen.getByRole("button", { name: "全选 已归档" }));
+    expect(screen.getByText("已选 2 项")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "删除 2" }));
+    const dialog = screen.getByRole("dialog", { name: "确认批量删除" });
+    expect(dialog).toHaveTextContent("确定删除选中的 2 个会话吗？删除后无法恢复。");
+    await user.click(within(dialog).getByRole("button", { name: "确认删除" }));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "批量操作" })).toBeInTheDocument());
+    expect(useAppStore.getState().chatSessions.map((session) => session.id)).toEqual(["session-batch-active"]);
+  });
+
+  it("窄面板历史弹窗使用独立的批量选择状态", async () => {
+    const user = userEvent.setup();
+    await saveChatSession(createChatSession({ id: "session-batch-compact", title: "弹窗批量会话" }));
+    render(<App />);
+
+    const desktopSessionList = screen.getByLabelText("历史会话");
+    const desktopBatchToggle = within(desktopSessionList).getByRole("button", { name: "批量操作" });
+    await user.click(desktopBatchToggle);
+    await user.click(within(desktopSessionList).getByRole("button", { name: "全选 默认文件夹" }));
+    expect(desktopBatchToggle).toHaveAttribute("aria-pressed", "true");
+    expect(within(desktopSessionList).getByText("已选 1 项")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "历史" }));
+    const historyDialog = screen.getByRole("dialog", { name: "历史记录" });
+    const compactSessionList = within(historyDialog).getByLabelText("历史会话");
+    const compactBatchToggle = within(compactSessionList).getByRole("button", { name: "批量操作" });
+    expect(compactBatchToggle).toHaveAttribute("aria-pressed", "false");
+    expect(within(compactSessionList).getByRole("button", { name: "新建文件夹" })).toBeEnabled();
+
+    await user.click(compactBatchToggle);
+    await user.click(within(compactSessionList).getByRole("button", { name: "全选 默认文件夹" }));
+
+    expect(within(compactSessionList).getByText("已选 1 项")).toBeInTheDocument();
+    expect(within(compactSessionList).getByRole("button", { name: "归档 1" })).toBeEnabled();
+    expect(within(compactSessionList).getByRole("button", { name: "删除 1" })).toBeEnabled();
+    expect(within(compactSessionList).queryByRole("button", { name: "会话操作 弹窗批量会话" })).not.toBeInTheDocument();
+    expect(within(compactSessionList).getByRole("checkbox", { name: "选择会话 弹窗批量会话" })).toBeChecked();
+    expect(desktopBatchToggle).toHaveAttribute("aria-pressed", "true");
+    expect(within(desktopSessionList).getByRole("checkbox", {
+      name: "选择会话 弹窗批量会话",
+      hidden: true,
+    })).toBeChecked();
+  });
+
+  it("批量管理控件在窄面板保持稳定布局", () => {
+    const styles = readFileSync(resolve(process.cwd(), "src/side-panel/styles.css"), "utf8");
+
+    expect(styles).toContain(".session-list-header-actions");
+    expect(styles).toContain('.session-batch-toggle[aria-pressed="true"]');
+    expect(styles).toContain(".session-batch-controls");
+    expect(styles).toContain("grid-template-columns: minmax(0, 1fr) auto auto;");
+    expect(styles).toContain(".session-batch-partitions");
+    expect(styles).toContain("grid-template-columns: repeat(2, minmax(0, 1fr));");
+    expect(styles).toContain("grid-column: 3;");
+    expect(styles).toContain(".session-folder-select-all");
+    expect(styles).toContain(".session-batch-checkbox-label");
+    expect(styles).toContain(".session-batch-confirm-dialog");
+    expect(styles).toContain("width: min(360px, calc(100vw - 32px));");
+  });
+
   it("已归档会话菜单向上展开，避免超出底部可视区域", async () => {
     const user = userEvent.setup();
     await saveChatSession(createChatSession({ id: "session-archived-menu", title: "底部归档", archived: true }));

@@ -3,9 +3,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { DATABASE_NAME } from "../../../src/shared/constants";
 import { DEFAULT_MODEL_OUTPUT_MAX_TOKENS, LEGACY_MODEL_OUTPUT_MAX_TOKENS } from "../../../src/shared/models/modelCatalog";
 import {
+  archiveChatSessions,
   clearDatabase,
   deleteChatFolder,
   deleteChatSession,
+  deleteChatSessions,
   deleteExtractionRule,
   deleteModelProvider,
   deleteProviderModel,
@@ -558,6 +560,81 @@ describe("存储仓库", () => {
     await deleteChatSession("session-new");
 
     expect((await getChatSessions()).map((session) => session.id)).toEqual(["session-old"]);
+  });
+
+  it("批量归档会话时去重并保留数据库中的最新字段", async () => {
+    const first: ChatSession = {
+      id: "session-batch-archive-first",
+      title: "第一条",
+      archived: false,
+      sortOrder: 1,
+      createdAt: 1,
+      updatedAt: 10,
+      messages: [],
+    };
+    const second: ChatSession = {
+      id: "session-batch-archive-second",
+      title: "第二条",
+      archived: false,
+      sortOrder: 2,
+      createdAt: 2,
+      updatedAt: 20,
+      messages: [],
+    };
+    await saveChatSession(first);
+    await saveChatSession(second);
+    await db.chatSessions.put({ ...first, title: "并发更新后的标题", selectedModelId: "model-latest" });
+
+    const archivedSessions = await archiveChatSessions([
+      first.id,
+      first.id,
+      second.id,
+      "session-missing",
+    ]);
+
+    expect(archivedSessions.map((session) => session.id)).toEqual([first.id, second.id]);
+    expect(await getChatSession(first.id)).toMatchObject({
+      title: "并发更新后的标题",
+      selectedModelId: "model-latest",
+      archived: true,
+      updatedAt: expect.any(Number),
+    });
+    expect((await getChatSession(first.id))?.updatedAt).toBeGreaterThan(first.updatedAt);
+    expect(await getChatSession(second.id)).toMatchObject({ archived: true });
+  });
+
+  it("批量归档空输入时不修改会话", async () => {
+    const session: ChatSession = {
+      id: "session-batch-archive-empty",
+      title: "保持原样",
+      archived: false,
+      sortOrder: 1,
+      createdAt: 1,
+      updatedAt: 10,
+      messages: [],
+    };
+    await saveChatSession(session);
+
+    await expect(archiveChatSessions([])).resolves.toEqual([]);
+
+    expect(await getChatSession(session.id)).toEqual(session);
+  });
+
+  it("批量删除会话时只删除去重后的目标记录", async () => {
+    const sessions = ["first", "second", "keep"].map((suffix, index) => ({
+      id: `session-batch-delete-${suffix}`,
+      title: suffix,
+      archived: index === 1,
+      sortOrder: index,
+      createdAt: index,
+      updatedAt: index,
+      messages: [],
+    } satisfies ChatSession));
+    await Promise.all(sessions.map((session) => saveChatSession(session)));
+
+    await deleteChatSessions([sessions[0].id, sessions[0].id, sessions[1].id, "session-missing"]);
+
+    expect((await getChatSessions()).map((session) => session.id)).toEqual([sessions[2].id]);
   });
 
   it("读取旧聊天会话时补齐新增字段", async () => {

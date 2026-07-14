@@ -164,6 +164,37 @@ export async function deleteChatSession(sessionId: string): Promise<void> {
   await db.chatSessions.delete(sessionId);
 }
 
+export async function archiveChatSessions(sessionIds: string[]): Promise<ChatSession[]> {
+  const uniqueSessionIds = normalizeUniqueSessionIds(sessionIds);
+  if (uniqueSessionIds.length === 0) {
+    return [];
+  }
+
+  return db.transaction("rw", db.chatSessions, async () => {
+    // 在事务内读取最新记录，避免批量归档覆盖聊天响应等并发写入的字段。
+    const storedSessions = await db.chatSessions.bulkGet(uniqueSessionIds);
+    const updatedAt = Date.now();
+    const archivedSessions = storedSessions
+      .filter((session): session is ChatSession => Boolean(session))
+      .map((session) => normalizeChatSession({ ...session, archived: true, updatedAt }));
+    if (archivedSessions.length > 0) {
+      await db.chatSessions.bulkPut(archivedSessions);
+    }
+    return archivedSessions;
+  });
+}
+
+export async function deleteChatSessions(sessionIds: string[]): Promise<void> {
+  const uniqueSessionIds = normalizeUniqueSessionIds(sessionIds);
+  if (uniqueSessionIds.length === 0) {
+    return;
+  }
+
+  await db.transaction("rw", db.chatSessions, async () => {
+    await db.chatSessions.bulkDelete(uniqueSessionIds);
+  });
+}
+
 export async function updateChatSession(
   sessionId: string,
   updater: (session: ChatSession) => ChatSession | undefined,
@@ -327,6 +358,14 @@ function normalizeChatSession(session: ChatSession): ChatSession {
     toolAttachmentsById,
     tokenUsageEntries: normalizeTokenUsageEntries(session.tokenUsageEntries),
   };
+}
+
+function normalizeUniqueSessionIds(sessionIds: string[]): string[] {
+  const normalizedSessionIds = sessionIds
+    .filter((sessionId) => typeof sessionId === "string")
+    .map((sessionId) => sessionId.trim())
+    .filter(Boolean);
+  return Array.from(new Set(normalizedSessionIds));
 }
 
 function normalizeChatPreferenceOverrides(value: unknown): ChatSessionPreferenceOverrides | undefined {

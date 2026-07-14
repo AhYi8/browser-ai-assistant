@@ -22,9 +22,11 @@ import {
   SYNC_S3_SECRET_KEY,
   SYNC_WEBDAV_PASSWORD_KEY,
 } from "../../../src/shared/sync/settings";
-import type { ChatFolder, ChatMessage, ChatPromptInvocation, ModelProvider, NetworkRequestDetail, PromptTemplate, ProviderModel } from "../../../src/shared/types";
+import type { ChatFolder, ChatMessage, ChatPromptInvocation, ChatSession, ModelProvider, NetworkRequestDetail, PromptTemplate, ProviderModel } from "../../../src/shared/types";
 
 const repositoryMockState = vi.hoisted(() => ({
+  failArchiveChatSessions: false,
+  failDeleteChatSessions: false,
   failSaveChatSession: false,
   failSaveChatFolder: false,
   delaySaveChatSession: false,
@@ -38,6 +40,18 @@ vi.mock("../../../src/shared/storage/repositories", async (importOriginal) => {
 
   return {
     ...actual,
+    archiveChatSessions: vi.fn((...args: Parameters<typeof actual.archiveChatSessions>) => {
+      if (repositoryMockState.failArchiveChatSessions) {
+        throw new Error("IndexedDB 批量归档失败");
+      }
+      return actual.archiveChatSessions(...args);
+    }),
+    deleteChatSessions: vi.fn((...args: Parameters<typeof actual.deleteChatSessions>) => {
+      if (repositoryMockState.failDeleteChatSessions) {
+        throw new Error("IndexedDB 批量删除失败");
+      }
+      return actual.deleteChatSessions(...args);
+    }),
     saveChatSession: vi.fn((...args: Parameters<typeof actual.saveChatSession>) => {
       if (repositoryMockState.failSaveChatSession) {
         throw new Error("IndexedDB 写入失败");
@@ -469,6 +483,8 @@ function setStaleContextTabState(): void {
 
 describe("appStore", () => {
   afterEach(async () => {
+    repositoryMockState.failArchiveChatSessions = false;
+    repositoryMockState.failDeleteChatSessions = false;
     repositoryMockState.failSaveChatSession = false;
     repositoryMockState.failSaveChatFolder = false;
     repositoryMockState.delaySaveChatSession = false;
@@ -3774,6 +3790,175 @@ describe("appStore", () => {
     expect(useAppStore.getState().pendingDeleteSessionId).toBe(session.id);
     await useAppStore.getState().confirmDeleteChatSession(session.id);
     expect(useAppStore.getState().chatSessions.some((item) => item.id === session.id)).toBe(false);
+  });
+
+  it("批量归档只处理未归档会话并保留当前活动会话", async () => {
+    const activeSession: ChatSession = {
+      id: "session-batch-archive-active",
+      title: "待归档",
+      archived: false,
+      sortOrder: 1,
+      createdAt: 1,
+      updatedAt: 20,
+      messages: [],
+    };
+    const archivedSession: ChatSession = {
+      id: "session-batch-archive-existing",
+      title: "已归档",
+      archived: true,
+      sortOrder: 2,
+      createdAt: 2,
+      updatedAt: 10,
+      messages: [],
+    };
+    await saveChatSession(activeSession);
+    await saveChatSession(archivedSession);
+    await useAppStore.getState().loadChatData();
+    useAppStore.setState({ activeSessionId: activeSession.id });
+
+    await expect(useAppStore.getState().archiveChatSessions([
+      activeSession.id,
+      activeSession.id,
+      archivedSession.id,
+      "session-missing",
+    ])).resolves.toBe(true);
+
+    const state = useAppStore.getState();
+    expect(state.chatSessions.find((session) => session.id === activeSession.id)?.archived).toBe(true);
+    expect(state.chatSessions.find((session) => session.id === archivedSession.id)).toEqual(archivedSession);
+    expect(state.activeSessionId).toBe(activeSession.id);
+    expect(state.failure).toBeUndefined();
+    await expect(state.archiveChatSessions([])).resolves.toBe(false);
+  });
+
+  it("批量删除按分区过滤并清理会话运行状态", async () => {
+    const targetMessage: ChatMessage = {
+      id: "message-batch-delete",
+      role: "user",
+      content: "待删除消息",
+      createdAt: 1,
+      modelId: "model-batch-delete",
+      endpointType: "openai_chat",
+      streamMode: true,
+      systemPrompt: "",
+      contextPrompt: "",
+      contextMode: "text",
+    };
+    const targetSession: ChatSession = {
+      id: "session-batch-delete-target",
+      title: "待删除",
+      archived: false,
+      sortOrder: 1,
+      createdAt: 1,
+      updatedAt: 30,
+      messages: [targetMessage],
+    };
+    const keepSession: ChatSession = {
+      id: "session-batch-delete-keep",
+      title: "保留会话",
+      archived: false,
+      sortOrder: 2,
+      createdAt: 2,
+      updatedAt: 20,
+      messages: [],
+    };
+    const archivedSession: ChatSession = {
+      id: "session-batch-delete-archived",
+      title: "保留归档",
+      archived: true,
+      sortOrder: 3,
+      createdAt: 3,
+      updatedAt: 10,
+      messages: [],
+    };
+    await Promise.all([targetSession, keepSession, archivedSession].map((session) => saveChatSession(session)));
+    await useAppStore.getState().loadChatData();
+    useAppStore.setState({
+      activeSessionId: targetSession.id,
+      sending: true,
+      chatTasksBySessionId: {
+        [targetSession.id]: {
+          id: "task-batch-delete",
+          sessionId: targetSession.id,
+          status: "running",
+          startedAt: 1,
+        },
+      },
+      dismissedChatTaskIdsBySessionId: { [targetSession.id]: "task-batch-delete" },
+      followUpsBySessionId: {
+        [targetSession.id]: [{
+          id: "follow-up-batch-delete",
+          sessionId: targetSession.id,
+          content: "继续处理",
+          behavior: "queue",
+          createdAt: 1,
+        }],
+      },
+      chatRetryProgressByMessageId: {
+        [targetMessage.id]: { currentRetry: 1, maxRetries: 5 },
+      },
+      activeContextEstimateBySessionId: {
+        [targetSession.id]: {
+          scope: "request",
+          estimatedContextTokens: 100,
+          maxContextTokens: 1000,
+          thresholdPercent: 90,
+          triggerThresholdTokens: 900,
+        },
+      },
+    });
+
+    await expect(useAppStore.getState().deleteChatSessions([
+      targetSession.id,
+      targetSession.id,
+      archivedSession.id,
+      "session-missing",
+    ], "active")).resolves.toBe(true);
+
+    const state = useAppStore.getState();
+    expect(state.chatSessions.map((session) => session.id)).toEqual([keepSession.id, archivedSession.id]);
+    expect(state.activeSessionId).toBe(keepSession.id);
+    expect(state.chatTasksBySessionId[targetSession.id]).toBeUndefined();
+    expect(state.dismissedChatTaskIdsBySessionId[targetSession.id]).toBeUndefined();
+    expect(state.followUpsBySessionId[targetSession.id]).toBeUndefined();
+    expect(state.chatRetryProgressByMessageId[targetMessage.id]).toBeUndefined();
+    expect(state.activeContextEstimateBySessionId[targetSession.id]).toBeUndefined();
+    expect(state.sending).toBe(false);
+    await expect(getChatSession(targetSession.id)).resolves.toBeUndefined();
+    await expect(getChatSession(archivedSession.id)).resolves.toEqual(archivedSession);
+  });
+
+  it("批量归档失败时保留会话并显示固定中文错误", async () => {
+    await useAppStore.getState().loadChatData();
+    const session = await useAppStore.getState().createChatSession();
+    repositoryMockState.failArchiveChatSessions = true;
+
+    await expect(useAppStore.getState().archiveChatSessions([session.id])).resolves.toBe(false);
+
+    expect(useAppStore.getState().chatSessions.find((item) => item.id === session.id)?.archived).toBe(false);
+    expect(useAppStore.getState().failure?.message).toBe("批量归档失败，请重试");
+  });
+
+  it("批量删除失败时保留会话但不恢复已中止任务", async () => {
+    await useAppStore.getState().loadChatData();
+    const session = await useAppStore.getState().createChatSession();
+    useAppStore.setState({
+      chatTasksBySessionId: {
+        [session.id]: {
+          id: "task-batch-delete-failure",
+          sessionId: session.id,
+          status: "running",
+          startedAt: 1,
+        },
+      },
+    });
+    repositoryMockState.failDeleteChatSessions = true;
+
+    await expect(useAppStore.getState().deleteChatSessions([session.id], "active")).resolves.toBe(false);
+
+    expect(useAppStore.getState().chatSessions.some((item) => item.id === session.id)).toBe(true);
+    expect(useAppStore.getState().chatTasksBySessionId[session.id]?.status).toBe("canceled");
+    expect(useAppStore.getState().failure?.message).toBe("批量删除失败，请重试");
   });
 
   it("可以重命名聊天文件夹", async () => {
