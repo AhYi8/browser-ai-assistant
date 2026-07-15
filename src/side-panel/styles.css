@@ -1298,6 +1298,56 @@ body {
     color: var(--color-on-primary);
   }
 
+  .message-row-user .markdown-code-block {
+    background: color-mix(in srgb, var(--color-canvas) 86%, var(--color-primary));
+    border-color: color-mix(in srgb, var(--color-primary) 32%, var(--color-hairline));
+    color: var(--color-ink);
+  }
+
+  .message-row-user .markdown-code-block-toolbar {
+    background: color-mix(in srgb, var(--color-surface-cream-strong) 78%, var(--color-primary));
+    border-bottom-color: color-mix(in srgb, var(--color-primary) 26%, var(--color-hairline-soft));
+  }
+
+  .message-row-user .markdown-code-block-language,
+  .message-row-user .markdown-code-block-code {
+    color: var(--color-ink);
+  }
+
+  .message-row-user .markdown-code-block-body {
+    background: color-mix(in srgb, var(--color-canvas) 92%, var(--color-primary));
+  }
+
+  .message-row-user .markdown-code-block-icon-button {
+    color: var(--color-muted);
+  }
+
+  .message-row-user .markdown-code-block-icon-button:hover {
+    background: color-mix(in srgb, var(--color-primary) 12%, var(--color-canvas));
+    color: var(--color-ink);
+  }
+
+  .message-row-user .markdown-code-block-icon-button:focus-visible {
+    outline-color: var(--color-primary-active);
+  }
+
+  .message-row-user .markdown-code-block-copy-feedback {
+    background: var(--color-canvas);
+    border-color: color-mix(in srgb, var(--color-primary) 24%, var(--color-hairline));
+    color: var(--color-ink);
+  }
+
+  .message-row-user .markdown-code-block-copy-feedback-error {
+    color: var(--color-error);
+  }
+
+  .message-row-user .message-bubble :not(pre) > code {
+    background: color-mix(in srgb, var(--color-canvas) 76%, var(--color-primary));
+    border-radius: 0.25rem;
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-primary) 34%, var(--color-hairline));
+    color: var(--color-ink);
+  }
+
   .message-image-preview-strip {
     @apply mb-2 flex max-w-full gap-2 overflow-x-auto rounded-lg p-2;
     background: color-mix(in srgb, var(--color-canvas) 72%, var(--color-surface-card));

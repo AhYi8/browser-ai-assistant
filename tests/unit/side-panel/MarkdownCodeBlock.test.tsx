@@ -1,5 +1,8 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import postcss, { type Root } from "postcss";
 import { StrictMode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -30,7 +33,44 @@ function renderMarkdown(markdown: string) {
   );
 }
 
+function getStyleDeclarations(root: Root, selector: string): Record<string, string> {
+  const declarations: Record<string, string> = {};
+  root.walkRules((rule) => {
+    if (!rule.selectors.includes(selector)) {
+      return;
+    }
+    rule.walkDecls((declaration) => {
+      declarations[declaration.prop] = declaration.value;
+    });
+  });
+  return declarations;
+}
+
 describe("MarkdownCodeBlock", () => {
+  it("用户消息使用暖色代码表面和显式前景色，且不改变 AI 消息的中性代码表面", () => {
+    const styles = readFileSync(resolve(process.cwd(), "src/side-panel/styles.css"), "utf8");
+    const root = postcss.parse(styles);
+    const userBlock = getStyleDeclarations(root, ".message-row-user .markdown-code-block");
+    const userBlockBody = getStyleDeclarations(root, ".message-row-user .markdown-code-block-body");
+    const userBlockCode = getStyleDeclarations(root, ".message-row-user .markdown-code-block-code");
+    const userBlockButtonFocus = getStyleDeclarations(root, ".message-row-user .markdown-code-block-icon-button:focus-visible");
+    const userInlineCode = getStyleDeclarations(root, ".message-row-user .message-bubble :not(pre) > code");
+    const assistantBlock = getStyleDeclarations(root, ".markdown-code-block");
+    const assistantBlockBody = getStyleDeclarations(root, ".markdown-code-block-body");
+
+    expect(userBlock.background).toContain("var(--color-canvas)");
+    expect(userBlock.background).toContain("var(--color-primary)");
+    expect(userBlock.color).toBe("var(--color-ink)");
+    expect(userBlockBody.background).toContain("var(--color-primary)");
+    expect(userBlockCode.color).toBe("var(--color-ink)");
+    expect(userBlockButtonFocus["outline-color"]).toBe("var(--color-primary-active)");
+    expect(userInlineCode.background).toContain("var(--color-primary)");
+    expect(userInlineCode.color).toBe("var(--color-ink)");
+    expect(userInlineCode["border-radius"]).toBe("0.25rem");
+    expect(assistantBlock.background).toBe("var(--color-canvas)");
+    expect(assistantBlockBody.background).toContain("var(--color-surface-soft)");
+  });
+
   it("根据 Markdown 语言类名显示代码类型，无法判断时兜底为 text", () => {
     expect(resolveMarkdownCodeLanguage("language-json")).toBe("json");
     expect(resolveMarkdownCodeLanguage("language-js")).toBe("javascript");
