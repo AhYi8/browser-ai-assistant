@@ -11,6 +11,7 @@ import { registerChatTaskFollowUpHandle } from "../../../src/side-panel/state/ap
 import { MCP_SETTINGS_KEY } from "../../../src/shared/mcp/settings";
 import { DEFAULT_MODEL_OUTPUT_MAX_TOKENS } from "../../../src/shared/models/modelCatalog";
 import type { ModelToolRegistryEntry } from "../../../src/shared/models/types";
+import { RELEASE_UPDATE_STORAGE_KEY } from "../../../src/shared/releaseUpdate";
 import {
   clearDatabase,
   getAppSetting,
@@ -327,6 +328,114 @@ describe("App", () => {
 
     await waitFor(() => expect(useAppStore.getState().chatSessions[0]?.title).toBe("新对话"));
     expect(useAppStore.getState().activeSessionId).toBe(useAppStore.getState().chatSessions[0]?.id);
+  });
+
+  it("存在更高正式版本时在顶部最左侧显示绿色更新图标并安全打开 Release 页面", async () => {
+    const user = userEvent.setup();
+    const createTab = vi.fn().mockResolvedValue(undefined);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const removeStorageListener = vi.fn();
+    vi.stubGlobal("chrome", {
+      runtime: {
+        getManifest: () => ({ version: "3.6.1" }),
+        onMessage: {
+          addListener: vi.fn(),
+          removeListener: vi.fn(),
+        },
+      },
+      storage: {
+        local: {
+          get: vi.fn().mockResolvedValue({
+            [RELEASE_UPDATE_STORAGE_KEY]: {
+              checkedAt: 456,
+              latestVersion: "3.7.0",
+              releaseUrl: "https://github.com/AhYi8/browser-ai-assistant/releases/tag/v3.7.0",
+              tagName: "v3.7.0",
+            },
+          }),
+        },
+        onChanged: {
+          addListener: vi.fn(),
+          removeListener: removeStorageListener,
+        },
+      },
+      tabs: {
+        create: createTab,
+      },
+    });
+
+    const { unmount } = render(<App />);
+
+    const updateButton = await screen.findByRole("button", { name: "发现新版本 v3.7.0，点击前往下载" });
+    const newChatButton = screen.getByRole("button", { name: "新建对话" });
+    expect(updateButton.nextElementSibling).toBe(newChatButton);
+    expect(updateButton).toHaveClass("ui-button-secondary", "app-header-icon-button");
+    expect(updateButton.querySelector(".app-update-icon")).not.toBeNull();
+
+    const styles = readFileSync(resolve(process.cwd(), "src/side-panel/styles.css"), "utf8");
+    expect(styles).toContain(".app-update-icon");
+    expect(styles).toContain("color: var(--color-success)");
+
+    await user.click(updateButton);
+
+    expect(createTab).toHaveBeenCalledWith({
+      active: true,
+      url: "https://github.com/AhYi8/browser-ai-assistant/releases/tag/v3.7.0",
+    });
+
+    createTab.mockImplementationOnce(() => {
+      throw new Error("标签页创建失败");
+    });
+    await user.click(updateButton);
+    await waitFor(() => expect(consoleError).toHaveBeenCalledWith("打开 GitHub Release 页面失败"));
+
+    unmount();
+    expect(removeStorageListener).toHaveBeenCalledTimes(1);
+  });
+
+  it("缓存变化为更高正式版本时无需重新打开侧边栏即可显示更新图标", async () => {
+    let storageListener: ((changes: Record<string, chrome.storage.StorageChange>, areaName: string) => void) | undefined;
+    vi.stubGlobal("chrome", {
+      runtime: {
+        getManifest: () => ({ version: "3.6.1" }),
+        onMessage: {
+          addListener: vi.fn(),
+          removeListener: vi.fn(),
+        },
+      },
+      storage: {
+        local: {
+          get: vi.fn().mockResolvedValue({}),
+        },
+        onChanged: {
+          addListener: vi.fn((listener: typeof storageListener) => {
+            storageListener = listener;
+          }),
+          removeListener: vi.fn(),
+        },
+      },
+      tabs: {
+        create: vi.fn().mockResolvedValue(undefined),
+      },
+    });
+
+    render(<App />);
+    expect(screen.queryByRole("button", { name: /发现新版本/ })).not.toBeInTheDocument();
+
+    act(() => {
+      storageListener?.({
+        [RELEASE_UPDATE_STORAGE_KEY]: {
+          newValue: {
+            checkedAt: 789,
+            latestVersion: "3.6.2",
+            releaseUrl: "https://github.com/AhYi8/browser-ai-assistant/releases/tag/v3.6.2",
+            tagName: "v3.6.2",
+          },
+        },
+      }, "local");
+    });
+
+    expect(await screen.findByRole("button", { name: "发现新版本 v3.6.2，点击前往下载" })).toBeInTheDocument();
   });
 
   it("会话任务状态通过边框类名展示且不渲染可见文案", async () => {

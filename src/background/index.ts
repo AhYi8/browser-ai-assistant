@@ -22,8 +22,10 @@ import {
   type UrlPatternGenerationMessage,
 } from "./urlPatternGenerationMessageHandler";
 import { handleMcpMessage, type McpMessage } from "./mcpMessageHandler";
+import { checkForLatestRelease } from "./releaseUpdateChecker";
 
 const DEBUG_PREFIX = "[提取规则 AI 生成诊断]";
+let releaseUpdateCheckPromise: Promise<void> | undefined;
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.create({
@@ -32,16 +34,34 @@ chrome.runtime.onInstalled.addListener(() => {
     contexts: ["page"],
   });
   runRestoreSyncAlarmFromSettings();
+  runReleaseUpdateCheck();
 });
 
 chrome.runtime.onStartup.addListener(() => {
   runRestoreSyncAlarmFromSettings();
+  runReleaseUpdateCheck();
 });
 
 function runRestoreSyncAlarmFromSettings(): void {
   void restoreSyncAlarmFromSettings().catch((error) => {
     console.error("自动同步定时任务恢复失败", error);
   });
+}
+
+function runReleaseUpdateCheck(): void {
+  if (releaseUpdateCheckPromise) {
+    return;
+  }
+
+  // 安装与浏览器启动事件可能紧邻触发，复用同一次请求可避免重复访问和旧响应晚到覆盖。
+  releaseUpdateCheckPromise = checkForLatestRelease()
+    .then(() => undefined)
+    .catch(() => {
+      console.warn("检查扩展更新失败，将保留上次成功结果");
+    })
+    .finally(() => {
+      releaseUpdateCheckPromise = undefined;
+    });
 }
 
 async function openSidePanel(tabId?: number) {

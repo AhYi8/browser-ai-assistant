@@ -1,6 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { clearDatabase, saveAppSetting, saveModelProvider } from "../../../src/shared/storage/repositories";
 
+const releaseUpdateCheckerMock = vi.hoisted(() => ({
+  checkForLatestRelease: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("../../../src/background/releaseUpdateChecker", () => releaseUpdateCheckerMock);
+
 type Listener<T extends (...args: never[]) => void> = T;
 
 function createPortMock(name: string) {
@@ -154,6 +160,7 @@ function createChromeMock() {
 describe("background 入口", () => {
   beforeEach(() => {
     vi.resetModules();
+    releaseUpdateCheckerMock.checkForLatestRelease.mockReset().mockResolvedValue(undefined);
   });
 
   afterEach(async () => {
@@ -174,6 +181,40 @@ describe("background 入口", () => {
       title: "打开 AI 助手",
       contexts: ["page"],
     });
+  });
+
+  it("安装扩展和启动浏览器时各检查一次正式 Release", async () => {
+    const mock = createChromeMock();
+    vi.stubGlobal("chrome", mock.chrome);
+
+    await import("../../../src/background/index");
+    mock.installedListeners[0]();
+    await vi.waitFor(() => expect(releaseUpdateCheckerMock.checkForLatestRelease).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    mock.startupListeners[0]();
+    await vi.waitFor(() => expect(releaseUpdateCheckerMock.checkForLatestRelease).toHaveBeenCalledTimes(2));
+  });
+
+  it("安装与启动事件并发时复用同一次更新检测", async () => {
+    const mock = createChromeMock();
+    let resolveCheck: (() => void) | undefined;
+    releaseUpdateCheckerMock.checkForLatestRelease.mockImplementationOnce(() => new Promise<undefined>((resolve) => {
+      resolveCheck = () => resolve(undefined);
+    }));
+    vi.stubGlobal("chrome", mock.chrome);
+
+    await import("../../../src/background/index");
+    mock.installedListeners[0]();
+    mock.startupListeners[0]();
+
+    expect(releaseUpdateCheckerMock.checkForLatestRelease).toHaveBeenCalledTimes(1);
+
+    resolveCheck?.();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    mock.startupListeners[0]();
+
+    expect(releaseUpdateCheckerMock.checkForLatestRelease).toHaveBeenCalledTimes(2);
   });
 
   it("支持插件图标、快捷键和右键菜单打开侧边栏", async () => {

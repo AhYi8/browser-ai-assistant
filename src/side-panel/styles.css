@@ -79,6 +79,10 @@ body {
     stroke-width: 2;
   }
 
+  .app-update-icon {
+    color: var(--color-success);
+  }
+
   .ui-panel {
     @apply rounded-lg p-3 sm:p-4;
     background: color-mix(in srgb, var(--color-canvas) 86%, var(--color-on-primary));

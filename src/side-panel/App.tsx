@@ -3,6 +3,7 @@ import { ChatPanel } from "./components/ChatPanel";
 import { NotificationHost } from "./components/NotificationHost";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { SessionList } from "./components/SessionList";
+import { UpdateAvailableButton } from "./components/UpdateAvailableButton";
 import { useAppStore } from "./state/appStore";
 import {
   BROWSER_CONTROL_AUTOMATION_MODE_CHANGED_MESSAGE_TYPE,
@@ -72,6 +73,7 @@ export function App() {
       <section className="app-header">
         <h1 className="app-title">Browser AI Assistant</h1>
         <div className="app-header-actions">
+          <UpdateAvailableButton />
           <button
             className="ui-button-secondary app-header-icon-button"
             type="button"
