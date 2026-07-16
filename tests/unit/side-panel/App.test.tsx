@@ -905,14 +905,51 @@ describe("App", () => {
 
     expect(screen.getByRole("region", { name: "聊天偏好" })).toBeInTheDocument();
     expect(screen.queryByRole("group", { name: "聊天偏好" })).not.toBeInTheDocument();
-    expect(screen.getByRole("textbox", { name: "全局系统提示词" })).toBeInTheDocument();
+    const commonSectionToggle = screen.getByRole("button", { name: "展开常用设置" });
+    const promptSectionToggle = screen.getByRole("button", { name: "展开提示词与压缩" });
+    const toolSectionToggle = screen.getByRole("button", { name: "展开工具调用" });
+    const advancedSectionToggle = screen.getByRole("button", { name: "展开高级参数" });
+    expect(commonSectionToggle).toHaveAttribute("aria-expanded", "false");
+    expect(commonSectionToggle).toHaveAccessibleDescription("发送：Enter · 跟进：排队");
+    expect(promptSectionToggle).toHaveAccessibleDescription(/^系统提示词 \d+ 字 · 压缩 Prompt \d+ 字$/);
+    expect(toolSectionToggle).toHaveAccessibleDescription(/^已启用 · 已启用 \d+ \/ \d+ 个工具$/);
+    expect(advancedSectionToggle).toHaveAccessibleDescription("请求、上下文与工具运行参数");
+    expect(document.getElementById(commonSectionToggle.getAttribute("aria-controls") ?? "")).toHaveAttribute("hidden");
+    expect(toolSectionToggle).toHaveAttribute("aria-expanded", "false");
+    expect(promptSectionToggle).toHaveAttribute("aria-expanded", "false");
+    expect(advancedSectionToggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("button", { name: "展开工具权限" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "全局系统提示词" })).not.toBeInTheDocument();
     expect(screen.queryByRole("textbox", { name: "Network 请求相关性筛选 Prompt" })).not.toBeInTheDocument();
-    expect(screen.getByRole("spinbutton", { name: "全局 temperature" })).toBeInTheDocument();
-    expect(screen.getByRole("spinbutton", { name: "全局 自动压缩阈值（%）" })).toHaveDisplayValue("90");
+    expect(screen.queryByRole("spinbutton", { name: "全局 temperature" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "发送快捷键" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "跟进行为" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "默认展开左侧历史面板" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "展开常用设置" }));
+    await userEvent.click(screen.getByRole("button", { name: "展开提示词与压缩" }));
+    await userEvent.click(screen.getByRole("button", { name: "展开工具调用" }));
+    await userEvent.click(screen.getByRole("button", { name: "展开高级参数" }));
     expect(screen.getByRole("combobox", { name: "发送快捷键" })).toHaveDisplayValue("Enter");
     expect(Array.from(screen.getByRole("combobox", { name: "发送快捷键" }).querySelectorAll("option")).map((option) => option.textContent)).not.toContain("Ctrl+Shift+Enter");
     expect(screen.getByRole("combobox", { name: "跟进行为" })).toHaveDisplayValue("排队");
     expect(screen.getByRole("checkbox", { name: "默认展开左侧历史面板" })).toBeInTheDocument();
+    const toolPermissionsToggle = screen.getByRole("button", { name: "展开工具权限" });
+    expect(toolPermissionsToggle).toHaveAttribute("aria-expanded", "false");
+    expect(toolPermissionsToggle).toHaveAccessibleDescription(/^已启用 \d+ \/ \d+$/);
+    expect(document.getElementById(toolPermissionsToggle.getAttribute("aria-controls") ?? "")).toHaveAttribute("hidden");
+    expect(screen.getByRole("textbox", { name: "全局系统提示词" })).toBeInTheDocument();
+    expect(screen.getByRole("spinbutton", { name: "全局 temperature" })).toBeInTheDocument();
+    expect(screen.getByRole("spinbutton", { name: "全局 自动压缩阈值（%）" })).toHaveDisplayValue("90");
+    expect(screen.getByRole("region", { name: "常用设置" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "工具调用" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "提示词与压缩" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "高级参数" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("tab", { name: "渠道管理" }));
+    await userEvent.click(screen.getByRole("tab", { name: "聊天偏好" }));
+    expect(screen.getByRole("button", { name: "展开常用设置" })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("button", { name: "展开工具调用" })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("button", { name: "展开提示词与压缩" })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("button", { name: "展开高级参数" })).toHaveAttribute("aria-expanded", "false");
     expect(styles).toContain(".chat-preference-switch-input");
     expect(styles).toContain(".chat-preference-switch-control");
     expect(styles).toContain(".chat-preference-switch-input:checked + .chat-preference-switch-control");
@@ -925,6 +962,8 @@ describe("App", () => {
     expect(styles).toContain("min-width: 0;");
     expect(styles).toContain("align-content: start;");
     expect(styles).toContain("align-items: start;");
+    expect(styles).toContain(".chat-preference-section");
+    expect(styles).toContain(".chat-preference-section-toggle");
   });
 
   it("全局系统提示词使用中文输入法组合输入时只保存最终文本", async () => {
@@ -942,6 +981,7 @@ describe("App", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "设置" }));
     await userEvent.click(screen.getByRole("tab", { name: "聊天偏好" }));
+    await userEvent.click(screen.getByRole("button", { name: "展开提示词与压缩" }));
 
     const systemPromptInput = screen.getByRole("textbox", { name: "全局系统提示词" });
     fireEvent.compositionStart(systemPromptInput);
@@ -972,6 +1012,7 @@ describe("App", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "设置" }));
     await userEvent.click(screen.getByRole("tab", { name: "聊天偏好" }));
+    await userEvent.click(screen.getByRole("button", { name: "展开提示词与压缩" }));
 
     const systemPromptInput = screen.getByRole("textbox", { name: "全局系统提示词" });
     fireEvent.change(systemPromptInput, { target: { value: "" } });
@@ -1409,6 +1450,7 @@ describe("App", () => {
 
     await user.click(screen.getByRole("button", { name: "设置" }));
     await user.click(screen.getByRole("tab", { name: "聊天偏好" }));
+    await user.click(screen.getByRole("button", { name: "展开常用设置" }));
     await user.selectOptions(screen.getByRole("combobox", { name: "发送快捷键" }), "ctrl_enter");
 
     expect(updateChatPreferences).toHaveBeenCalledWith({ sendShortcut: "ctrl_enter" });
@@ -1444,6 +1486,7 @@ describe("App", () => {
 
     await user.click(screen.getByRole("button", { name: "设置" }));
     await user.click(screen.getByRole("tab", { name: "聊天偏好" }));
+    await user.click(screen.getByRole("button", { name: "展开常用设置" }));
     await user.selectOptions(screen.getByRole("combobox", { name: "跟进行为" }), "guide");
 
     expect(updateChatPreferences).toHaveBeenCalledWith({ followUpBehavior: "guide" });
@@ -1480,46 +1523,66 @@ describe("App", () => {
 
     await user.click(screen.getByRole("button", { name: "设置" }));
     await user.click(screen.getByRole("tab", { name: "聊天偏好" }));
+    await user.click(screen.getByRole("button", { name: "展开工具调用" }));
     await user.selectOptions(screen.getByRole("combobox", { name: "浏览器自动化默认模式" }), "controlled_enhanced");
 
     expect(updateChatPreferences).toHaveBeenCalledWith({ defaultBrowserAutomationMode: "controlled_enhanced" });
   });
 
-  it("聊天偏好可以保存工具调用总开关并显示空工具列表", async () => {
+  it("关闭工具调用会禁用下级控件但保留已选工具", async () => {
     const user = userEvent.setup();
-    const updateChatPreferences = vi.fn(async () => undefined);
-    useAppStore.setState({
-      chatPreferences: {
-        systemPrompt: "你是网页助手",
-        contextCompressionPrompt: "压缩上下文",
-        aiRequestRetryCount: 5,
-        browserAutomationMaxToolIterations: 32,
-        contextCompressionThresholdPercent: 90,
-        toolDetailPoolKeepLimit: 500,
-        toolCallingEnabled: false,
-        enabledToolIds: [],
-        temperature: 0.7,
-        maxTokens: 1024,
-        sendShortcut: "enter",
-        followUpBehavior: "queue",
-        historyDrawerDefaultOpen: true,
-        injectPageContextByDefault: true,
-        extractHtmlByDefault: false,
-        toolCallDisplayMode: "assistant_grouped",
-        showToolCallProcessInAssistantMode: false,
-      },
-      updateChatPreferences,
+    const updateChatPreferences = vi.fn(async (updates) => {
+      useAppStore.setState((state) => ({
+        chatPreferences: {
+          ...state.chatPreferences,
+          ...updates,
+        },
+      }));
     });
+    registeredModelToolsMock.tools = [
+      {
+        id: "browser.take_snapshot",
+        name: "take_snapshot",
+        description: "读取当前页面结构快照",
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+        toolClassification: { runtime: "browser_control", capabilities: ["observe_page"], risk: "low" },
+      },
+    ];
+    useAppStore.setState({ updateChatPreferences });
 
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: "设置" }));
     await user.click(screen.getByRole("tab", { name: "聊天偏好" }));
-    expect(screen.getByText("暂无可用工具")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "展开工具调用" }));
+    act(() => {
+      useAppStore.setState((state) => ({
+        chatPreferences: {
+          ...state.chatPreferences,
+          toolCallingEnabled: true,
+          enabledToolIds: ["browser.take_snapshot"],
+        },
+      }));
+    });
+    await user.click(screen.getByRole("button", { name: "展开工具权限" }));
+
+    const automationModeSelect = screen.getByRole("combobox", { name: "浏览器自动化默认模式" });
+    const toolSearchInput = screen.getByRole("searchbox", { name: "搜索工具" });
+    const toolCheckbox = screen.getByRole("checkbox", { name: "启用工具 take_snapshot" });
+    expect(automationModeSelect).toBeEnabled();
+    expect(toolSearchInput).toBeEnabled();
+    expect(toolCheckbox).toBeEnabled();
 
     await user.click(screen.getByRole("checkbox", { name: "启用工具调用" }));
 
     expect(updateChatPreferences).toHaveBeenCalledWith({ toolCallingEnabled: false });
+    expect(useAppStore.getState().chatPreferences.enabledToolIds).toEqual(["browser.take_snapshot"]);
+    expect(automationModeSelect).toBeDisabled();
+    expect(toolSearchInput).toBeDisabled();
+    expect(screen.getByRole("combobox", { name: "工具能力筛选" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "启用当前结果" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "禁用当前结果" })).toBeDisabled();
+    expect(toolCheckbox).toBeDisabled();
   });
 
   it("聊天偏好工具列表支持按分类筛选并批量启用运行态未满足的默认工具", async () => {
@@ -1562,6 +1625,7 @@ describe("App", () => {
 
     await user.click(screen.getByRole("button", { name: "设置" }));
     await user.click(screen.getByRole("tab", { name: "聊天偏好" }));
+    await user.click(screen.getByRole("button", { name: "展开工具调用" }));
     act(() => {
       useAppStore.setState((state) => ({
         chatPreferences: {
@@ -1571,6 +1635,7 @@ describe("App", () => {
         },
       }));
     });
+    await user.click(screen.getByRole("button", { name: "展开工具权限" }));
     await user.selectOptions(screen.getByRole("combobox", { name: "工具能力筛选" }), "observe_page");
     await user.selectOptions(screen.getByRole("combobox", { name: "工具运行要求筛选" }), "browser_control");
     await user.selectOptions(screen.getByRole("combobox", { name: "工具风险筛选" }), "low");
@@ -1579,9 +1644,98 @@ describe("App", () => {
     expect(screen.getByRole("checkbox", { name: "启用工具 take_snapshot" })).toBeEnabled();
     expect(screen.queryByRole("checkbox", { name: "启用工具 click" })).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "启用筛选结果" }));
+    await user.click(screen.getByRole("button", { name: "启用当前结果" }));
 
     expect(updateChatPreferences).toHaveBeenCalledWith({ enabledToolIds: ["browser.take_snapshot"] });
+  });
+
+  it("批量禁用只移除当前筛选结果中的工具", async () => {
+    const user = userEvent.setup();
+    const updateChatPreferences = vi.fn(async () => undefined);
+    registeredModelToolsMock.tools = [
+      {
+        id: "browser.take_snapshot",
+        name: "take_snapshot",
+        description: "读取当前页面结构快照",
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+        toolClassification: { runtime: "browser_control", capabilities: ["observe_page"], risk: "low" },
+      },
+      {
+        id: "browser.click",
+        name: "click",
+        description: "点击页面上的目标元素",
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+        toolClassification: { runtime: "browser_control", capabilities: ["operate_page"], risk: "medium" },
+      },
+    ];
+    useAppStore.setState({ updateChatPreferences });
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("tab", { name: "聊天偏好" }));
+    await user.click(screen.getByRole("button", { name: "展开工具调用" }));
+    act(() => {
+      useAppStore.setState((state) => ({
+        chatPreferences: {
+          ...state.chatPreferences,
+          toolCallingEnabled: true,
+          enabledToolIds: ["browser.take_snapshot", "browser.click"],
+        },
+      }));
+    });
+    await user.click(screen.getByRole("button", { name: "展开工具权限" }));
+    await user.selectOptions(screen.getByRole("combobox", { name: "工具能力筛选" }), "observe_page");
+    await user.click(screen.getByRole("button", { name: "禁用当前结果" }));
+
+    expect(updateChatPreferences).toHaveBeenCalledWith({ enabledToolIds: ["browser.click"] });
+  });
+
+  it("聊天偏好工具权限支持名称搜索并仅查看已启用工具", async () => {
+    const user = userEvent.setup();
+    registeredModelToolsMock.tools = [
+      {
+        id: "browser.take_snapshot",
+        name: "take_snapshot",
+        description: "读取当前页面结构快照",
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+        toolClassification: { runtime: "browser_control", capabilities: ["observe_page"], risk: "low" },
+      },
+      {
+        id: "browser.click",
+        name: "click",
+        description: "点击页面上的目标元素",
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+        toolClassification: { runtime: "browser_control", capabilities: ["operate_page"], risk: "medium" },
+      },
+    ];
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("tab", { name: "聊天偏好" }));
+    await user.click(screen.getByRole("button", { name: "展开工具调用" }));
+    act(() => {
+      useAppStore.setState((state) => ({
+        chatPreferences: {
+          ...state.chatPreferences,
+          toolCallingEnabled: true,
+          enabledToolIds: ["browser.take_snapshot"],
+        },
+      }));
+    });
+    await user.click(screen.getByRole("button", { name: "展开工具权限" }));
+    await user.type(screen.getByRole("searchbox", { name: "搜索工具" }), "click");
+
+    expect(screen.getByRole("checkbox", { name: "启用工具 click" })).toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "启用工具 take_snapshot" })).not.toBeInTheDocument();
+    expect(screen.getByText("显示 1 / 2 个工具")).toBeInTheDocument();
+
+    await user.clear(screen.getByRole("searchbox", { name: "搜索工具" }));
+    await user.click(screen.getByRole("checkbox", { name: "仅看已启用工具" }));
+
+    expect(screen.getByRole("checkbox", { name: "启用工具 take_snapshot" })).toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "启用工具 click" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "启用当前结果" })).toBeDisabled();
   });
   it("MCP 设置页可以新增 Server 并通过工具列表按钮展开已发现工具", async () => {
     const user = userEvent.setup();
@@ -1652,11 +1806,22 @@ describe("App", () => {
     expect(screen.queryByRole("region", { name: "MySQL 工具列表" })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("tab", { name: "聊天偏好" }));
+    await user.click(screen.getByRole("button", { name: "展开工具调用" }));
+    act(() => {
+      useAppStore.setState((state) => ({
+        chatPreferences: {
+          ...state.chatPreferences,
+          toolCallingEnabled: true,
+          enabledToolIds: [],
+        },
+      }));
+    });
+    await user.click(screen.getByRole("button", { name: "展开工具权限" }));
     await user.selectOptions(screen.getByRole("combobox", { name: "工具运行要求筛选" }), "mcp_remote");
     expect(screen.getByRole("checkbox", { name: "启用工具 MySQL.query" })).toBeInTheDocument();
     expect(screen.queryByRole("checkbox", { name: "启用工具 mcp_mysql_query" })).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "启用筛选结果" }));
+    await user.click(screen.getByRole("button", { name: "启用当前结果" }));
 
     expect(updateChatPreferences).toHaveBeenCalledWith({ enabledToolIds: ["mcp.mysql.query"] });
   });
@@ -1725,6 +1890,8 @@ describe("App", () => {
 
     registeredModelToolsMock.tools = [];
     await user.click(screen.getByRole("tab", { name: "聊天偏好" }));
+    await user.click(screen.getByRole("button", { name: "展开工具调用" }));
+    await user.click(screen.getByRole("button", { name: "展开工具权限" }));
     await user.selectOptions(screen.getByRole("combobox", { name: "工具运行要求筛选" }), "mcp_remote");
 
     expect(screen.queryByRole("checkbox", { name: "启用工具 MySQL.query" })).not.toBeInTheDocument();
@@ -1782,6 +1949,7 @@ describe("App", () => {
 
     await user.click(screen.getByRole("button", { name: "设置" }));
     await user.click(screen.getByRole("tab", { name: "聊天偏好" }));
+    await user.click(screen.getByRole("button", { name: "展开工具调用" }));
     await user.selectOptions(screen.getByRole("combobox", { name: "工具调用展示方式" }), "compact");
 
     expect(updateChatPreferences).toHaveBeenCalledWith({ toolCallDisplayMode: "compact" });
@@ -1803,6 +1971,7 @@ describe("App", () => {
 
     await user.click(screen.getByRole("button", { name: "设置" }));
     await user.click(screen.getByRole("tab", { name: "聊天偏好" }));
+    await user.click(screen.getByRole("button", { name: "展开工具调用" }));
     await user.click(screen.getByRole("checkbox", { name: "非紧凑模式显示工具调用过程" }));
 
     expect(updateChatPreferences).toHaveBeenCalledWith({ showToolCallProcessInAssistantMode: true });
@@ -1838,6 +2007,7 @@ describe("App", () => {
 
     await user.click(screen.getByRole("button", { name: "设置" }));
     await user.click(screen.getByRole("tab", { name: "聊天偏好" }));
+    await user.click(screen.getByRole("button", { name: "展开高级参数" }));
     const input = screen.getByRole("spinbutton", { name: "全局 最大工具决策轮次" });
     expect(input).not.toHaveAttribute("min");
     expect(input).not.toHaveAttribute("max");
@@ -1877,6 +2047,7 @@ describe("App", () => {
 
     await user.click(screen.getByRole("button", { name: "设置" }));
     await user.click(screen.getByRole("tab", { name: "聊天偏好" }));
+    await user.click(screen.getByRole("button", { name: "展开常用设置" }));
     await user.click(screen.getByRole("checkbox", { name: "新对话默认注入当前页面上下文" }));
 
     expect(updateChatPreferences).toHaveBeenCalledWith({ injectPageContextByDefault: false });
@@ -1912,6 +2083,7 @@ describe("App", () => {
 
     await user.click(screen.getByRole("button", { name: "设置" }));
     await user.click(screen.getByRole("tab", { name: "聊天偏好" }));
+    await user.click(screen.getByRole("button", { name: "展开常用设置" }));
     const extractHtmlSwitch = screen.getByRole("checkbox", { name: "新对话默认提取 HTML 源码" });
     expect(extractHtmlSwitch).not.toBeChecked();
 

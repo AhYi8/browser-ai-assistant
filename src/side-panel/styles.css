@@ -2272,6 +2272,84 @@ body {
     @apply grid h-9 w-9 shrink-0 place-items-center px-0 text-base leading-none;
   }
 
+  .chat-preference-layout {
+    @apply grid w-full gap-3;
+  }
+
+  .chat-preference-section {
+    @apply min-w-0 overflow-hidden rounded-lg;
+    background: var(--color-canvas);
+    border: 1px solid var(--color-hairline);
+  }
+
+  .chat-preference-section-toggle {
+    @apply flex min-h-16 w-full min-w-0 items-center justify-between gap-3 px-3 py-3 text-left transition;
+    background: var(--color-surface-soft);
+    color: var(--color-body);
+  }
+
+  .chat-preference-section-toggle:hover,
+  .chat-preference-permission-toggle:hover {
+    background: var(--color-surface-cream-strong);
+  }
+
+  .chat-preference-section-toggle:focus-visible,
+  .chat-preference-permission-toggle:focus-visible {
+    outline: 3px solid color-mix(in srgb, var(--color-primary) 15%, transparent);
+    outline-offset: -3px;
+  }
+
+  .chat-preference-section-heading {
+    @apply grid min-w-0 gap-0.5;
+  }
+
+  .chat-preference-section-title,
+  .chat-preference-permission-title {
+    @apply text-sm font-semibold;
+    color: var(--color-body-strong);
+  }
+
+  .chat-preference-section-summary {
+    @apply min-w-0 text-xs;
+    color: var(--color-muted);
+    overflow-wrap: anywhere;
+  }
+
+  .chat-preference-section-chevron {
+    @apply h-2.5 w-2.5 shrink-0 transition;
+    border-bottom: 2px solid currentColor;
+    border-right: 2px solid currentColor;
+    color: var(--color-muted);
+    transform: rotate(-45deg);
+  }
+
+  [aria-expanded="true"] > .chat-preference-section-chevron {
+    transform: rotate(45deg);
+  }
+
+  .chat-preference-section-content {
+    @apply grid min-w-0 gap-3 p-3;
+    border-top: 1px solid var(--color-hairline);
+  }
+
+  .chat-preference-section-content[hidden],
+  .chat-preference-permission-content[hidden] {
+    display: none;
+  }
+
+  .chat-preference-primary-grid,
+  .chat-preference-tool-settings-grid {
+    @apply grid gap-3;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+    align-items: start;
+  }
+
+  .chat-preference-switch-grid {
+    @apply grid gap-2;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+    align-items: stretch;
+  }
+
   .chat-preference-grid {
     @apply grid gap-3;
     grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
@@ -2291,24 +2369,77 @@ body {
     @apply w-full min-w-0;
   }
 
-  .chat-preference-network-types {
-    @apply grid gap-2 rounded-lg px-3 py-2;
+  .chat-preference-tool-filter-grid {
+    @apply grid gap-2;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr));
+  }
+
+  .chat-preference-tool-search {
+    grid-column: 1 / -1;
+  }
+
+  .chat-preference-control-fieldset {
+    @apply grid min-w-0 gap-3 border-0 p-0;
+    margin: 0;
+  }
+
+  .chat-preference-control-fieldset:disabled {
+    opacity: 0.55;
+  }
+
+  .chat-preference-control-fieldset:disabled .chat-preference-switch {
+    @apply cursor-not-allowed;
+  }
+
+  .chat-preference-control-fieldset:disabled label,
+  .chat-preference-control-fieldset:disabled button,
+  .chat-preference-control-fieldset:disabled input,
+  .chat-preference-control-fieldset:disabled select {
+    @apply cursor-not-allowed;
+  }
+
+  .chat-preference-control-fieldset:disabled .chat-preference-switch:hover,
+  .chat-preference-control-fieldset:disabled .chat-preference-tool-enabled-filter:hover {
+    background: var(--color-surface-soft);
+  }
+
+  .chat-preference-control-fieldset:disabled .ui-button-secondary:hover {
+    background: var(--color-canvas);
+  }
+
+  .chat-preference-permission-toggle {
+    @apply flex min-h-12 w-full min-w-0 items-center justify-between gap-3 rounded-md px-3 py-2 text-left transition;
     background: var(--color-surface-soft);
     border: 1px solid var(--color-hairline);
     color: var(--color-body);
   }
 
-  .chat-preference-network-type-list {
-    @apply flex flex-wrap gap-2;
+  .chat-preference-permission-toggle > span:first-child {
+    @apply grid min-w-0 gap-0.5;
   }
 
-  .chat-preference-tool-filter-grid {
-    @apply grid gap-2;
-    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  .chat-preference-permission-content {
+    @apply grid min-w-0 gap-3 border-t pt-3;
+    border-color: var(--color-hairline);
+  }
+
+  .chat-preference-tool-toolbar {
+    @apply flex flex-wrap items-center gap-2;
+  }
+
+  .chat-preference-tool-enabled-filter {
+    @apply inline-flex min-h-9 cursor-pointer items-center gap-2 rounded-md px-2.5 py-1.5 text-sm;
+    background: var(--color-surface-soft);
+    border: 1px solid var(--color-hairline);
+  }
+
+  .chat-preference-tool-enabled-filter input {
+    @apply h-4 w-4 shrink-0;
+    accent-color: var(--color-primary);
   }
 
   .chat-preference-tool-bulk-actions {
-    @apply flex flex-wrap gap-2;
+    @apply ml-auto flex flex-wrap gap-2;
   }
 
   .chat-preference-tool-group-list {
@@ -2316,7 +2447,12 @@ body {
   }
 
   .chat-preference-tool-group {
-    @apply flex w-full flex-wrap gap-2;
+    @apply grid min-w-0 gap-2;
+  }
+
+  .chat-preference-tool-group-tools {
+    @apply grid min-w-0 gap-2;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
   }
 
   .mcp-server-card {
@@ -2354,20 +2490,21 @@ body {
     color: var(--color-muted);
   }
 
-  .chat-preference-tool-group > .ui-muted {
-    @apply w-full;
-  }
-
   .chat-preference-tool-group-title {
-    @apply w-full text-xs font-medium;
+    @apply flex w-full items-center justify-between gap-3 text-xs font-medium;
     color: var(--color-muted);
   }
 
   .chat-preference-network-type-chip {
-    @apply inline-flex min-h-8 cursor-pointer items-center gap-2 rounded-md px-2.5 py-1 text-xs transition;
+    @apply flex min-h-9 min-w-0 cursor-pointer items-center gap-2 rounded-md px-2.5 py-1.5 text-xs transition;
     background: var(--color-canvas);
     border: 1px solid var(--color-hairline);
     color: var(--color-body);
+  }
+
+  .chat-preference-network-type-chip > span:not(.ui-muted) {
+    @apply min-w-0;
+    overflow-wrap: anywhere;
   }
 
   .chat-preference-network-type-chip:has(input:not(:disabled)):hover {
