@@ -268,6 +268,7 @@
 * Windows PowerShell 中创建或更新 GitHub Release 正文时，必须优先使用 UTF-8 文件并通过 `--notes-file` 传入，避免中文内容经管道传输后乱码。
 * v3.6.1 发布范围固定为 `v3.6.0` 后的历史会话批量操作；发布资产必须命名为 `artifacts/browser-ai-assistant-v3.6.1.zip`，Release 标题与 tag 均使用 `v3.6.1`。
 * v3.7.0 发布范围固定为 `v3.6.1` 后的正式版本更新提醒；发布资产必须命名为 `artifacts/browser-ai-assistant-v3.7.0.zip`，Release 标题与 tag 均使用 `v3.7.0`，正文通过 UTF-8 文件 `artifacts/release-v3.7.0-notes.md` 传入。
+* v3.7.1 发布范围固定为 `v3.7.0` 后的用户消息代码样式与聊天偏好设置布局优化；发布资产必须命名为 `artifacts/browser-ai-assistant-v3.7.1.zip`，Release 标题与 tag 均使用 `v3.7.1`，正文通过 UTF-8 文件 `artifacts/release-v3.7.1-notes.md` 传入。
 * HTML 资源引用校验必须先解析到打包目录内再检查存在性；遇到 `../` 或归一化后会跳出 `artifacts/chrome-extension` 的路径时，必须按缺失资源处理，不能读取项目其他目录来让校验通过。
 * 修改打包脚本、Vite 入口、manifest 运行时路径、HTML 资源引用校验或扩展加载目录文档时，必须运行 `npm run check:package`；该脚本应先执行打包脚本单元测试，再生成真实本地扩展目录，并纳入 `npm run check` 综合验证。
 * `artifacts/` 属于本地生成产物，必须加入 `.gitignore`，不得手动编辑或提交；需要复现问题时应重新运行打包命令生成。
